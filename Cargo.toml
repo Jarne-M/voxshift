@@ -1,0 +1,28 @@
+[package]
+name = "voxshift"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Local real-time voice changer and soundboard (VB-CABLE virtual mic)"
+
+[dependencies]
+cpal = "0.18.2"
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "default_fonts", "links"] }
+egui = "0.36.2"
+rfd = "0.17.2"
+rtrb = "0.4.0"
+rubato = "5.0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "wav", "ogg", "vorbis", "flac", "pcm", "adpcm"] }
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }
+
+# The DSP runs in real time, so even debug builds need optimised code.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
