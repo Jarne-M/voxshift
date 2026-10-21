@@ -99,6 +99,7 @@ pub struct Lpc {
     until_next: usize,
     k: [f32; ORDER],
     k_step: [f32; ORDER],
+    fs: f32,
 }
 
 impl Lpc {
@@ -117,6 +118,7 @@ impl Lpc {
             until_next: hop,
             k: [0.0; ORDER],
             k_step: [0.0; ORDER],
+            fs,
         }
     }
 
@@ -156,10 +158,13 @@ impl Lpc {
             }
             return;
         }
-        // White-noise floor (-40 dB) and a lag window keep the estimate well-conditioned.
-        r[0] *= 1.0001;
+        // A white-noise floor (-25 dB) and a Gaussian lag window (~100 Hz bandwidth expansion)
+        // keep the estimate well-conditioned: without them a steady tone yields razor-sharp
+        // resonances with enormous gain.
+        r[0] *= 1.003;
+        let bw = 2.0 * std::f32::consts::PI * 100.0 / self.fs;
         for (lag, v) in r.iter_mut().enumerate().skip(1) {
-            let g = 0.0012 * lag as f32;
+            let g = bw * lag as f32;
             *v *= (-0.5 * g * g).exp();
         }
         let mut target = [0.0; ORDER];

@@ -130,7 +130,7 @@ fn main() -> eframe::Result {
         selftest(args.get(i + 1).cloned());
         return Ok(());
     }
-    let app = ui::VoxApp::new(config::Config::default());
+    let app = ui::VoxApp::new(config::config_path());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("VoxShift")

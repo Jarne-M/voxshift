@@ -32,7 +32,25 @@ pub struct PitchStage {
     color: Colorer,
     semis: Smoother,
     formant: Smoother,
+    /// Short-term power of the plain and the formant path, for level matching.
+    power: [f32; 2],
+    power_coeff: f32,
+    match_gain: f32,
+    gain_rise: f32,
+    /// Peak envelope of the plain path (safety limit for the formant path).
+    env: f32,
+    env_release: f32,
+    pre_x: f32,
+    de_y: f32,
 }
+
+/// The formant path may differ in level from the plain one by at most this factor.
+const MAX_MATCH: f32 = 4.0;
+/// Pre-emphasis flattens the voice's natural treble roll-off before LPC analysis, which keeps
+/// the analysis well-conditioned (standard in speech coding); de-emphasis undoes it after.
+const PRE_EMPHASIS: f32 = 0.9;
+/// The formant path never peaks above this multiple of the plain path's envelope.
+const PEAK_LIMIT: f32 = 2.0;
 
 impl PitchStage {
     pub fn new(fs: f32) -> Self {
@@ -44,6 +62,14 @@ impl PitchStage {
             color: Colorer::default(),
             semis: Smoother::new(fs, 0.03, 0.0),
             formant: Smoother::new(fs, FADE_S, 0.0),
+            power: [0.0; 2],
+            power_coeff: 1.0 - (-1.0 / (0.03 * fs)).exp(),
+            match_gain: 1.0,
+            gain_rise: 1.0 - (-1.0 / (0.03 * fs)).exp(),
+            env: 0.0,
+            env_release: (-1.0 / (0.05 * fs)).exp(),
+            pre_x: 0.0,
+            de_y: 0.0,
         }
     }
 
@@ -52,10 +78,35 @@ impl PitchStage {
         let formant = if p.on(P::PitchFormant) { 1.0 } else { 0.0 };
         for s in block.iter_mut() {
             let x = *s;
-            let k = self.lpc.push(x);
             let a = self.plain.process(x, ratio);
-            let e = self.whiten.process(x, k);
-            let b = self.color.process(self.residual.process(e, ratio), k);
+
+            let xp = x - PRE_EMPHASIS * self.pre_x;
+            self.pre_x = x;
+            let k = self.lpc.push(xp);
+            let e = self.whiten.process(xp, k);
+            let yp = self.color.process(self.residual.process(e, ratio), k);
+            let b = yp + PRE_EMPHASIS * self.de_y;
+            self.de_y = b;
+
+            // Re-colouring a shifted residual can land on a sharp resonance: keep the formant
+            // path at the plain path's loudness (gain drops instantly, recovers in ~30 ms)...
+            self.power[0] += (a * a - self.power[0]) * self.power_coeff;
+            self.power[1] += (b * b - self.power[1]) * self.power_coeff;
+            let wanted = ((self.power[0] + 1e-9) / (self.power[1] + 1e-9))
+                .sqrt()
+                .clamp(1.0 / MAX_MATCH, MAX_MATCH);
+            self.match_gain = if wanted < self.match_gain {
+                wanted
+            } else {
+                self.match_gain + (wanted - self.match_gain) * self.gain_rise
+            };
+            // ...and never let a transient peak above twice the plain path's envelope.
+            self.env = a.abs().max(self.env * self.env_release);
+            let mut b = b * self.match_gain;
+            let limit = PEAK_LIMIT * self.env + 1e-6;
+            if b.abs() > limit {
+                b = limit.copysign(b);
+            }
             *s = a + (b - a) * self.formant.next(formant);
         }
     }
@@ -70,6 +121,11 @@ impl PitchStage {
         self.lpc.reset();
         self.whiten = Whitener::default();
         self.color = Colorer::default();
+        self.power = [0.0; 2];
+        self.match_gain = 1.0;
+        self.env = 0.0;
+        self.pre_x = 0.0;
+        self.de_y = 0.0;
     }
 }
 
@@ -295,6 +351,63 @@ mod tests {
             assert!((f - 400.0).abs() < 20.0, "formant={formant}: {f} Hz");
         }
         assert!(chain.latency_samples() > 400);
+    }
+
+    #[test]
+    fn formant_path_has_no_startup_burst() {
+        // Regression: the first LPC frames see a half-empty window while the plain path is
+        // still silent; the formant path used to burst to 50x the input there.
+        let mut st = PitchStage::new(FS);
+        let mut p = Snapshot::defaults();
+        p.set(P::PitchSemis, -5.0);
+        p.set(P::PitchFormant, 1.0);
+        for n in 0..1500 {
+            let mut b = [0.0; BLOCK];
+            for (i, s) in b.iter_mut().enumerate() {
+                *s = 0.3 * (2.0 * PI * 180.0 * (n * BLOCK + i) as f32 / FS).sin();
+            }
+            st.process(&mut b, &p);
+            assert!(b.iter().all(|x| x.abs() <= 0.3 * PEAK_LIMIT + 1e-3), "block {n}");
+        }
+    }
+
+    #[test]
+    fn formant_preserving_pitch_keeps_the_level() {
+        use crate::dsp::biquad::{Biquad, Coeffs};
+        // A pure tone and a vowel-like buzz (120 Hz sawtooth through two formant peaks).
+        let mut f1 = Biquad::new(Coeffs::peaking(FS, 700.0, 4.0, 15.0));
+        let mut f2 = Biquad::new(Coeffs::peaking(FS, 1200.0, 4.0, 12.0));
+        let mut saw = 0.0f32;
+        let mut vowel = move |_: usize| {
+            saw += 120.0 / FS;
+            saw -= saw.floor();
+            0.1 * f2.process(f1.process(saw - 0.5))
+        };
+        let tone = |i: usize| 0.3 * (2.0 * PI * 180.0 * i as f32 / FS).sin();
+        for (name, semis) in [("down", -5.0), ("up", 7.0)] {
+            for (kind, input) in [("tone", &mut (Box::new(tone) as Box<dyn FnMut(usize) -> f32>)), ("vowel", &mut (Box::new(&mut vowel) as Box<dyn FnMut(usize) -> f32>))] {
+                let mut chain = VoiceChain::new(FS);
+                let mut p = Snapshot::defaults();
+                p.set(P::PitchOn, 1.0);
+                p.set(P::PitchSemis, semis);
+                p.set(P::PitchFormant, 1.0);
+                let (mut e_in, mut e_out) = (0.0f64, 0.0f64);
+                for n in 0..1500 {
+                    let mut b = [0.0; BLOCK];
+                    for (i, s) in b.iter_mut().enumerate() {
+                        *s = input(n * BLOCK + i);
+                    }
+                    let x = b;
+                    chain.run(&mut b, &p, true);
+                    if n > 300 {
+                        e_in += x.iter().map(|v| f64::from(v * v)).sum::<f64>();
+                        e_out += b.iter().map(|v| f64::from(v * v)).sum::<f64>();
+                    }
+                }
+                let db = 10.0 * (e_out / e_in).log10();
+                assert!(db.abs() < 6.0, "{kind} {name}: level changed by {db:.1} dB");
+            }
+        }
     }
 
     #[test]

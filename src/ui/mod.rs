@@ -4,13 +4,14 @@
 pub mod devices;
 pub mod effects;
 pub mod meters;
+pub mod presets;
 pub mod soundboard;
 pub mod theme;
 pub mod toast;
 
 use crate::audio::device_manager::{DeviceStatus, Event, ManagerCmd, ManagerHandle};
 use crate::audio::shared::{ActiveMic, Shared};
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::dsp::params::Snapshot;
 use crate::soundboard::decode;
 use crate::soundboard::hotkeys::{Captured, HotkeyService};
@@ -49,7 +50,17 @@ pub struct VoxApp {
     hotkeys: Option<HotkeyService>,
     /// Sound waiting for its hotkey to be pressed.
     capturing: Option<SoundId>,
+    preset_name: String,
+    /// Where settings are saved (None in tests).
+    config_path: Option<PathBuf>,
+    saved: Config,
+    changed_at: Option<f64>,
+    /// Shown as a toast on the first frame (e.g. "settings file was damaged").
+    startup_notice: Option<String>,
 }
+
+/// Save this long after the last change, so dragging a slider does not write 30 times a second.
+const SAVE_DELAY_S: f64 = 1.0;
 
 /// Pushes the non-device parts of the config into the shared atomics.
 fn apply_to_shared(cfg: &Config, shared: &Shared) {
@@ -61,11 +72,15 @@ fn apply_to_shared(cfg: &Config, shared: &Shared) {
 }
 
 impl VoxApp {
-    pub fn new(cfg: Config) -> Self {
+    /// Loads the settings from `config_path`, starts audio and hotkeys.
+    pub fn new(config_path: PathBuf) -> Self {
+        let (cfg, notice) = config::load_from(&config_path);
         let shared = Arc::new(Shared::default());
         let manager = ManagerHandle::spawn(shared.clone(), cfg.devices.clone(), cfg.mic.clone());
         let mut app = Self::with_manager(cfg, shared, manager);
         app.hotkeys = Some(HotkeyService::start(app.sounds.board.clone()));
+        app.config_path = Some(config_path);
+        app.startup_notice = notice;
         app
     }
 
@@ -76,6 +91,11 @@ impl VoxApp {
             sounds,
             hotkeys: None,
             capturing: None,
+            preset_name: String::new(),
+            config_path: None,
+            saved: cfg.clone(),
+            changed_at: None,
+            startup_notice: None,
             fx: Snapshot::from_settings(&cfg.effects),
             tab: Tab::Effects,
             cfg,
@@ -160,6 +180,10 @@ impl VoxApp {
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
                 Tab::Effects => {
+                    if let Some(a) = presets::bar(ui, &self.cfg, &self.fx, &mut self.preset_name) {
+                        self.apply_preset_action(ui.ctx(), a);
+                    }
+                    ui.add_space(6.0);
                     if effects::panel(ui, &mut self.fx) {
                         self.effects_changed();
                     }
@@ -170,6 +194,10 @@ impl VoxApp {
 
         self.handle_dropped_files(&ctx);
         self.poll_hotkey_capture(&ctx);
+        if let Some(n) = self.startup_notice.take() {
+            self.toasts.push(&ctx, n);
+        }
+        self.autosave(ctx.input(|i| i.time));
         self.toasts.show(&ctx);
         ctx.request_repaint_after(Duration::from_millis(33));
     }
@@ -311,6 +339,59 @@ impl VoxApp {
         self.toasts.push(ctx, msg);
     }
 
+    fn apply_preset_action(&mut self, ctx: &egui::Context, action: presets::Action) {
+        match action {
+            presets::Action::Apply(p) => {
+                self.fx = config::presets::apply(&p, &self.fx);
+                self.effects_changed();
+                self.cfg.preset = Some(p.name);
+            }
+            presets::Action::Save(name) => {
+                let preset = config::presets::Preset {
+                    name: name.clone(),
+                    effects: self.fx.to_settings(),
+                };
+                match self.cfg.user_presets.iter_mut().find(|p| p.name == name) {
+                    Some(existing) => *existing = preset,
+                    None => self.cfg.user_presets.push(preset),
+                }
+                self.cfg.preset = Some(name.clone());
+                self.preset_name.clear();
+                self.toasts.push(ctx, format!("Saved preset \"{name}\""));
+            }
+            presets::Action::Delete(name) => {
+                self.cfg.user_presets.retain(|p| p.name != name);
+                if self.cfg.preset.as_ref() == Some(&name) {
+                    self.cfg.preset = None;
+                }
+                self.toasts.push(ctx, format!("Deleted preset \"{name}\""));
+            }
+        }
+    }
+
+    /// Saves shortly after the last change.
+    fn autosave(&mut self, now: f64) {
+        if self.cfg == self.saved {
+            self.changed_at = None;
+            return;
+        }
+        let since = *self.changed_at.get_or_insert(now);
+        if now - since >= SAVE_DELAY_S {
+            self.save_now();
+        }
+    }
+
+    pub fn save_now(&mut self) {
+        if let Some(path) = &self.config_path {
+            if let Err(e) = config::save_to(path, &self.cfg) {
+                eprintln!("saving settings failed: {e}");
+                return;
+            }
+        }
+        self.saved = self.cfg.clone();
+        self.changed_at = None;
+    }
+
     fn effects_changed(&mut self) {
         self.shared.params.store(&self.fx);
         self.cfg.effects = self.fx.to_settings();
@@ -386,6 +467,10 @@ impl eframe::App for VoxApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.draw(ui);
     }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_now();
+    }
 }
 
 #[cfg(test)]
@@ -444,6 +529,38 @@ pub(crate) mod tests {
         }
         assert_eq!(app.cfg.devices.primary, "Microphone (USB PnP Audio Device)");
         assert!(app.cfg.devices.output.is_empty(), "no CABLE: output stays unselected");
+    }
+
+    #[test]
+    fn presets_apply_save_delete_and_everything_persists() {
+        use crate::dsp::params::P;
+        let dir = crate::soundboard::decode::tests::temp_dir("app-config");
+        let path = dir.join("config.json");
+        let mut app = test_app();
+        app.config_path = Some(path.clone());
+        let ctx = egui::Context::default();
+
+        let robot = config::presets::builtin().into_iter().find(|p| p.name == "Robot").unwrap();
+        app.apply_preset_action(&ctx, presets::Action::Apply(robot));
+        assert!(app.fx.on(P::RobotOn));
+        assert!(app.shared.params.get(P::RobotOn) >= 0.5, "reaches the audio thread");
+        app.fx.set(P::RobotFreq, 120.0);
+        app.effects_changed();
+        app.apply_preset_action(&ctx, presets::Action::Save("My robot".into()));
+        assert_eq!(app.cfg.preset.as_deref(), Some("My robot"));
+
+        app.autosave(10.0);
+        assert!(!path.exists(), "waits for the debounce");
+        app.autosave(11.5);
+        let (loaded, warning) = config::load_from(&path);
+        assert!(warning.is_none());
+        assert_eq!(loaded, app.cfg);
+        assert_eq!(loaded.user_presets[0].effects["robot_freq"], 120.0);
+
+        app.apply_preset_action(&ctx, presets::Action::Delete("My robot".into()));
+        assert!(app.cfg.user_presets.is_empty() && app.cfg.preset.is_none());
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

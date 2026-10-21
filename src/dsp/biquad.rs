@@ -125,6 +125,10 @@ impl Default for Biquad {
 }
 
 impl Biquad {
+    pub fn new(c: Coeffs) -> Self {
+        Self { c, ..Default::default() }
+    }
+
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
         let c = &self.c;
