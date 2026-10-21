@@ -144,12 +144,9 @@ impl AdaptiveReader {
         (self.avg_fill / self.src_rate * 1000.0) as f32
     }
 
+    #[cfg(test)]
     pub fn underruns(&self) -> u32 {
         self.underruns
-    }
-
-    pub fn resampler_delay_frames(&self) -> usize {
-        self.resampler.output_delay()
     }
 }
 
@@ -208,7 +205,11 @@ mod tests {
     #[test]
     fn locks_onto_a_faster_source_without_growing_latency() {
         let (reader, fill) = simulate(48_000, 1.002, 48_000, 60.0);
-        assert!(fill < reader.target * 1.5, "fill {fill} target {}", reader.target);
+        assert!(
+            fill < reader.target * 1.5,
+            "fill {fill} target {}",
+            reader.target
+        );
         assert!(reader.underruns() <= 1, "underruns {}", reader.underruns());
     }
 
@@ -222,7 +223,10 @@ mod tests {
     #[test]
     fn converts_44k1_to_48k() {
         let (reader, fill) = simulate(44_100, 1.0, 48_000, 30.0);
-        assert!((fill - reader.target).abs() < reader.target * 0.5, "fill {fill}");
+        assert!(
+            (fill - reader.target).abs() < reader.target * 0.5,
+            "fill {fill}"
+        );
         assert!(reader.underruns() <= 1);
     }
 

@@ -33,7 +33,12 @@ pub fn decode_file(path: &Path) -> Result<(Vec<f32>, u32), String> {
         hint.with_extension(ext);
     }
     let mut format = symphonia::default::get_probe()
-        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
         .map_err(|e| format!("unsupported file: {e}"))?;
     let track = format
         .default_track(TrackType::Audio)
@@ -71,7 +76,11 @@ pub fn decode_file(path: &Path) -> Result<(Vec<f32>, u32), String> {
         packet_buf.resize(buf.samples_interleaved(), 0.0);
         buf.copy_to_slice_interleaved(&mut packet_buf);
         for frame in packet_buf.chunks_exact(channels) {
-            let (l, r) = if channels == 1 { (frame[0], frame[0]) } else { (frame[0], frame[1]) };
+            let (l, r) = if channels == 1 {
+                (frame[0], frame[0])
+            } else {
+                (frame[0], frame[1])
+            };
             out.push(l);
             out.push(r);
         }
@@ -133,7 +142,8 @@ pub(crate) mod tests {
         f.write_all(&1u16.to_le_bytes()).unwrap();
         f.write_all(&channels.to_le_bytes()).unwrap();
         f.write_all(&rate.to_le_bytes()).unwrap();
-        f.write_all(&(rate * u32::from(block_align)).to_le_bytes()).unwrap();
+        f.write_all(&(rate * u32::from(block_align)).to_le_bytes())
+            .unwrap();
         f.write_all(&block_align.to_le_bytes()).unwrap();
         f.write_all(&16u16.to_le_bytes()).unwrap();
         f.write_all(b"data").unwrap();
@@ -153,7 +163,9 @@ pub(crate) mod tests {
     fn decodes_a_mono_wav_to_stereo() {
         let dir = temp_dir("decode");
         let path = dir.join("mono.wav");
-        let samples: Vec<i16> = (0..4410).map(|i| if i % 2 == 0 { 16384 } else { -16384 }).collect();
+        let samples: Vec<i16> = (0..4410)
+            .map(|i| if i % 2 == 0 { 16384 } else { -16384 })
+            .collect();
         write_wav(&path, 44_100, 1, &samples);
         let (frames, rate) = decode_file(&path).unwrap();
         assert_eq!(rate, 44_100);

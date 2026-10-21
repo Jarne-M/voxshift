@@ -30,6 +30,7 @@ impl Smoother {
         self.value
     }
 
+    #[cfg(test)]
     pub fn value(&self) -> f32 {
         self.value
     }

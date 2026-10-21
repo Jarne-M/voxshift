@@ -18,11 +18,18 @@ pub struct Changed {
     pub devices: bool,
     pub mic: bool,
     pub monitor: bool,
+    pub rescan: bool,
 }
 
 /// Dropdown of device names. Keeps showing a configured device that is not connected right now
 /// (the setting is kept for when it comes back).
-fn device_combo(ui: &mut Ui, id: &str, current: &mut String, options: &[String], none_label: &str) -> bool {
+fn device_combo(
+    ui: &mut Ui,
+    id: &str,
+    current: &mut String,
+    options: &[String],
+    none_label: &str,
+) -> bool {
     let connected = best_match(current, options).is_some();
     let shown = if current.is_empty() {
         none_label.to_string()
@@ -36,7 +43,10 @@ fn device_combo(ui: &mut Ui, id: &str, current: &mut String, options: &[String],
         .width(ui.available_width().min(320.0))
         .selected_text(shown)
         .show_ui(ui, |ui| {
-            if ui.selectable_label(current.is_empty(), none_label).clicked() {
+            if ui
+                .selectable_label(current.is_empty(), none_label)
+                .clicked()
+            {
                 changed |= !current.is_empty();
                 current.clear();
             }
@@ -92,8 +102,19 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, status: &DeviceStatus, shared: &Shar
     }
 
     card(ui, |ui| {
-        ui.heading("Virtual mic (output)");
-        ui.label(RichText::new("Normally \"CABLE Input\". Apps then use \"CABLE Output\" as their mic.").small());
+        ui.horizontal(|ui| {
+            ui.heading("Virtual mic (output)");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ch.rescan |= ui
+                    .small_button("Rescan")
+                    .on_hover_text("Devices are rescanned every 1.5 s anyway; this does it now")
+                    .clicked();
+            });
+        });
+        ui.label(
+            RichText::new("Normally \"CABLE Input\". Apps then use \"CABLE Output\" as their mic.")
+                .small(),
+        );
         ch.devices |= device_combo(ui, "out_dev", &mut d.output, &status.outputs, "(none)");
         state_line(ui, &status.output);
     });
@@ -103,13 +124,21 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, status: &DeviceStatus, shared: &Shar
         ui.heading("Microphones");
         for (slot, label) in [(0, "Primary mic"), (1, "Fallback mic")] {
             ui.label(RichText::new(label).strong());
-            let name = if slot == 0 { &mut d.primary } else { &mut d.fallback };
+            let name = if slot == 0 {
+                &mut d.primary
+            } else {
+                &mut d.fallback
+            };
             ch.devices |= device_combo(ui, label, name, &status.inputs, "(none)");
             ui.horizontal(|ui| {
                 let level = shared.mic_level[slot].get();
                 let marker = (slot == 0 && cfg.mic.silence_detect).then_some(cfg.mic.silence_db);
                 level_bar(ui, level, 140.0, marker);
-                ui.label(RichText::new(format!("{:>4.0} dB", to_db(level))).monospace().small());
+                ui.label(
+                    RichText::new(format!("{:>4.0} dB", to_db(level)))
+                        .monospace()
+                        .small(),
+                );
                 state_line(ui, &status.mics[slot]);
             });
             ui.add_space(4.0);
@@ -125,10 +154,16 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, status: &DeviceStatus, shared: &Shar
             }
         });
         ch.mic |= ui
-            .checkbox(&mut cfg.mic.switch_back, "Switch back to the primary automatically")
+            .checkbox(
+                &mut cfg.mic.switch_back,
+                "Switch back to the primary automatically",
+            )
             .changed();
         ch.mic |= ui
-            .checkbox(&mut cfg.mic.silence_detect, "Treat a silent primary as unplugged")
+            .checkbox(
+                &mut cfg.mic.silence_detect,
+                "Treat a silent primary as unplugged",
+            )
             .on_hover_text(
                 "Headsets with a detachable mic often stay listed when the mic is pulled out, \
                  and just deliver silence. With this on, a primary that stays below the \
@@ -139,11 +174,21 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, status: &DeviceStatus, shared: &Shar
             ui.horizontal(|ui| {
                 ui.label("after");
                 ch.mic |= ui
-                    .add(egui::DragValue::new(&mut cfg.mic.silence_secs).range(1.0..=60.0).suffix(" s").speed(0.1))
+                    .add(
+                        egui::DragValue::new(&mut cfg.mic.silence_secs)
+                            .range(1.0..=60.0)
+                            .suffix(" s")
+                            .speed(0.1),
+                    )
                     .changed();
                 ui.label("below");
                 ch.mic |= ui
-                    .add(egui::DragValue::new(&mut cfg.mic.silence_db).range(-100.0..=-30.0).suffix(" dB").speed(0.5))
+                    .add(
+                        egui::DragValue::new(&mut cfg.mic.silence_db)
+                            .range(-100.0..=-30.0)
+                            .suffix(" dB")
+                            .speed(0.5),
+                    )
                     .changed();
             });
             ui.label(
@@ -179,12 +224,22 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, status: &DeviceStatus, shared: &Shar
         ui.heading("Latency");
         ui.horizontal(|ui| {
             ui.label("Buffer");
-            let label = |n: u32| if n == 0 { "device default".to_string() } else { format!("{n} frames") };
+            let label = |n: u32| {
+                if n == 0 {
+                    "device default".to_string()
+                } else {
+                    format!("{n} frames")
+                }
+            };
             egui::ComboBox::from_id_salt("buffer")
                 .selected_text(label(d.buffer_frames))
                 .show_ui(ui, |ui| {
                     for n in BUFFER_CHOICES {
-                        if ui.selectable_label(d.buffer_frames == n, label(n)).clicked() && d.buffer_frames != n {
+                        if ui
+                            .selectable_label(d.buffer_frames == n, label(n))
+                            .clicked()
+                            && d.buffer_frames != n
+                        {
                             d.buffer_frames = n;
                             ch.devices = true;
                         }
@@ -194,7 +249,9 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, status: &DeviceStatus, shared: &Shar
         match status.latency_ms {
             Some(ms) => {
                 let color = if ms <= 30.0 { ON } else { WARN };
-                ui.label(RichText::new(format!("Estimated mic -> virtual mic: {ms:.0} ms")).color(color));
+                ui.label(
+                    RichText::new(format!("Estimated mic -> virtual mic: {ms:.0} ms")).color(color),
+                );
             }
             None => {
                 ui.label("Estimated latency: - (no mic running)");

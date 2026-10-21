@@ -50,7 +50,16 @@ impl PitchShifter {
             window,
             search,
             match_len,
-            heads: [Head { delay: mid, age: 0.0 }, Head { delay: mid, age: 0.5 }],
+            heads: [
+                Head {
+                    delay: mid,
+                    age: 0.0,
+                },
+                Head {
+                    delay: mid,
+                    age: 0.5,
+                },
+            ],
         }
     }
 
@@ -154,7 +163,10 @@ pub(crate) mod tests {
     /// Dominant frequency by counting rising zero crossings over the second half.
     pub fn frequency(signal: &[f32], fs: f32) -> f32 {
         let tail = &signal[signal.len() / 2..];
-        let crossings = tail.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+        let crossings = tail
+            .windows(2)
+            .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+            .count();
         crossings as f32 * fs / tail.len() as f32
     }
 
@@ -173,7 +185,10 @@ pub(crate) mod tests {
             for semis in [12.0, -12.0, 7.0, -5.0, 3.0] {
                 let want = freq * semitones_to_ratio(semis);
                 let f = frequency(&shifted(freq, semis), 48_000.0);
-                assert!((f - want).abs() / want < 0.015, "{freq} Hz {semis} st: {f} Hz, want {want}");
+                assert!(
+                    (f - want).abs() / want < 0.015,
+                    "{freq} Hz {semis} st: {f} Hz, want {want}"
+                );
             }
         }
     }

@@ -52,7 +52,6 @@ pub fn is_fatal(kind: ErrorKind) -> bool {
 pub struct Opened {
     pub stream: Stream,
     pub rate: u32,
-    pub channels: u16,
     /// Frames per device callback (best estimate).
     pub period: u32,
     pub health: Arc<StreamHealth>,
@@ -67,10 +66,10 @@ fn config_for(supported: &SupportedStreamConfig, buffer: BufferSize) -> StreamCo
 }
 
 fn period_estimate(stream: &Stream, supported: &SupportedStreamConfig, buffer: BufferSize) -> u32 {
-    if let Ok(n) = stream.buffer_size() {
-        if n > 0 {
-            return n;
-        }
+    if let Ok(n) = stream.buffer_size()
+        && n > 0
+    {
+        return n;
     }
     match (buffer, supported.buffer_size()) {
         (BufferSize::Fixed(n), _) => n,
@@ -120,7 +119,6 @@ pub fn open_input(
         Opened {
             stream,
             rate: config.sample_rate,
-            channels: config.channels,
             period,
             health,
         },
@@ -137,7 +135,11 @@ struct InputCtx {
     health: Arc<StreamHealth>,
 }
 
-fn build_input<T>(device: &Device, config: StreamConfig, mut ctx: InputCtx) -> Result<Stream, cpal::Error>
+fn build_input<T>(
+    device: &Device,
+    config: StreamConfig,
+    mut ctx: InputCtx,
+) -> Result<Stream, cpal::Error>
 where
     T: SizedSample,
     f32: FromSample<T>,
@@ -169,15 +171,6 @@ where
 }
 
 /// Opens an output stream that pulls blocks from `source`.
-pub fn open_output<S: BlockSource + 'static>(
-    device: &Device,
-    buffer: BufferSize,
-    source: S,
-) -> Result<Opened, String> {
-    let supported = device.default_output_config().map_err(err_string)?;
-    open_output_with(device, &supported, buffer, source)
-}
-
 pub fn open_output_with<S: BlockSource + 'static>(
     device: &Device,
     supported: &SupportedStreamConfig,
@@ -203,7 +196,6 @@ pub fn open_output_with<S: BlockSource + 'static>(
     Ok(Opened {
         stream,
         rate: config.sample_rate,
-        channels: config.channels,
         period,
         health,
     })

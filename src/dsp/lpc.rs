@@ -54,11 +54,11 @@ impl Whitener {
     pub fn process(&mut self, x: f32, k: &[f32; ORDER]) -> f32 {
         let mut f = x;
         let mut b_in = x; // b_0[n]
-        for i in 0..ORDER {
-            let b_prev = self.b[i]; // b_i[n-1]
-            self.b[i] = b_in;
-            let f_next = f + k[i] * b_prev;
-            b_in = b_prev + k[i] * f;
+        for (b, &ki) in self.b.iter_mut().zip(k.iter()) {
+            let b_prev = *b; // b_i[n-1]
+            *b = b_in;
+            let f_next = f + ki * b_prev;
+            b_in = b_prev + ki * f;
             f = f_next;
         }
         f
@@ -153,8 +153,9 @@ impl Lpc {
         }
         if r[0] < 1e-9 {
             // Silence: glide toward a flat (neutral) filter.
-            for i in 0..ORDER {
-                self.k_step[i] = -self.k[i] / self.hop as f32;
+            let hop = self.hop as f32;
+            for (step, k) in self.k_step.iter_mut().zip(self.k) {
+                *step = -k / hop;
             }
             return;
         }
@@ -169,8 +170,9 @@ impl Lpc {
         }
         let mut target = [0.0; ORDER];
         levinson(&r, &mut target);
-        for i in 0..ORDER {
-            self.k_step[i] = (target[i] - self.k[i]) / self.hop as f32;
+        let hop = self.hop as f32;
+        for ((step, t), k) in self.k_step.iter_mut().zip(target).zip(self.k) {
+            *step = (t - k) / hop;
         }
     }
 

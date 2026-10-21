@@ -9,12 +9,35 @@ const SECTIONS: [(&str, Option<P>, &[P]); 9] = [
     ("Gain", None, &[P::InputGain, P::OutputGain, P::DryWet]),
     ("Noise gate", Some(P::GateOn), &[P::GateThreshold]),
     ("Pitch", Some(P::PitchOn), &[P::PitchSemis, P::PitchFormant]),
-    ("Tone", Some(P::EqOn), &[P::LowCut, P::HighCut, P::LowGain, P::MidGain, P::MidFreq, P::HighGain]),
+    (
+        "Tone",
+        Some(P::EqOn),
+        &[
+            P::LowCut,
+            P::HighCut,
+            P::LowGain,
+            P::MidGain,
+            P::MidFreq,
+            P::HighGain,
+        ],
+    ),
     ("Distortion", Some(P::DistOn), &[P::DistDrive, P::DistMix]),
     ("Robot", Some(P::RobotOn), &[P::RobotFreq, P::RobotMix]),
-    ("Chorus", Some(P::ChorusOn), &[P::ChorusRate, P::ChorusDepth, P::ChorusMix]),
-    ("Echo", Some(P::EchoOn), &[P::EchoTime, P::EchoFeedback, P::EchoMix]),
-    ("Reverb", Some(P::ReverbOn), &[P::ReverbSize, P::ReverbDamping, P::ReverbMix]),
+    (
+        "Chorus",
+        Some(P::ChorusOn),
+        &[P::ChorusRate, P::ChorusDepth, P::ChorusMix],
+    ),
+    (
+        "Echo",
+        Some(P::EchoOn),
+        &[P::EchoTime, P::EchoFeedback, P::EchoMix],
+    ),
+    (
+        "Reverb",
+        Some(P::ReverbOn),
+        &[P::ReverbSize, P::ReverbDamping, P::ReverbMix],
+    ),
 ];
 
 /// One slider (or checkbox for toggles). Double-click resets to the default.
@@ -27,7 +50,13 @@ fn control(ui: &mut Ui, fx: &mut Snapshot, id: P) -> bool {
         v = if on { 1.0 } else { 0.0 };
         r.changed()
     } else {
-        let decimals = if info.max - info.min <= 2.0 { 2 } else if info.unit == "st" { 1 } else { 0 };
+        let decimals = if info.max - info.min <= 2.0 {
+            2
+        } else if info.unit == "st" {
+            1
+        } else {
+            0
+        };
         let mut slider = egui::Slider::new(&mut v, info.min..=info.max)
             .text(info.label)
             .fixed_decimals(decimals)
@@ -55,7 +84,11 @@ fn section(ui: &mut Ui, fx: &mut Snapshot, title: &str, toggle: Option<P>, contr
     card(ui, |ui| {
         ui.horizontal(|ui| {
             let on = toggle.is_none_or(|t| fx.on(t));
-            let color = if on { ACCENT } else { ui.visuals().weak_text_color() };
+            let color = if on {
+                ACCENT
+            } else {
+                ui.visuals().weak_text_color()
+            };
             ui.label(RichText::new(title).heading().color(color));
             if let Some(t) = toggle {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

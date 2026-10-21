@@ -40,7 +40,8 @@ impl Hotkey {
     }
 
     pub fn same_keys(&self, o: &Hotkey) -> bool {
-        (self.vk, self.ctrl, self.shift, self.alt, self.win) == (o.vk, o.ctrl, o.shift, o.alt, o.win)
+        (self.vk, self.ctrl, self.shift, self.alt, self.win)
+            == (o.vk, o.ctrl, o.shift, o.alt, o.win)
     }
 }
 
@@ -80,7 +81,12 @@ impl KeyTracker {
             return None;
         }
         let mut label = String::new();
-        for (on, text) in [(k.ctrl, "Ctrl+"), (k.shift, "Shift+"), (k.alt, "Alt+"), (k.win, "Win+")] {
+        for (on, text) in [
+            (k.ctrl, "Ctrl+"),
+            (k.shift, "Shift+"),
+            (k.alt, "Alt+"),
+            (k.win, "Win+"),
+        ] {
             if on {
                 label.push_str(text);
             }
@@ -135,7 +141,9 @@ impl HotkeyService {
                     let mut capturing = cap.lock().unwrap_or_else(|e| e.into_inner());
                     if *capturing {
                         *capturing = false;
-                        let msg = if key.vk == VK_ESCAPE && !(key.ctrl || key.shift || key.alt || key.win) {
+                        let msg = if key.vk == VK_ESCAPE
+                            && !(key.ctrl || key.shift || key.alt || key.win)
+                        {
                             Captured::Cancelled
                         } else {
                             Captured::Key(key)
@@ -144,7 +152,10 @@ impl HotkeyService {
                         continue;
                     }
                     drop(capturing);
-                    board.lock().unwrap_or_else(|e| e.into_inner()).hotkey_pressed(&key);
+                    board
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .hotkey_pressed(&key);
                 }
             })
             .ok();
@@ -196,9 +207,9 @@ mod win {
     use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyNameTextW};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, PM_NOREMOVE, PeekMessageW,
-        PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN, WM_QUIT,
-        WM_SYSKEYDOWN, WM_USER,
+        CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, PM_NOREMOVE,
+        PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+        WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN, WM_USER,
     };
 
     /// The hook procedure has no user data pointer, so its sender lives in a static.
@@ -225,10 +236,10 @@ mod win {
                 alt: held(0x12),
                 win: held(0x5B) || held(0x5C),
             };
-            if let Ok(guard) = SENDER.try_lock() {
-                if let Some(tx) = guard.as_ref() {
-                    let _ = tx.send(key);
-                }
+            if let Ok(guard) = SENDER.try_lock()
+                && let Some(tx) = guard.as_ref()
+            {
+                let _ = tx.send(key);
             }
         }
         // Always pass the key on: the focused app (game) still gets it.
@@ -266,7 +277,13 @@ mod win {
                     }
                     // Make sure this thread has a message queue before anyone posts to it.
                     let mut msg: MSG = std::mem::zeroed();
-                    PeekMessageW(&mut msg, std::ptr::null_mut(), WM_USER, WM_USER, PM_NOREMOVE);
+                    PeekMessageW(
+                        &mut msg,
+                        std::ptr::null_mut(),
+                        WM_USER,
+                        WM_USER,
+                        PM_NOREMOVE,
+                    );
                     let _ = id_tx.send(Some(GetCurrentThreadId()));
                     // The hook procedure runs inside this message loop.
                     while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
@@ -327,7 +344,10 @@ mod tests {
         assert!(hk.ctrl && hk.vk == 0x74);
         assert!(t.feed(key(0x74, true, true), name).is_none(), "auto-repeat");
         t.feed(key(0x74, false, true), name);
-        assert!(t.feed(key(0x74, true, false), name).is_some(), "pressed again");
+        assert!(
+            t.feed(key(0x74, true, false), name).is_some(),
+            "pressed again"
+        );
     }
 
     #[cfg(windows)]

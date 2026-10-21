@@ -23,7 +23,14 @@ pub struct Tone {
 impl Tone {
     pub fn new(fs: f32) -> Self {
         let init = |id: P| id.info().default;
-        let ids = [P::LowCut, P::HighCut, P::LowGain, P::MidGain, P::MidFreq, P::HighGain];
+        let ids = [
+            P::LowCut,
+            P::HighCut,
+            P::LowGain,
+            P::MidGain,
+            P::MidFreq,
+            P::HighGain,
+        ];
         let mut t = Self {
             fs,
             filters: [Biquad::default(); 7],
@@ -51,8 +58,15 @@ impl Tone {
     }
 
     pub fn process(&mut self, block: &mut Block, p: &Snapshot) {
-        let targets = [P::LowCut, P::HighCut, P::LowGain, P::MidGain, P::MidFreq, P::HighGain]
-            .map(|id| p.get(id));
+        let targets = [
+            P::LowCut,
+            P::HighCut,
+            P::LowGain,
+            P::MidGain,
+            P::MidFreq,
+            P::HighGain,
+        ]
+        .map(|id| p.get(id));
         let mut v = [0.0; 6];
         for i in 0..6 {
             v[i] = self.smooth[i].next_n(targets[i], BLOCK);

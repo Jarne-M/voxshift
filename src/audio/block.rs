@@ -59,7 +59,7 @@ mod tests {
     struct Counter(f32);
     impl BlockSource for Counter {
         fn render(&mut self, out: &mut StereoBlock) {
-            for f in out.chunks_exact_mut(2) {
+            for f in out.as_chunks_mut::<2>().0 {
                 f[0] = self.0;
                 f[1] = -self.0;
                 self.0 += 1.0;
@@ -74,7 +74,7 @@ mod tests {
         for len in [441, 7, 1000, 64] {
             let mut buf = vec![0f32; len * 2];
             a.fill(&mut buf, 2);
-            all.extend(buf.chunks_exact(2).map(|f| f[0]));
+            all.extend(buf.as_chunks::<2>().0.iter().map(|f| f[0]));
         }
         for (i, v) in all.iter().enumerate() {
             assert_eq!(*v, i as f32);

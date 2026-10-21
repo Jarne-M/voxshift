@@ -78,6 +78,7 @@ impl SilenceDetector {
         self.silent
     }
 
+    #[cfg(test)]
     pub fn is_silent(&self) -> bool {
         self.silent
     }
@@ -192,10 +193,6 @@ impl MicSelector {
     pub fn reset_silence(&mut self) {
         self.silence.reset();
     }
-
-    pub fn active(&self) -> ActiveMic {
-        self.active
-    }
 }
 
 #[cfg(test)]
@@ -205,7 +202,13 @@ mod tests {
 
     /// Feeds `secs` of identical ticks (50 ms, like the device manager) and returns the last
     /// selection plus how many times the mic changed.
-    fn run(sel: &mut MicSelector, s: &MicSettings, running: [bool; 2], db: f32, secs: f32) -> (Selection, usize) {
+    fn run(
+        sel: &mut MicSelector,
+        s: &MicSettings,
+        running: [bool; 2],
+        db: f32,
+        secs: f32,
+    ) -> (Selection, usize) {
         let mut changes = 0;
         let mut last = Option::None;
         for _ in 0..(secs / 0.05).round() as usize {
@@ -282,7 +285,10 @@ mod tests {
         let s = MicSettings::default();
         let mut sel = MicSelector::default();
         let (r, _) = run(&mut sel, &s, [true, false], -120.0, 10.0);
-        assert_eq!(r.active, Primary, "silence alone never leaves you with no mic");
+        assert_eq!(
+            r.active, Primary,
+            "silence alone never leaves you with no mic"
+        );
         assert!(r.primary_silent);
     }
 
@@ -301,14 +307,27 @@ mod tests {
         let auto = |p, f, cur| choose(MicMode::Auto, false, p, f, cur);
         assert_eq!(auto(true, true, Fallback), Fallback);
         assert_eq!(auto(true, false, Fallback), Primary);
-        assert_eq!(auto(true, true, None), Primary, "fresh start uses the primary");
+        assert_eq!(
+            auto(true, true, None),
+            Primary,
+            "fresh start uses the primary"
+        );
     }
 
     #[test]
     fn forced_modes_never_switch() {
-        assert_eq!(choose(MicMode::ForcePrimary, true, false, true, Primary), None);
-        assert_eq!(choose(MicMode::ForceFallback, true, true, true, Primary), Fallback);
-        assert_eq!(choose(MicMode::ForceFallback, true, true, false, Fallback), None);
+        assert_eq!(
+            choose(MicMode::ForcePrimary, true, false, true, Primary),
+            None
+        );
+        assert_eq!(
+            choose(MicMode::ForceFallback, true, true, true, Primary),
+            Fallback
+        );
+        assert_eq!(
+            choose(MicMode::ForceFallback, true, true, false, Fallback),
+            None
+        );
     }
 
     #[test]

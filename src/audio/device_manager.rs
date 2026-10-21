@@ -157,7 +157,10 @@ impl ManagerHandle {
     }
 
     pub fn status(&self) -> DeviceStatus {
-        self.status.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
@@ -312,7 +315,10 @@ impl Manager {
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
             let mut quit = false;
-            for cmd in first.into_iter().chain(std::iter::from_fn(|| rx.try_recv().ok())) {
+            for cmd in first
+                .into_iter()
+                .chain(std::iter::from_fn(|| rx.try_recv().ok()))
+            {
                 quit |= !self.handle(cmd);
             }
             if quit {
@@ -423,7 +429,9 @@ impl Manager {
             };
             return;
         };
-        let Some(device) = find(&self.outputs, &name).cloned() else { return };
+        let Some(device) = find(&self.outputs, &name).cloned() else {
+            return;
+        };
         match self.open_output(&device) {
             Ok((opened, garbage)) => {
                 self.output_slot.state = LinkState::Running;
@@ -448,7 +456,10 @@ impl Manager {
         }
     }
 
-    fn open_output(&mut self, device: &cpal::Device) -> Result<(Opened, Consumer<Garbage>), String> {
+    fn open_output(
+        &mut self,
+        device: &cpal::Device,
+    ) -> Result<(Opened, Consumer<Garbage>), String> {
         let supported = streams::output_config(device)?;
         let mut last_err = String::new();
         for buffer in buffer_choices(self.devices.buffer_frames) {
@@ -523,7 +534,9 @@ impl Manager {
             self.monitor.state = LinkState::Missing;
             return;
         };
-        let Some(device) = find(&self.outputs, &name).cloned() else { return };
+        let Some(device) = find(&self.outputs, &name).cloned() else {
+            return;
+        };
         match self.open_monitor(&device, out_rate, out_period) {
             Ok(opened) => {
                 self.monitor.state = LinkState::Running;
@@ -540,7 +553,12 @@ impl Manager {
         }
     }
 
-    fn open_monitor(&mut self, device: &cpal::Device, out_rate: u32, out_period: u32) -> Result<Opened, String> {
+    fn open_monitor(
+        &mut self,
+        device: &cpal::Device,
+        out_rate: u32,
+        out_period: u32,
+    ) -> Result<Opened, String> {
         let supported = streams::output_config(device)?;
         let rate = supported.sample_rate();
         let mut last_err = String::new();
@@ -575,7 +593,11 @@ impl Manager {
     // ---- mics ----
 
     fn wanted_mic(&self, slot: usize) -> &str {
-        if slot == 0 { &self.devices.primary } else { &self.devices.fallback }
+        if slot == 0 {
+            &self.devices.primary
+        } else {
+            &self.devices.fallback
+        }
     }
 
     fn check_mic(&mut self, slot: usize, now: Instant) {
@@ -615,7 +637,9 @@ impl Manager {
         if now < self.mics[slot].retry_at {
             return;
         }
-        let Some(device) = find(&self.inputs, &name).cloned() else { return };
+        let Some(device) = find(&self.inputs, &name).cloned() else {
+            return;
+        };
         match self.open_mic(slot, &device, out_rate, out_period) {
             Ok(opened) => {
                 self.mics[slot].state = LinkState::Running;
@@ -632,14 +656,23 @@ impl Manager {
         }
     }
 
-    fn open_mic(&mut self, slot: usize, device: &cpal::Device, out_rate: u32, out_period: u32) -> Result<Opened, String> {
+    fn open_mic(
+        &mut self,
+        slot: usize,
+        device: &cpal::Device,
+        out_rate: u32,
+        out_period: u32,
+    ) -> Result<Opened, String> {
         let mut last_err = String::new();
         for buffer in buffer_choices(self.devices.buffer_frames) {
             match streams::open_input(device, buffer, self.shared.clone(), slot) {
                 Ok((opened, rx)) => {
                     let target = target_fill(opened.rate, opened.period, out_rate, out_period);
                     let reader = AdaptiveReader::new(rx, 1, opened.rate, out_rate, target)?;
-                    if !self.port.send(EngineCmd::AttachMic(slot, Some(Box::new(reader)))) {
+                    if !self
+                        .port
+                        .send(EngineCmd::AttachMic(slot, Some(Box::new(reader))))
+                    {
                         return Err("engine not running".into());
                     }
                     return Ok(opened);
@@ -672,7 +705,11 @@ impl Manager {
             },
         );
         if running[0] {
-            self.mics[0].state = if sel.primary_silent { LinkState::Silent } else { LinkState::Running };
+            self.mics[0].state = if sel.primary_silent {
+                LinkState::Silent
+            } else {
+                LinkState::Running
+            };
         }
         self.reason = sel.reason;
         let new = sel.active;

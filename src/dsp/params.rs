@@ -96,39 +96,193 @@ const fn toggle(id: P, key: &'static str, default: bool) -> ParamInfo {
 use Kind::{Linear, Log};
 
 pub const PARAMS: [ParamInfo; COUNT] = [
-    p(P::InputGain, "input_gain", "Input gain", (-24.0, 24.0, 0.0), "dB", Linear),
-    p(P::OutputGain, "output_gain", "Output gain", (-24.0, 24.0, 0.0), "dB", Linear),
-    p(P::DryWet, "dry_wet", "Dry / wet", (0.0, 1.0, 1.0), "", Linear),
+    p(
+        P::InputGain,
+        "input_gain",
+        "Input gain",
+        (-24.0, 24.0, 0.0),
+        "dB",
+        Linear,
+    ),
+    p(
+        P::OutputGain,
+        "output_gain",
+        "Output gain",
+        (-24.0, 24.0, 0.0),
+        "dB",
+        Linear,
+    ),
+    p(
+        P::DryWet,
+        "dry_wet",
+        "Dry / wet",
+        (0.0, 1.0, 1.0),
+        "",
+        Linear,
+    ),
     toggle(P::GateOn, "gate_on", false),
-    p(P::GateThreshold, "gate_threshold", "Threshold", (-80.0, 0.0, -50.0), "dB", Linear),
+    p(
+        P::GateThreshold,
+        "gate_threshold",
+        "Threshold",
+        (-80.0, 0.0, -50.0),
+        "dB",
+        Linear,
+    ),
     toggle(P::PitchOn, "pitch_on", false),
-    p(P::PitchSemis, "pitch_semitones", "Pitch", (-12.0, 12.0, 0.0), "st", Linear),
-    p(P::PitchFormant, "pitch_formant", "Preserve formants", (0.0, 1.0, 0.0), "", Kind::Toggle),
+    p(
+        P::PitchSemis,
+        "pitch_semitones",
+        "Pitch",
+        (-12.0, 12.0, 0.0),
+        "st",
+        Linear,
+    ),
+    p(
+        P::PitchFormant,
+        "pitch_formant",
+        "Preserve formants",
+        (0.0, 1.0, 0.0),
+        "",
+        Kind::Toggle,
+    ),
     toggle(P::EqOn, "eq_on", false),
-    p(P::LowCut, "eq_low_cut", "Low cut", (20.0, 1000.0, 20.0), "Hz", Log),
-    p(P::HighCut, "eq_high_cut", "High cut", (1000.0, 20000.0, 20000.0), "Hz", Log),
-    p(P::LowGain, "eq_low", "Low (200 Hz)", (-15.0, 15.0, 0.0), "dB", Linear),
-    p(P::MidGain, "eq_mid", "Mid", (-15.0, 15.0, 0.0), "dB", Linear),
-    p(P::MidFreq, "eq_mid_freq", "Mid freq", (300.0, 5000.0, 1000.0), "Hz", Log),
-    p(P::HighGain, "eq_high", "High (4 kHz)", (-15.0, 15.0, 0.0), "dB", Linear),
+    p(
+        P::LowCut,
+        "eq_low_cut",
+        "Low cut",
+        (20.0, 1000.0, 20.0),
+        "Hz",
+        Log,
+    ),
+    p(
+        P::HighCut,
+        "eq_high_cut",
+        "High cut",
+        (1000.0, 20000.0, 20000.0),
+        "Hz",
+        Log,
+    ),
+    p(
+        P::LowGain,
+        "eq_low",
+        "Low (200 Hz)",
+        (-15.0, 15.0, 0.0),
+        "dB",
+        Linear,
+    ),
+    p(
+        P::MidGain,
+        "eq_mid",
+        "Mid",
+        (-15.0, 15.0, 0.0),
+        "dB",
+        Linear,
+    ),
+    p(
+        P::MidFreq,
+        "eq_mid_freq",
+        "Mid freq",
+        (300.0, 5000.0, 1000.0),
+        "Hz",
+        Log,
+    ),
+    p(
+        P::HighGain,
+        "eq_high",
+        "High (4 kHz)",
+        (-15.0, 15.0, 0.0),
+        "dB",
+        Linear,
+    ),
     toggle(P::DistOn, "dist_on", false),
-    p(P::DistDrive, "dist_drive", "Drive", (0.0, 40.0, 12.0), "dB", Linear),
+    p(
+        P::DistDrive,
+        "dist_drive",
+        "Drive",
+        (0.0, 40.0, 12.0),
+        "dB",
+        Linear,
+    ),
     p(P::DistMix, "dist_mix", "Mix", (0.0, 1.0, 1.0), "", Linear),
     toggle(P::RobotOn, "robot_on", false),
-    p(P::RobotFreq, "robot_freq", "Carrier", (20.0, 500.0, 60.0), "Hz", Log),
+    p(
+        P::RobotFreq,
+        "robot_freq",
+        "Carrier",
+        (20.0, 500.0, 60.0),
+        "Hz",
+        Log,
+    ),
     p(P::RobotMix, "robot_mix", "Mix", (0.0, 1.0, 1.0), "", Linear),
     toggle(P::ChorusOn, "chorus_on", false),
-    p(P::ChorusRate, "chorus_rate", "Rate", (0.1, 5.0, 0.8), "Hz", Log),
-    p(P::ChorusDepth, "chorus_depth", "Depth", (0.0, 10.0, 3.0), "ms", Linear),
-    p(P::ChorusMix, "chorus_mix", "Mix", (0.0, 1.0, 0.5), "", Linear),
+    p(
+        P::ChorusRate,
+        "chorus_rate",
+        "Rate",
+        (0.1, 5.0, 0.8),
+        "Hz",
+        Log,
+    ),
+    p(
+        P::ChorusDepth,
+        "chorus_depth",
+        "Depth",
+        (0.0, 10.0, 3.0),
+        "ms",
+        Linear,
+    ),
+    p(
+        P::ChorusMix,
+        "chorus_mix",
+        "Mix",
+        (0.0, 1.0, 0.5),
+        "",
+        Linear,
+    ),
     toggle(P::EchoOn, "echo_on", false),
-    p(P::EchoTime, "echo_time", "Time", (20.0, 1000.0, 250.0), "ms", Log),
-    p(P::EchoFeedback, "echo_feedback", "Feedback", (0.0, 0.9, 0.35), "", Linear),
+    p(
+        P::EchoTime,
+        "echo_time",
+        "Time",
+        (20.0, 1000.0, 250.0),
+        "ms",
+        Log,
+    ),
+    p(
+        P::EchoFeedback,
+        "echo_feedback",
+        "Feedback",
+        (0.0, 0.9, 0.35),
+        "",
+        Linear,
+    ),
     p(P::EchoMix, "echo_mix", "Mix", (0.0, 1.0, 0.3), "", Linear),
     toggle(P::ReverbOn, "reverb_on", false),
-    p(P::ReverbSize, "reverb_size", "Size", (0.0, 1.0, 0.6), "", Linear),
-    p(P::ReverbDamping, "reverb_damping", "Damping", (0.0, 1.0, 0.5), "", Linear),
-    p(P::ReverbMix, "reverb_mix", "Mix", (0.0, 1.0, 0.3), "", Linear),
+    p(
+        P::ReverbSize,
+        "reverb_size",
+        "Size",
+        (0.0, 1.0, 0.6),
+        "",
+        Linear,
+    ),
+    p(
+        P::ReverbDamping,
+        "reverb_damping",
+        "Damping",
+        (0.0, 1.0, 0.5),
+        "",
+        Linear,
+    ),
+    p(
+        P::ReverbMix,
+        "reverb_mix",
+        "Mix",
+        (0.0, 1.0, 0.3),
+        "",
+        Linear,
+    ),
 ];
 
 impl P {
@@ -139,7 +293,11 @@ impl P {
 
 impl ParamInfo {
     pub fn clamp(&self, v: f32) -> f32 {
-        if v.is_finite() { v.clamp(self.min, self.max) } else { self.default }
+        if v.is_finite() {
+            v.clamp(self.min, self.max)
+        } else {
+            self.default
+        }
     }
 }
 
@@ -170,7 +328,7 @@ impl Snapshot {
 pub type EffectSettings = BTreeMap<String, f32>;
 
 impl Snapshot {
-    pub fn to_settings(&self) -> EffectSettings {
+    pub fn to_settings(self) -> EffectSettings {
         PARAMS
             .iter()
             .map(|info| (info.key.to_string(), self.get(info.id)))
@@ -198,6 +356,7 @@ impl Default for ParamStore {
 }
 
 impl ParamStore {
+    #[cfg(test)]
     pub fn get(&self, id: P) -> f32 {
         self.0[id as usize].get()
     }
@@ -228,7 +387,11 @@ mod tests {
             assert_eq!(info.id as usize, i, "{} is out of order", info.key);
             assert!(keys.insert(info.key), "duplicate key {}", info.key);
             assert!(info.min < info.max);
-            assert!((info.min..=info.max).contains(&info.default), "{}", info.key);
+            assert!(
+                (info.min..=info.max).contains(&info.default),
+                "{}",
+                info.key
+            );
         }
     }
 

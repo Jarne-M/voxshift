@@ -48,7 +48,14 @@ impl Coeffs {
     pub fn highpass(fs: f32, f: f32, q: f32) -> Self {
         let (cos, _, alpha) = prep(fs, f, q);
         let b1 = -(1.0 + cos);
-        Self::normalized(-b1 / 2.0, b1, -b1 / 2.0, 1.0 + alpha, -2.0 * cos, 1.0 - alpha)
+        Self::normalized(
+            -b1 / 2.0,
+            b1,
+            -b1 / 2.0,
+            1.0 + alpha,
+            -2.0 * cos,
+            1.0 - alpha,
+        )
     }
 
     pub fn peaking(fs: f32, f: f32, q: f32, gain_db: f32) -> Self {
@@ -93,7 +100,8 @@ impl Coeffs {
         )
     }
 
-    /// |H| at frequency `f` (for tests and for drawing curves).
+    /// |H| at frequency `f`.
+    #[cfg(test)]
     pub fn magnitude(&self, fs: f32, f: f32) -> f32 {
         let w = 2.0 * PI * f / fs;
         // H(z) with z = e^{jw}; evaluate numerator and denominator as complex numbers.
@@ -126,7 +134,10 @@ impl Default for Biquad {
 
 impl Biquad {
     pub fn new(c: Coeffs) -> Self {
-        Self { c, ..Default::default() }
+        Self {
+            c,
+            ..Default::default()
+        }
     }
 
     #[inline]
@@ -172,7 +183,10 @@ pub(crate) mod tests {
     fn lowpass_and_highpass_cut_the_right_side() {
         let lp = Coeffs::lowpass(FS, 1000.0, 0.707);
         assert!((db(lp.magnitude(FS, 100.0))).abs() < 0.1);
-        assert!((db(lp.magnitude(FS, 1000.0)) + 3.0).abs() < 0.2, "-3 dB at cutoff");
+        assert!(
+            (db(lp.magnitude(FS, 1000.0)) + 3.0).abs() < 0.2,
+            "-3 dB at cutoff"
+        );
         assert!(db(lp.magnitude(FS, 10_000.0)) < -35.0);
         let hp = Coeffs::highpass(FS, 1000.0, 0.707);
         assert!(db(hp.magnitude(FS, 100.0)) < -35.0);
@@ -195,7 +209,10 @@ pub(crate) mod tests {
     #[test]
     fn time_domain_matches_the_magnitude_response() {
         let c = Coeffs::peaking(FS, 2000.0, 0.9, -8.0);
-        let mut f = Biquad { c, ..Default::default() };
+        let mut f = Biquad {
+            c,
+            ..Default::default()
+        };
         let measured = measure(|x| f.process(x), 2000.0);
         assert!((db(measured) - db(c.magnitude(FS, 2000.0))).abs() < 0.1);
     }

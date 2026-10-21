@@ -17,8 +17,8 @@ use crate::soundboard::decode;
 use crate::soundboard::hotkeys::{Captured, HotkeyService};
 use crate::soundboard::library::{SoundEntry, Soundboard};
 use crate::soundboard::mixer::SoundId;
-use std::path::PathBuf;
 use egui::{Color32, RichText, Ui};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
@@ -118,17 +118,18 @@ impl VoxApp {
         self.defaults_applied = true;
         let d = &mut self.cfg.devices;
         let mut changed = false;
-        if d.output.is_empty() {
-            if let Some(cable) = &self.status.cable {
-                d.output = cable.clone();
-                changed = true;
-            }
+        if d.output.is_empty()
+            && let Some(cable) = &self.status.cable
+        {
+            d.output = cable.clone();
+            changed = true;
         }
-        if d.primary.is_empty() && d.fallback.is_empty() {
-            if let Some(mic) = &self.status.default_input {
-                d.primary = mic.clone();
-                changed = true;
-            }
+        if d.primary.is_empty()
+            && d.fallback.is_empty()
+            && let Some(mic) = &self.status.default_input
+        {
+            d.primary = mic.clone();
+            changed = true;
         }
         if changed {
             self.manager.send(ManagerCmd::Devices(d.clone()));
@@ -162,7 +163,8 @@ impl VoxApp {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let ch = devices::panel(ui, &mut self.cfg, &self.status, &self.shared);
                     if ch.devices {
-                        self.manager.send(ManagerCmd::Devices(self.cfg.devices.clone()));
+                        self.manager
+                            .send(ManagerCmd::Devices(self.cfg.devices.clone()));
                     }
                     if ch.mic {
                         self.manager.send(ManagerCmd::Mic(self.cfg.mic.clone()));
@@ -170,12 +172,23 @@ impl VoxApp {
                     if ch.monitor {
                         apply_to_shared(&self.cfg, &self.shared);
                     }
+                    if ch.rescan {
+                        self.manager.send(ManagerCmd::Rescan);
+                    }
                 });
             });
         egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Effects, RichText::new("Effects").heading());
-                ui.selectable_value(&mut self.tab, Tab::Soundboard, RichText::new("Soundboard").heading());
+                ui.selectable_value(
+                    &mut self.tab,
+                    Tab::Effects,
+                    RichText::new("Effects").heading(),
+                );
+                ui.selectable_value(
+                    &mut self.tab,
+                    Tab::Soundboard,
+                    RichText::new("Soundboard").heading(),
+                );
             });
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
@@ -232,7 +245,8 @@ impl VoxApp {
             }
             A::Play(id) => {
                 if !self.sounds.lock().play(id) {
-                    self.toasts.push(ctx, "Cannot play: no virtual mic output is running");
+                    self.toasts
+                        .push(ctx, "Cannot play: no virtual mic output is running");
                 }
             }
             A::Stop(id) => self.sounds.lock().stop(id),
@@ -271,7 +285,8 @@ impl VoxApp {
     }
 
     pub fn add_sounds(&mut self, ctx: &egui::Context, files: Vec<PathBuf>) {
-        let (ok, skipped): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| decode::is_supported(p));
+        let (ok, skipped): (Vec<_>, Vec<_>) =
+            files.into_iter().partition(|p| decode::is_supported(p));
         if !ok.is_empty() {
             let mut board = self.sounds.lock();
             for p in &ok {
@@ -282,7 +297,13 @@ impl VoxApp {
             self.tab = Tab::Soundboard;
         }
         if !skipped.is_empty() {
-            self.toasts.push(ctx, format!("Skipped {} file(s): only wav, mp3, ogg and flac", skipped.len()));
+            self.toasts.push(
+                ctx,
+                format!(
+                    "Skipped {} file(s): only wav, mp3, ogg and flac",
+                    skipped.len()
+                ),
+            );
         }
     }
 
@@ -304,7 +325,10 @@ impl VoxApp {
         }
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             let screen = ctx.content_rect();
-            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop")));
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("drop"),
+            ));
             painter.rect_filled(screen, 0.0, Color32::from_black_alpha(160));
             painter.text(
                 screen.center(),
@@ -317,15 +341,25 @@ impl VoxApp {
     }
 
     fn poll_hotkey_capture(&mut self, ctx: &egui::Context) {
-        let (Some(h), Some(id)) = (&self.hotkeys, self.capturing) else { return };
-        let Some(result) = h.poll_capture() else { return };
+        let (Some(h), Some(id)) = (&self.hotkeys, self.capturing) else {
+            return;
+        };
+        let Some(result) = h.poll_capture() else {
+            return;
+        };
         self.capturing = None;
         let Captured::Key(key) = result else { return };
         let mut board = self.sounds.lock();
         let clash = board
             .hotkey_owner(&key)
             .filter(|&other| other != id)
-            .and_then(|other| board.sounds.iter().find(|s| s.id == other).map(|s| s.entry.name.clone()));
+            .and_then(|other| {
+                board
+                    .sounds
+                    .iter()
+                    .find(|s| s.id == other)
+                    .map(|s| s.entry.name.clone())
+            });
         let label = key.label.clone();
         if let Some(s) = board.get_mut(id) {
             s.entry.hotkey = Some(key);
@@ -382,11 +416,11 @@ impl VoxApp {
     }
 
     pub fn save_now(&mut self) {
-        if let Some(path) = &self.config_path {
-            if let Err(e) = config::save_to(path, &self.cfg) {
-                eprintln!("saving settings failed: {e}");
-                return;
-            }
+        if let Some(path) = &self.config_path
+            && let Err(e) = config::save_to(path, &self.cfg)
+        {
+            eprintln!("saving settings failed: {e}");
+            return;
         }
         self.saved = self.cfg.clone();
         self.changed_at = None;
@@ -406,9 +440,14 @@ impl VoxApp {
             } else {
                 ("Voice changer OFF", OFF)
             };
-            let button = egui::Button::new(RichText::new(text).size(20.0).strong().color(Color32::WHITE))
-                .fill(fill)
-                .min_size(egui::vec2(230.0, 44.0));
+            let button = egui::Button::new(
+                RichText::new(text)
+                    .size(20.0)
+                    .strong()
+                    .color(Color32::WHITE),
+            )
+            .fill(fill)
+            .min_size(egui::vec2(230.0, 44.0));
             if ui
                 .add(button)
                 .on_hover_text("Off = your clean voice passes straight through")
@@ -430,14 +469,26 @@ impl VoxApp {
         let s = &self.status;
         let device = |slot: usize| s.mics[slot].device.clone().unwrap_or_default();
         let (text, color) = match s.active {
-            ActiveMic::Primary if s.reason.is_empty() => (format!("Active: Primary mic - {}", device(0)), ON),
-            ActiveMic::Primary => (format!("Active: Primary mic ({}) - {}", s.reason, device(0)), ON),
-            ActiveMic::Fallback => (format!("Active: Fallback mic ({}) - {}", s.reason, device(1)), WARN),
-            ActiveMic::None if !s.scanned => ("Starting audio...".to_string(), OFF),
-            ActiveMic::None if s.output.device.is_none() => {
-                ("No virtual mic output selected - nothing is being sent".to_string(), BAD)
+            ActiveMic::Primary if s.reason.is_empty() => {
+                (format!("Active: Primary mic - {}", device(0)), ON)
             }
-            ActiveMic::None => ("No microphone available - sending silence, still looking...".to_string(), BAD),
+            ActiveMic::Primary => (
+                format!("Active: Primary mic ({}) - {}", s.reason, device(0)),
+                ON,
+            ),
+            ActiveMic::Fallback => (
+                format!("Active: Fallback mic ({}) - {}", s.reason, device(1)),
+                WARN,
+            ),
+            ActiveMic::None if !s.scanned => ("Starting audio...".to_string(), OFF),
+            ActiveMic::None if s.output.device.is_none() => (
+                "No virtual mic output selected - nothing is being sent".to_string(),
+                BAD,
+            ),
+            ActiveMic::None => (
+                "No microphone available - sending silence, still looking...".to_string(),
+                BAD,
+            ),
         };
         ui.label(RichText::new(text).strong().color(color));
     }
@@ -481,7 +532,10 @@ pub(crate) mod tests {
     pub fn fake_status() -> DeviceStatus {
         DeviceStatus {
             scanned: true,
-            inputs: vec!["Microphone (HyperX Cloud II Wireless)".into(), "Microphone (USB PnP Audio Device)".into()],
+            inputs: vec![
+                "Microphone (HyperX Cloud II Wireless)".into(),
+                "Microphone (USB PnP Audio Device)".into(),
+            ],
             outputs: vec!["Speakers (HyperX Cloud II Wireless)".into()],
             default_input: Some("Microphone (USB PnP Audio Device)".into()),
             cable: None,
@@ -500,13 +554,26 @@ pub(crate) mod tests {
 
     pub fn test_app() -> VoxApp {
         let shared = Arc::new(Shared::default());
-        VoxApp::with_manager(Config::default(), shared, ManagerHandle::detached(fake_status()))
+        VoxApp::with_manager(
+            Config::default(),
+            shared,
+            ManagerHandle::detached(fake_status()),
+        )
     }
 
     /// Runs one real egui frame headlessly (layout, painting and input handling).
-    pub fn frame(ctx: &egui::Context, app: &mut VoxApp, size: (f32, f32), t: f64, events: Vec<egui::Event>) {
+    pub fn frame(
+        ctx: &egui::Context,
+        app: &mut VoxApp,
+        size: (f32, f32),
+        t: f64,
+        events: Vec<egui::Event>,
+    ) {
         let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(size.0, size.1))),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(size.0, size.1),
+            )),
             time: Some(t),
             events,
             ..Default::default()
@@ -522,13 +589,21 @@ pub(crate) mod tests {
         let mut t = 0.0;
         for tab in [Tab::Effects, Tab::Soundboard] {
             app.tab = tab;
-            for size in [(920.0, 600.0), (1240.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            for size in [
+                (920.0, 600.0),
+                (1240.0, 800.0),
+                (1920.0, 1080.0),
+                (3840.0, 2160.0),
+            ] {
                 frame(&ctx, &mut app, size, t, vec![]);
                 t += 0.1;
             }
         }
         assert_eq!(app.cfg.devices.primary, "Microphone (USB PnP Audio Device)");
-        assert!(app.cfg.devices.output.is_empty(), "no CABLE: output stays unselected");
+        assert!(
+            app.cfg.devices.output.is_empty(),
+            "no CABLE: output stays unselected"
+        );
     }
 
     #[test]
@@ -540,10 +615,16 @@ pub(crate) mod tests {
         app.config_path = Some(path.clone());
         let ctx = egui::Context::default();
 
-        let robot = config::presets::builtin().into_iter().find(|p| p.name == "Robot").unwrap();
+        let robot = config::presets::builtin()
+            .into_iter()
+            .find(|p| p.name == "Robot")
+            .unwrap();
         app.apply_preset_action(&ctx, presets::Action::Apply(robot));
         assert!(app.fx.on(P::RobotOn));
-        assert!(app.shared.params.get(P::RobotOn) >= 0.5, "reaches the audio thread");
+        assert!(
+            app.shared.params.get(P::RobotOn) >= 0.5,
+            "reaches the audio thread"
+        );
         app.fx.set(P::RobotFreq, 120.0);
         app.effects_changed();
         app.apply_preset_action(&ctx, presets::Action::Save("My robot".into()));
@@ -569,7 +650,11 @@ pub(crate) mod tests {
         let ctx = egui::Context::default();
         app.add_sounds(
             &ctx,
-            vec!["C:/nope/airhorn.mp3".into(), "C:/nope/notes.txt".into(), "C:/nope/bruh.wav".into()],
+            vec![
+                "C:/nope/airhorn.mp3".into(),
+                "C:/nope/notes.txt".into(),
+                "C:/nope/bruh.wav".into(),
+            ],
         );
         assert_eq!(app.cfg.sounds.len(), 2, "the .txt is skipped");
         assert_eq!(app.tab, Tab::Soundboard);

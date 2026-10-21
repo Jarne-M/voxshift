@@ -35,13 +35,11 @@ impl Toasts {
                         .stroke(egui::Stroke::new(1.0, super::theme::ACCENT))
                         .corner_radius(6)
                         .inner_margin(egui::Margin::symmetric(12, 8))
-                        .show(ui, |ui| ui.label(egui::RichText::new(text).color(Color32::WHITE)));
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new(text).color(Color32::WHITE))
+                        });
                     ui.add_space(4.0);
                 }
             });
-    }
-
-    pub fn len(&self) -> usize {
-        self.items.len()
     }
 }

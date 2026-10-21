@@ -119,7 +119,11 @@ impl Shared {
 
 /// Converts a linear amplitude to dBFS, with silence clamped to -120 dB.
 pub fn to_db(lin: f32) -> f32 {
-    if lin <= 1e-6 { -120.0 } else { 20.0 * lin.log10() }
+    if lin <= 1e-6 {
+        -120.0
+    } else {
+        20.0 * lin.log10()
+    }
 }
 
 pub fn from_db(db: f32) -> f32 {

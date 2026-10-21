@@ -60,7 +60,10 @@ fn selftest(mode: Option<String>) {
         .unwrap_or_default();
     let mut devices = DeviceSettings {
         output,
-        primary: host.default_input_device().map(|d| d.to_string()).unwrap_or_default(),
+        primary: host
+            .default_input_device()
+            .map(|d| d.to_string())
+            .unwrap_or_default(),
         ..Default::default()
     };
     let mut mic = MicSettings {

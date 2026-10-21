@@ -30,7 +30,11 @@ impl Echo {
     }
 
     pub fn process(&mut self, block: &mut Block, p: &Snapshot) {
-        let (time, fb, mix) = (p.get(P::EchoTime), p.get(P::EchoFeedback), p.get(P::EchoMix));
+        let (time, fb, mix) = (
+            p.get(P::EchoTime),
+            p.get(P::EchoFeedback),
+            p.get(P::EchoMix),
+        );
         for s in block.iter_mut() {
             let delay = self.time.next(time) * self.fs / 1000.0;
             let wet = self.line.read(delay);
@@ -68,10 +72,17 @@ mod tests {
             e.process(&mut b, &p);
             out.extend_from_slice(&b);
         }
-        let peak_near = |center: usize| out[center - 50..center + 50].iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        let peak_near = |center: usize| {
+            out[center - 50..center + 50]
+                .iter()
+                .fold(0.0f32, |m, x| m.max(x.abs()))
+        };
         let (first, second) = (peak_near(12_000), peak_near(24_000));
         assert!(first > 0.3, "first echo {first}");
         assert!(second < first && second > 0.05, "second echo {second}");
-        assert!(out[6000..6500].iter().all(|x| x.abs() < 1e-6), "silence between");
+        assert!(
+            out[6000..6500].iter().all(|x| x.abs() < 1e-6),
+            "silence between"
+        );
     }
 }

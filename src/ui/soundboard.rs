@@ -33,7 +33,10 @@ pub struct View<'a> {
 pub fn panel(ui: &mut Ui, v: &View) -> Vec<Action> {
     let mut actions = Vec::new();
     ui.horizontal(|ui| {
-        if ui.button(RichText::new("+ Add sounds...").strong()).clicked() {
+        if ui
+            .button(RichText::new("+ Add sounds...").strong())
+            .clicked()
+        {
             actions.push(Action::AddFiles);
         }
         if ui
@@ -48,7 +51,11 @@ pub fn panel(ui: &mut Ui, v: &View) -> Vec<Action> {
         } else {
             "Turn the monitor on (left panel) to hear sounds yourself"
         };
-        if ui.checkbox(&mut mon, "Also play in my headphones").on_hover_text(tip).changed() {
+        if ui
+            .checkbox(&mut mon, "Also play in my headphones")
+            .on_hover_text(tip)
+            .changed()
+        {
             actions.push(Action::MonitorSounds(mon));
         }
     });
@@ -81,7 +88,16 @@ pub fn panel(ui: &mut Ui, v: &View) -> Vec<Action> {
                     .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
                         ui.set_width(CELL - 16.0);
-                        cell(ui, v, s.id, &s.entry.name, &s.state, s.entry.volume, s.entry.hotkey.as_ref(), &mut actions);
+                        cell(
+                            ui,
+                            v,
+                            s.id,
+                            &s.entry.name,
+                            &s.state,
+                            s.entry.volume,
+                            s.entry.hotkey.as_ref(),
+                            &mut actions,
+                        );
                     });
             });
         }
@@ -105,18 +121,33 @@ fn cell(
         LoadState::Ready(d) => (
             name.to_string(),
             true,
-            format!("{:.1} s - click to play, again to restart, right-click to stop", d.len_frames() as f32 / d.sample_rate as f32),
+            format!(
+                "{:.1} s - click to play, again to restart, right-click to stop",
+                d.len_frames() as f32 / d.sample_rate as f32
+            ),
         ),
-        LoadState::Loading => (format!("{name}\n(loading...)"), false, "Decoding...".to_string()),
+        LoadState::Loading => (
+            format!("{name}\n(loading...)"),
+            false,
+            "Decoding...".to_string(),
+        ),
         LoadState::Failed(e) => (format!("{name}\n(failed)"), false, e.clone()),
     };
-    let fill = if playing { ACCENT } else { Color32::from_gray(52) };
+    let fill = if playing {
+        ACCENT
+    } else {
+        Color32::from_gray(52)
+    };
     let button = egui::Button::new(RichText::new(text).strong().color(Color32::WHITE))
         .fill(fill)
         .min_size(vec2(ui.available_width(), 52.0))
         .wrap();
     let r = ui.add_enabled(enabled, button).on_hover_text(tip.clone());
-    let r = if enabled { r } else { r.on_disabled_hover_text(tip) };
+    let r = if enabled {
+        r
+    } else {
+        r.on_disabled_hover_text(tip)
+    };
     if r.clicked() {
         actions.push(Action::Play(id));
     }
@@ -126,7 +157,11 @@ fn cell(
 
     let mut vol = volume;
     if ui
-        .add(egui::Slider::new(&mut vol, 0.0..=1.5).show_value(false).text("vol"))
+        .add(
+            egui::Slider::new(&mut vol, 0.0..=1.5)
+                .show_value(false)
+                .text("vol"),
+        )
         .changed()
     {
         actions.push(Action::Volume(id, vol));
@@ -150,12 +185,21 @@ fn cell(
             {
                 actions.push(Action::BeginHotkey(id));
             }
-            if hotkey.is_some() && ui.small_button("x").on_hover_text("Remove hotkey").clicked() {
+            if hotkey.is_some()
+                && ui
+                    .small_button("x")
+                    .on_hover_text("Remove hotkey")
+                    .clicked()
+            {
                 actions.push(Action::ClearHotkey(id));
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("Delete").on_hover_text("Remove from the soundboard").clicked() {
+            if ui
+                .small_button("Delete")
+                .on_hover_text("Remove from the soundboard")
+                .clicked()
+            {
                 actions.push(Action::Remove(id));
             }
         });

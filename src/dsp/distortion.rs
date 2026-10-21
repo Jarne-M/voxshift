@@ -14,12 +14,10 @@ pub struct Distortion {
 
 impl Distortion {
     pub fn new(fs: f32) -> Self {
-        let mut tone = Biquad::default();
-        tone.c = Coeffs::lowpass(fs, 6500.0, 0.707);
         Self {
             drive: Smoother::new(fs, 0.03, from_db(P::DistDrive.info().default)),
             mix: Smoother::new(fs, 0.02, P::DistMix.info().default),
-            tone,
+            tone: Biquad::new(Coeffs::lowpass(fs, 6500.0, 0.707)),
         }
     }
 

@@ -104,8 +104,12 @@ impl Board {
 
     /// Starts (or restarts) a sound. False if it is not loaded or no engine is running.
     pub fn play(&self, id: SoundId) -> bool {
-        let Some(s) = self.sounds.iter().find(|s| s.id == id) else { return false };
-        let LoadState::Ready(data) = &s.state else { return false };
+        let Some(s) = self.sounds.iter().find(|s| s.id == id) else {
+            return false;
+        };
+        let LoadState::Ready(data) = &s.state else {
+            return false;
+        };
         self.port.send(EngineCmd::Sound(SoundCmd::Play {
             id,
             data: data.clone(),
@@ -125,7 +129,8 @@ impl Board {
         if let Some(s) = self.get_mut(id) {
             s.entry.volume = volume;
         }
-        self.port.send(EngineCmd::Sound(SoundCmd::SetVolume(id, volume)));
+        self.port
+            .send(EngineCmd::Sound(SoundCmd::SetVolume(id, volume)));
     }
 
     /// Plays every sound bound to this key combination; returns how many.
@@ -248,7 +253,10 @@ mod tests {
         write_wav(&good, 48_000, 1, &[1000; 4800]);
         let sb = Soundboard::new(
             Arc::new(EnginePort::default()),
-            vec![SoundEntry::from_path(good), SoundEntry::from_path(dir.join("missing.wav"))],
+            vec![
+                SoundEntry::from_path(good),
+                SoundEntry::from_path(dir.join("missing.wav")),
+            ],
         );
         wait_loaded(&sb, 2);
         let b = sb.lock();
@@ -268,7 +276,9 @@ mod tests {
         use crate::audio::shared::Shared;
         let dir = temp_dir("play");
         let path = dir.join("beep.wav");
-        let tone: Vec<i16> = (0..9600).map(|i| ((i as f32 * 0.1).sin() * 16000.0) as i16).collect();
+        let tone: Vec<i16> = (0..9600)
+            .map(|i| ((i as f32 * 0.1).sin() * 16000.0) as i16)
+            .collect();
         write_wav(&path, 48_000, 1, &tone);
 
         let shared = Arc::new(Shared::default());

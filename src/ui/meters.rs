@@ -35,7 +35,11 @@ pub fn level_bar(ui: &mut Ui, level: f32, width: f32, marker_db: Option<f32>) ->
 
 /// A small "CLIP" lamp.
 pub fn clip_lamp(ui: &mut Ui, lit: bool) -> egui::Response {
-    let color = if lit { Color32::from_rgb(230, 50, 50) } else { Color32::from_gray(50) };
+    let color = if lit {
+        Color32::from_rgb(230, 50, 50)
+    } else {
+        Color32::from_gray(50)
+    };
     let text = egui::RichText::new("CLIP").small().strong().color(if lit {
         Color32::WHITE
     } else {

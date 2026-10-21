@@ -31,7 +31,11 @@ impl Chorus {
     }
 
     pub fn process(&mut self, block: &mut Block, p: &Snapshot) {
-        let (rate, depth, mix) = (p.get(P::ChorusRate), p.get(P::ChorusDepth), p.get(P::ChorusMix));
+        let (rate, depth, mix) = (
+            p.get(P::ChorusRate),
+            p.get(P::ChorusDepth),
+            p.get(P::ChorusMix),
+        );
         let ms = self.fs / 1000.0;
         for s in block.iter_mut() {
             self.line.push(*s);
@@ -40,7 +44,9 @@ impl Chorus {
             let d = self.depth.next(depth) * ms * 0.5;
             let base = BASE_MS * ms;
             let t1 = self.line.read(base + d * (1.0 + (TAU * self.lfo).sin()));
-            let t2 = self.line.read(base + d * (1.0 + (TAU * (self.lfo + 0.5)).sin()));
+            let t2 = self
+                .line
+                .read(base + d * (1.0 + (TAU * (self.lfo + 0.5)).sin()));
             let wet = 0.5 * (t1 + t2);
             *s += (wet - *s) * self.mix.next(mix) * 0.7;
         }

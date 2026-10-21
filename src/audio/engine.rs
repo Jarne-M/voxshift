@@ -8,9 +8,9 @@
 use super::adaptive::AdaptiveReader;
 use super::block::{BLOCK, BlockSource, StereoBlock};
 use super::shared::{PeakMeter, Shared};
-use crate::dsp::{Block, VoiceProcessor};
 use crate::dsp::chain::VoiceChain;
 use crate::dsp::smooth::Ramp;
+use crate::dsp::{Block, VoiceProcessor};
 use crate::soundboard::mixer::{SoundCmd, SoundMixer, SoundRetired};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::sync::Arc;
@@ -27,7 +27,9 @@ pub enum EngineCmd {
     Sound(SoundCmd),
 }
 
-/// Things the audio thread is done with, to be dropped elsewhere.
+/// Things the audio thread is done with, to be dropped elsewhere. The payloads are never read:
+/// they only travel here so their memory is freed on the device manager thread.
+#[allow(dead_code)]
 pub enum Garbage {
     Mic(Box<AdaptiveReader>),
     Monitor(Producer<f32>),
@@ -92,10 +94,10 @@ impl Engine {
     fn apply(&mut self, cmd: EngineCmd) {
         match cmd {
             EngineCmd::AttachMic(slot, reader) => {
-                if slot < 2 {
-                    if let Some(old) = std::mem::replace(&mut self.mics[slot], reader) {
-                        self.retire(Garbage::Mic(old));
-                    }
+                if slot < 2
+                    && let Some(old) = std::mem::replace(&mut self.mics[slot], reader)
+                {
+                    self.retire(Garbage::Mic(old));
                 }
             }
             EngineCmd::AttachMonitor(tx) => {
@@ -132,10 +134,6 @@ impl Engine {
         }
         voice
     }
-
-    pub fn sample_rate(&self) -> f32 {
-        self.sample_rate
-    }
 }
 
 impl BlockSource for Engine {
@@ -153,7 +151,11 @@ impl BlockSource for Engine {
         let params = self.shared.params.snapshot();
         let voice_on = self.shared.voice_on.load(Relaxed);
         self.chain.run(&mut voice, &params, voice_on);
-        let latency = if voice_on { self.chain.latency_samples() } else { 0 };
+        let latency = if voice_on {
+            self.chain.latency_samples()
+        } else {
+            0
+        };
         self.shared
             .chain_latency_ms
             .set(latency as f32 * 1000.0 / self.sample_rate);
@@ -188,8 +190,16 @@ impl BlockSource for Engine {
 
         if let Some(tx) = &mut self.monitor {
             let vol = self.shared.monitor_volume.get();
-            let gv = if self.shared.monitor_voice.load(Relaxed) { vol } else { 0.0 };
-            let gs = if self.shared.monitor_sounds.load(Relaxed) { vol } else { 0.0 };
+            let gv = if self.shared.monitor_voice.load(Relaxed) {
+                vol
+            } else {
+                0.0
+            };
+            let gs = if self.shared.monitor_sounds.load(Relaxed) {
+                vol
+            } else {
+                0.0
+            };
             if let Ok(chunk) = tx.write_chunk_uninit(BLOCK * 2) {
                 let it = (0..BLOCK * 2).map(|j| (voice[j / 2] * gv + sfx[j] * gs).clamp(-1.0, 1.0));
                 chunk.fill_from_iter(it);
@@ -232,14 +242,19 @@ mod tests {
     }
 
     /// Runs `blocks` blocks while feeding both mics a constant, returns the left channel.
-    fn run(engine: &mut Engine, mics: &mut [Producer<f32>; 2], values: [f32; 2], blocks: usize) -> Vec<f32> {
+    fn run(
+        engine: &mut Engine,
+        mics: &mut [Producer<f32>; 2],
+        values: [f32; 2],
+        blocks: usize,
+    ) -> Vec<f32> {
         let mut out = [0.0; BLOCK * 2];
         let mut left = Vec::new();
         for _ in 0..blocks {
             feed(&mut mics[0], values[0], BLOCK);
             feed(&mut mics[1], values[1], BLOCK);
             engine.render(&mut out);
-            left.extend(out.chunks_exact(2).map(|f| f[0]));
+            left.extend(out.as_chunks::<2>().0.iter().map(|f| f[0]));
         }
         left
     }
@@ -250,8 +265,14 @@ mod tests {
         let (mut engine, mut link) = Engine::new(shared.clone(), 48_000);
         let (tx0, r0) = mic(0.5);
         let (tx1, r1) = mic(0.2);
-        link.cmds.push(EngineCmd::AttachMic(0, Some(r0))).ok().unwrap();
-        link.cmds.push(EngineCmd::AttachMic(1, Some(r1))).ok().unwrap();
+        link.cmds
+            .push(EngineCmd::AttachMic(0, Some(r0)))
+            .ok()
+            .unwrap();
+        link.cmds
+            .push(EngineCmd::AttachMic(1, Some(r1)))
+            .ok()
+            .unwrap();
         let mut txs = [tx0, tx1];
         // Pre-fill both rings so the readers are primed.
         feed(&mut txs[0], 0.5, 512);
@@ -259,12 +280,19 @@ mod tests {
 
         shared.set_active_mic(ActiveMic::Primary);
         let a = run(&mut engine, &mut txs, [0.5, 0.2], 100);
-        assert!((a.last().unwrap() - 0.5).abs() < 1e-3, "primary: {}", a.last().unwrap());
+        assert!(
+            (a.last().unwrap() - 0.5).abs() < 1e-3,
+            "primary: {}",
+            a.last().unwrap()
+        );
 
         shared.set_active_mic(ActiveMic::Fallback);
         let b = run(&mut engine, &mut txs, [0.5, 0.2], 100);
         assert!((b.last().unwrap() - 0.2).abs() < 1e-3);
-        let max_step = b.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
+        let max_step = b
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
         // 0.3 difference spread over 50 ms (2400 samples).
         assert!(max_step < 0.001, "click: step {max_step}");
 
@@ -279,10 +307,16 @@ mod tests {
         let (mut engine, mut link) = Engine::new(shared, 48_000);
         let (_tx0, r0) = mic(0.0);
         let (_tx1, r1) = mic(0.0);
-        link.cmds.push(EngineCmd::AttachMic(0, Some(r0))).ok().unwrap();
+        link.cmds
+            .push(EngineCmd::AttachMic(0, Some(r0)))
+            .ok()
+            .unwrap();
         let mut out = [0.0; BLOCK * 2];
         engine.render(&mut out);
-        link.cmds.push(EngineCmd::AttachMic(0, Some(r1))).ok().unwrap();
+        link.cmds
+            .push(EngineCmd::AttachMic(0, Some(r1)))
+            .ok()
+            .unwrap();
         link.cmds.push(EngineCmd::AttachMic(0, None)).ok().unwrap();
         engine.render(&mut out);
         let mut returned = 0;
@@ -299,7 +333,10 @@ mod tests {
         shared.params.set(crate::dsp::params::P::InputGain, 24.0);
         let (mut engine, mut link) = Engine::new(shared.clone(), 48_000);
         let (tx0, r0) = mic(0.0);
-        link.cmds.push(EngineCmd::AttachMic(0, Some(r0))).ok().unwrap();
+        link.cmds
+            .push(EngineCmd::AttachMic(0, Some(r0)))
+            .ok()
+            .unwrap();
         let (dummy, _) = mic(0.0);
         let mut txs = [tx0, dummy];
         feed(&mut txs[0], 0.9, 512);

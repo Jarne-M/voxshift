@@ -77,16 +77,8 @@ impl SoundMixer {
         }
     }
 
-    pub fn set_output_rate(&mut self, rate: u32) {
-        self.out_rate = f64::from(rate);
-    }
-
     pub fn playing(&self) -> usize {
         self.voices.iter().filter(|v| v.is_some()).count()
-    }
-
-    pub fn is_playing(&self, id: SoundId) -> bool {
-        self.voices.iter().flatten().any(|v| v.id == id && !v.stopping)
     }
 
     /// Ids of the voices playing (not fading out) per slot; 0 = empty slot.
@@ -224,7 +216,14 @@ mod tests {
     #[test]
     fn plays_to_the_end_with_fade_in_then_retires() {
         let mut m = SoundMixer::with_rate(48_000);
-        assert!(m.apply(SoundCmd::Play { id: 1, data: tone(4800, 48_000), volume: 1.0 }).is_none());
+        assert!(
+            m.apply(SoundCmd::Play {
+                id: 1,
+                data: tone(4800, 48_000),
+                volume: 1.0
+            })
+            .is_none()
+        );
         let (out, retired) = render(&mut m, 100);
         assert!(out[0].abs() < 0.01, "starts faded in");
         assert!((out[2000] - 0.5).abs() < 0.01);
@@ -235,12 +234,19 @@ mod tests {
     #[test]
     fn stop_fades_out_instead_of_cutting() {
         let mut m = SoundMixer::with_rate(48_000);
-        m.apply(SoundCmd::Play { id: 7, data: tone(48_000, 48_000), volume: 1.0 });
+        m.apply(SoundCmd::Play {
+            id: 7,
+            data: tone(48_000, 48_000),
+            volume: 1.0,
+        });
         render(&mut m, 10);
         m.apply(SoundCmd::StopAll);
         let (out, retired) = render(&mut m, 20);
-        let left: Vec<f32> = out.chunks_exact(2).map(|f| f[0]).collect();
-        let max_step = left.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
+        let left: Vec<f32> = out.as_chunks::<2>().0.iter().map(|f| f[0]).collect();
+        let max_step = left
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
         assert!(max_step < 0.01, "step {max_step}");
         assert_eq!(retired, 1);
     }
@@ -249,7 +255,11 @@ mod tests {
     fn sounds_at_other_rates_keep_their_duration() {
         let mut m = SoundMixer::with_rate(48_000);
         // One second at 24 kHz must last about one second at 48 kHz.
-        m.apply(SoundCmd::Play { id: 1, data: tone(24_000, 24_000), volume: 1.0 });
+        m.apply(SoundCmd::Play {
+            id: 1,
+            data: tone(24_000, 24_000),
+            volume: 1.0,
+        });
         let mut blocks = 0;
         while m.playing() > 0 && blocks < 2000 {
             let mut out = [0.0; BLOCK * 2];
@@ -264,13 +274,29 @@ mod tests {
     fn retrigger_restarts_and_voice_pool_steals_when_full() {
         let mut m = SoundMixer::with_rate(48_000);
         let data = tone(480_000, 48_000);
-        m.apply(SoundCmd::Play { id: 1, data: data.clone(), volume: 1.0 });
-        m.apply(SoundCmd::Play { id: 1, data: data.clone(), volume: 1.0 });
-        assert_eq!(m.playing(), 2, "old instance fades out while the new one starts");
+        m.apply(SoundCmd::Play {
+            id: 1,
+            data: data.clone(),
+            volume: 1.0,
+        });
+        m.apply(SoundCmd::Play {
+            id: 1,
+            data: data.clone(),
+            volume: 1.0,
+        });
+        assert_eq!(
+            m.playing(),
+            2,
+            "old instance fades out while the new one starts"
+        );
         render(&mut m, 20);
         assert_eq!(m.playing(), 1);
         for id in 0..(VOICES as u64 + 3) {
-            m.apply(SoundCmd::Play { id: 100 + id, data: data.clone(), volume: 0.1 });
+            m.apply(SoundCmd::Play {
+                id: 100 + id,
+                data: data.clone(),
+                volume: 0.1,
+            });
         }
         assert_eq!(m.playing(), VOICES);
     }

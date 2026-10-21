@@ -27,9 +27,25 @@ pub fn builtin() -> Vec<Preset> {
         make("Clean", &[]),
         make(
             "Deep Voice",
-            &[(PitchOn, 1.0), (PitchSemis, -5.0), (PitchFormant, 1.0), (EqOn, 1.0), (LowGain, 4.0), (HighGain, -2.0)],
+            &[
+                (PitchOn, 1.0),
+                (PitchSemis, -5.0),
+                (PitchFormant, 1.0),
+                (EqOn, 1.0),
+                (LowGain, 4.0),
+                (HighGain, -2.0),
+            ],
         ),
-        make("Chipmunk", &[(PitchOn, 1.0), (PitchSemis, 8.0), (EqOn, 1.0), (LowCut, 150.0), (HighGain, 2.0)]),
+        make(
+            "Chipmunk",
+            &[
+                (PitchOn, 1.0),
+                (PitchSemis, 8.0),
+                (EqOn, 1.0),
+                (LowCut, 150.0),
+                (HighGain, 2.0),
+            ],
+        ),
         make(
             "Robot",
             &[
@@ -138,7 +154,15 @@ mod tests {
     #[test]
     fn the_seven_requested_presets_exist_with_unique_names() {
         let all = builtin();
-        for name in ["Deep Voice", "Chipmunk", "Robot", "Cave", "Radio", "Telephone", "Demon"] {
+        for name in [
+            "Deep Voice",
+            "Chipmunk",
+            "Robot",
+            "Cave",
+            "Radio",
+            "Telephone",
+            "Demon",
+        ] {
             assert!(all.iter().any(|p| p.name == name), "{name} missing");
         }
         let mut names: Vec<_> = all.iter().map(|p| p.name.to_lowercase()).collect();

@@ -77,7 +77,11 @@ pub fn find_cable_input(outputs: &[String]) -> Option<&String> {
     outputs
         .iter()
         .find(|n| n.to_lowercase().starts_with("cable input"))
-        .or_else(|| outputs.iter().find(|n| n.to_lowercase().contains("cable input")))
+        .or_else(|| {
+            outputs
+                .iter()
+                .find(|n| n.to_lowercase().contains("cable input"))
+        })
 }
 
 #[cfg(test)]

@@ -63,7 +63,12 @@ pub fn load_from(path: &Path) -> (Config, Option<String>) {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Config::default(), None),
-        Err(e) => return (Config::default(), Some(format!("Could not read settings: {e}"))),
+        Err(e) => {
+            return (
+                Config::default(),
+                Some(format!("Could not read settings: {e}")),
+            );
+        }
     };
     match serde_json::from_str(&text) {
         Ok(cfg) => (cfg, None),
@@ -72,7 +77,10 @@ pub fn load_from(path: &Path) -> (Config, Option<String>) {
             let _ = std::fs::rename(path, &backup);
             (
                 Config::default(),
-                Some(format!("Settings file was damaged ({e}); started fresh, old file kept as {}", backup.display())),
+                Some(format!(
+                    "Settings file was damaged ({e}); started fresh, old file kept as {}",
+                    backup.display()
+                )),
             )
         }
     }
@@ -93,8 +101,8 @@ pub fn save_to(path: &Path, cfg: &Config) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::soundboard::hotkeys::Hotkey;
     use crate::soundboard::decode::tests::temp_dir;
+    use crate::soundboard::hotkeys::Hotkey;
 
     #[test]
     fn round_trips_everything() {
@@ -122,7 +130,10 @@ mod tests {
         let (loaded, warning) = load_from(&path);
         assert!(warning.is_none());
         assert_eq!(loaded, cfg);
-        assert_eq!(loaded.sounds[0].hotkey.as_ref().unwrap().label, "Ctrl+Num 1");
+        assert_eq!(
+            loaded.sounds[0].hotkey.as_ref().unwrap().label,
+            "Ctrl+Num 1"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -133,7 +144,11 @@ mod tests {
         assert_eq!(load_from(&path), (Config::default(), None));
 
         // Old or hand-edited files with missing fields load with defaults for the rest.
-        std::fs::write(&path, r#"{ "voice_on": false, "mic": { "silence_secs": 3.0 } }"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{ "voice_on": false, "mic": { "silence_secs": 3.0 } }"#,
+        )
+        .unwrap();
         let (cfg, warning) = load_from(&path);
         assert!(warning.is_none());
         assert!(!cfg.voice_on);

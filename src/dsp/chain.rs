@@ -255,7 +255,11 @@ impl VoiceProcessor for VoiceChain {
     }
 
     fn latency_samples(&self) -> usize {
-        if self.idle[Section::Pitch as usize] { 0 } else { self.pitch.latency() }
+        if self.idle[Section::Pitch as usize] {
+            0
+        } else {
+            self.pitch.latency()
+        }
     }
 }
 
@@ -286,7 +290,9 @@ mod tests {
     }
 
     fn max_step(x: &[f32]) -> f32 {
-        x.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max)
+        x.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max)
     }
 
     #[test]
@@ -302,7 +308,16 @@ mod tests {
     fn toggling_every_effect_never_clicks() {
         // A 220 Hz sine at 0.3 changes by at most ~0.009 per sample. Turning effects on and off
         // must stay in that league (pitch/robot change the waveform, so allow some headroom).
-        let toggles = [P::GateOn, P::PitchOn, P::EqOn, P::DistOn, P::RobotOn, P::ChorusOn, P::EchoOn, P::ReverbOn];
+        let toggles = [
+            P::GateOn,
+            P::PitchOn,
+            P::EqOn,
+            P::DistOn,
+            P::RobotOn,
+            P::ChorusOn,
+            P::EchoOn,
+            P::ReverbOn,
+        ];
         let out = run(3000, |n, p| {
             p.set(P::PitchSemis, -5.0);
             p.set(P::GateThreshold, -60.0);
@@ -367,7 +382,10 @@ mod tests {
                 *s = 0.3 * (2.0 * PI * 180.0 * (n * BLOCK + i) as f32 / FS).sin();
             }
             st.process(&mut b, &p);
-            assert!(b.iter().all(|x| x.abs() <= 0.3 * PEAK_LIMIT + 1e-3), "block {n}");
+            assert!(
+                b.iter().all(|x| x.abs() <= 0.3 * PEAK_LIMIT + 1e-3),
+                "block {n}"
+            );
         }
     }
 
@@ -385,7 +403,16 @@ mod tests {
         };
         let tone = |i: usize| 0.3 * (2.0 * PI * 180.0 * i as f32 / FS).sin();
         for (name, semis) in [("down", -5.0), ("up", 7.0)] {
-            for (kind, input) in [("tone", &mut (Box::new(tone) as Box<dyn FnMut(usize) -> f32>)), ("vowel", &mut (Box::new(&mut vowel) as Box<dyn FnMut(usize) -> f32>))] {
+            for (kind, input) in [
+                (
+                    "tone",
+                    &mut (Box::new(tone) as Box<dyn FnMut(usize) -> f32>),
+                ),
+                (
+                    "vowel",
+                    &mut (Box::new(&mut vowel) as Box<dyn FnMut(usize) -> f32>),
+                ),
+            ] {
                 let mut chain = VoiceChain::new(FS);
                 let mut p = Snapshot::defaults();
                 p.set(P::PitchOn, 1.0);
@@ -413,7 +440,17 @@ mod tests {
     #[test]
     fn everything_on_at_extremes_stays_finite_and_bounded() {
         let out = run(4000, |_, p| {
-            for id in [P::GateOn, P::PitchOn, P::PitchFormant, P::EqOn, P::DistOn, P::RobotOn, P::ChorusOn, P::EchoOn, P::ReverbOn] {
+            for id in [
+                P::GateOn,
+                P::PitchOn,
+                P::PitchFormant,
+                P::EqOn,
+                P::DistOn,
+                P::RobotOn,
+                P::ChorusOn,
+                P::EchoOn,
+                P::ReverbOn,
+            ] {
                 p.set(id, 1.0);
             }
             p.set(P::PitchSemis, -12.0);
@@ -437,7 +474,17 @@ mod tests {
         let blocks = (seconds * FS) as usize / BLOCK;
         let start = std::time::Instant::now();
         run(blocks, |_, p| {
-            for id in [P::GateOn, P::PitchOn, P::PitchFormant, P::EqOn, P::DistOn, P::RobotOn, P::ChorusOn, P::EchoOn, P::ReverbOn] {
+            for id in [
+                P::GateOn,
+                P::PitchOn,
+                P::PitchFormant,
+                P::EqOn,
+                P::DistOn,
+                P::RobotOn,
+                P::ChorusOn,
+                P::EchoOn,
+                P::ReverbOn,
+            ] {
                 p.set(id, 1.0);
             }
             p.set(P::PitchSemis, -7.0);

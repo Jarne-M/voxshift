@@ -57,7 +57,11 @@ impl Gate {
                 }
             }
             let target = if self.open { 1.0 } else { 0.0 };
-            let k = if target > self.gain { self.attack } else { self.release };
+            let k = if target > self.gain {
+                self.attack
+            } else {
+                self.release
+            };
             self.gain = target + (self.gain - target) * k;
             *s *= self.gain;
         }
@@ -97,7 +101,13 @@ mod tests {
         p.set(P::GateThreshold, -40.0);
         let mut g = Gate::new(48_000.0);
         assert!(run(&mut g, &p, 0.003, 200) < 1e-4, "-50 dB noise is muted");
-        assert!((run(&mut g, &p, 0.2, 200) - 0.2).abs() < 0.01, "speech passes");
-        assert!(run(&mut g, &p, 0.003, 400) < 1e-4, "closes again after the hold");
+        assert!(
+            (run(&mut g, &p, 0.2, 200) - 0.2).abs() < 0.01,
+            "speech passes"
+        );
+        assert!(
+            run(&mut g, &p, 0.003, 400) < 1e-4,
+            "closes again after the hold"
+        );
     }
 }
