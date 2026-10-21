@@ -8,7 +8,7 @@
 use super::adaptive::AdaptiveReader;
 use super::block::{BLOCK, BlockSource, StereoBlock};
 use super::shared::{PeakMeter, Shared};
-use crate::dsp::Block;
+use crate::dsp::{Block, VoiceProcessor};
 use crate::dsp::chain::VoiceChain;
 use crate::dsp::smooth::Ramp;
 use crate::soundboard::mixer::{SoundCmd, SoundMixer, SoundRetired};
@@ -153,6 +153,10 @@ impl BlockSource for Engine {
         let params = self.shared.params.snapshot();
         let voice_on = self.shared.voice_on.load(Relaxed);
         self.chain.run(&mut voice, &params, voice_on);
+        let latency = if voice_on { self.chain.latency_samples() } else { 0 };
+        self.shared
+            .chain_latency_ms
+            .set(latency as f32 * 1000.0 / self.sample_rate);
 
         let mut sfx = [0.0; BLOCK * 2];
         for done in self.sounds.mix(&mut sfx).into_iter().flatten() {

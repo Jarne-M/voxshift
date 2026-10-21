@@ -2,6 +2,7 @@
 //! the middle.
 
 pub mod devices;
+pub mod effects;
 pub mod meters;
 pub mod theme;
 pub mod toast;
@@ -20,8 +21,17 @@ use toast::Toasts;
 /// How long the clip lamp stays lit after a clip.
 const CLIP_HOLD_S: f64 = 1.5;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Effects,
+    Soundboard,
+}
+
 pub struct VoxApp {
     pub cfg: Config,
+    /// Current effect values (mirrored into the shared atomics on every change).
+    pub fx: Snapshot,
+    pub tab: Tab,
     shared: Arc<Shared>,
     manager: ManagerHandle,
     status: DeviceStatus,
@@ -50,6 +60,8 @@ impl VoxApp {
     fn with_manager(cfg: Config, shared: Arc<Shared>, manager: ManagerHandle) -> Self {
         apply_to_shared(&cfg, &shared);
         Self {
+            fx: Snapshot::from_settings(&cfg.effects),
+            tab: Tab::Effects,
             cfg,
             shared,
             manager,
@@ -124,11 +136,30 @@ impl VoxApp {
                 });
             });
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.label("Effects and soundboard follow.");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.tab, Tab::Effects, RichText::new("Effects").heading());
+                ui.selectable_value(&mut self.tab, Tab::Soundboard, RichText::new("Soundboard").heading());
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
+                Tab::Effects => {
+                    if effects::panel(ui, &mut self.fx) {
+                        self.effects_changed();
+                    }
+                }
+                Tab::Soundboard => {
+                    ui.label("Soundboard follows.");
+                }
+            });
         });
 
         self.toasts.show(&ctx);
         ctx.request_repaint_after(Duration::from_millis(33));
+    }
+
+    fn effects_changed(&mut self) {
+        self.shared.params.store(&self.fx);
+        self.cfg.effects = self.fx.to_settings();
     }
 
     fn top_bar(&mut self, ui: &mut Ui) {
@@ -249,11 +280,13 @@ pub(crate) mod tests {
         let mut app = test_app();
         let ctx = egui::Context::default();
         theme::apply(&ctx);
-        for (i, size) in [(920.0, 600.0), (1240.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)]
-            .into_iter()
-            .enumerate()
-        {
-            frame(&ctx, &mut app, size, i as f64 * 0.1, vec![]);
+        let mut t = 0.0;
+        for tab in [Tab::Effects, Tab::Soundboard] {
+            app.tab = tab;
+            for size in [(920.0, 600.0), (1240.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+                frame(&ctx, &mut app, size, t, vec![]);
+                t += 0.1;
+            }
         }
         assert_eq!(app.cfg.devices.primary, "Microphone (USB PnP Audio Device)");
         assert!(app.cfg.devices.output.is_empty(), "no CABLE: output stays unselected");

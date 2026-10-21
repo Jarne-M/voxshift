@@ -1,8 +1,19 @@
 //! Hand-written DSP. Each effect lives in its own file, works on mono blocks of
 //! [`BLOCK`](crate::audio::block::BLOCK) samples and never allocates after construction.
 
+pub mod biquad;
 pub mod chain;
+pub mod chorus;
+pub mod delay;
+pub mod distortion;
+pub mod echo;
+pub mod eq;
+pub mod gate;
+pub mod lpc;
 pub mod params;
+pub mod pitch;
+pub mod reverb;
+pub mod robot;
 pub mod smooth;
 
 use crate::audio::block::BLOCK;
