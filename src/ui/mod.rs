@@ -4,6 +4,7 @@
 pub mod devices;
 pub mod effects;
 pub mod meters;
+pub mod soundboard;
 pub mod theme;
 pub mod toast;
 
@@ -11,6 +12,11 @@ use crate::audio::device_manager::{DeviceStatus, Event, ManagerCmd, ManagerHandl
 use crate::audio::shared::{ActiveMic, Shared};
 use crate::config::Config;
 use crate::dsp::params::Snapshot;
+use crate::soundboard::decode;
+use crate::soundboard::hotkeys::{Captured, HotkeyService};
+use crate::soundboard::library::{SoundEntry, Soundboard};
+use crate::soundboard::mixer::SoundId;
+use std::path::PathBuf;
 use egui::{Color32, RichText, Ui};
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -39,6 +45,10 @@ pub struct VoxApp {
     clip_seen: u32,
     clip_until: f64,
     defaults_applied: bool,
+    sounds: Soundboard,
+    hotkeys: Option<HotkeyService>,
+    /// Sound waiting for its hotkey to be pressed.
+    capturing: Option<SoundId>,
 }
 
 /// Pushes the non-device parts of the config into the shared atomics.
@@ -54,12 +64,18 @@ impl VoxApp {
     pub fn new(cfg: Config) -> Self {
         let shared = Arc::new(Shared::default());
         let manager = ManagerHandle::spawn(shared.clone(), cfg.devices.clone(), cfg.mic.clone());
-        Self::with_manager(cfg, shared, manager)
+        let mut app = Self::with_manager(cfg, shared, manager);
+        app.hotkeys = Some(HotkeyService::start(app.sounds.board.clone()));
+        app
     }
 
     fn with_manager(cfg: Config, shared: Arc<Shared>, manager: ManagerHandle) -> Self {
         apply_to_shared(&cfg, &shared);
+        let sounds = Soundboard::new(manager.port.clone(), cfg.sounds.clone());
         Self {
+            sounds,
+            hotkeys: None,
+            capturing: None,
             fx: Snapshot::from_settings(&cfg.effects),
             tab: Tab::Effects,
             cfg,
@@ -103,6 +119,7 @@ impl VoxApp {
         let ctx = ui.ctx().clone();
         self.status = self.manager.status();
         self.first_run_defaults();
+        self.sounds.lock().set_output_rate(self.status.output.rate);
         while let Ok(ev) = self.manager.events.try_recv() {
             match ev {
                 Event::Switched { to, reason } => {
@@ -147,14 +164,151 @@ impl VoxApp {
                         self.effects_changed();
                     }
                 }
-                Tab::Soundboard => {
-                    ui.label("Soundboard follows.");
-                }
+                Tab::Soundboard => self.soundboard_tab(ui),
             });
         });
 
+        self.handle_dropped_files(&ctx);
+        self.poll_hotkey_capture(&ctx);
         self.toasts.show(&ctx);
         ctx.request_repaint_after(Duration::from_millis(33));
+    }
+
+    fn soundboard_tab(&mut self, ui: &mut Ui) {
+        let actions = {
+            let board = self.sounds.lock();
+            let view = soundboard::View {
+                board: &board,
+                shared: &self.shared,
+                capturing: self.capturing,
+                hotkeys_available: self.hotkeys.as_ref().is_some_and(|h| h.available()),
+                monitor_sounds: self.cfg.monitor_sounds,
+                monitor_on: self.cfg.devices.monitor_enabled,
+            };
+            soundboard::panel(ui, &view)
+        };
+        for a in actions {
+            self.apply_sound_action(ui.ctx(), a);
+        }
+    }
+
+    fn apply_sound_action(&mut self, ctx: &egui::Context, action: soundboard::Action) {
+        use soundboard::Action as A;
+        match action {
+            A::AddFiles => {
+                let files = rfd::FileDialog::new()
+                    .add_filter("Audio", &decode::EXTENSIONS)
+                    .pick_files()
+                    .unwrap_or_default();
+                self.add_sounds(ctx, files);
+            }
+            A::Play(id) => {
+                if !self.sounds.lock().play(id) {
+                    self.toasts.push(ctx, "Cannot play: no virtual mic output is running");
+                }
+            }
+            A::Stop(id) => self.sounds.lock().stop(id),
+            A::StopAll => self.sounds.lock().stop_all(),
+            A::Remove(id) => {
+                self.sounds.lock().remove(id);
+                self.sounds_changed();
+            }
+            A::Volume(id, v) => {
+                self.sounds.lock().set_volume(id, v);
+                self.sounds_changed();
+            }
+            A::BeginHotkey(id) => {
+                if let Some(h) = &self.hotkeys {
+                    h.begin_capture();
+                    self.capturing = Some(id);
+                }
+            }
+            A::CancelHotkey => {
+                if let Some(h) = &self.hotkeys {
+                    h.cancel_capture();
+                }
+                self.capturing = None;
+            }
+            A::ClearHotkey(id) => {
+                if let Some(s) = self.sounds.lock().get_mut(id) {
+                    s.entry.hotkey = None;
+                }
+                self.sounds_changed();
+            }
+            A::MonitorSounds(on) => {
+                self.cfg.monitor_sounds = on;
+                apply_to_shared(&self.cfg, &self.shared);
+            }
+        }
+    }
+
+    pub fn add_sounds(&mut self, ctx: &egui::Context, files: Vec<PathBuf>) {
+        let (ok, skipped): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| decode::is_supported(p));
+        if !ok.is_empty() {
+            let mut board = self.sounds.lock();
+            for p in &ok {
+                board.add(SoundEntry::from_path(p.clone()));
+            }
+            drop(board);
+            self.sounds_changed();
+            self.tab = Tab::Soundboard;
+        }
+        if !skipped.is_empty() {
+            self.toasts.push(ctx, format!("Skipped {} file(s): only wav, mp3, ogg and flac", skipped.len()));
+        }
+    }
+
+    fn sounds_changed(&mut self) {
+        self.cfg.sounds = self.sounds.lock().entries();
+    }
+
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .filter(|p| !p.as_os_str().is_empty())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            self.add_sounds(ctx, dropped);
+        }
+        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+            let screen = ctx.content_rect();
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop")));
+            painter.rect_filled(screen, 0.0, Color32::from_black_alpha(160));
+            painter.text(
+                screen.center(),
+                egui::Align2::CENTER_CENTER,
+                "Drop to add to the soundboard",
+                egui::FontId::proportional(28.0),
+                Color32::WHITE,
+            );
+        }
+    }
+
+    fn poll_hotkey_capture(&mut self, ctx: &egui::Context) {
+        let (Some(h), Some(id)) = (&self.hotkeys, self.capturing) else { return };
+        let Some(result) = h.poll_capture() else { return };
+        self.capturing = None;
+        let Captured::Key(key) = result else { return };
+        let mut board = self.sounds.lock();
+        let clash = board
+            .hotkey_owner(&key)
+            .filter(|&other| other != id)
+            .and_then(|other| board.sounds.iter().find(|s| s.id == other).map(|s| s.entry.name.clone()));
+        let label = key.label.clone();
+        if let Some(s) = board.get_mut(id) {
+            s.entry.hotkey = Some(key);
+        }
+        drop(board);
+        self.sounds_changed();
+        let msg = match clash {
+            Some(other) => format!("{label} assigned (also used by \"{other}\": both will play)"),
+            None => format!("Hotkey {label} assigned"),
+        };
+        self.toasts.push(ctx, msg);
     }
 
     fn effects_changed(&mut self) {
@@ -290,5 +444,21 @@ pub(crate) mod tests {
         }
         assert_eq!(app.cfg.devices.primary, "Microphone (USB PnP Audio Device)");
         assert!(app.cfg.devices.output.is_empty(), "no CABLE: output stays unselected");
+    }
+
+    #[test]
+    fn soundboard_tab_draws_sounds_in_every_state_and_filters_drops() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.add_sounds(
+            &ctx,
+            vec!["C:/nope/airhorn.mp3".into(), "C:/nope/notes.txt".into(), "C:/nope/bruh.wav".into()],
+        );
+        assert_eq!(app.cfg.sounds.len(), 2, "the .txt is skipped");
+        assert_eq!(app.tab, Tab::Soundboard);
+        app.capturing = Some(app.sounds.lock().sounds[0].id);
+        for (i, size) in [(920.0, 600.0), (1920.0, 1080.0)].into_iter().enumerate() {
+            frame(&ctx, &mut app, size, i as f64, vec![]);
+        }
     }
 }

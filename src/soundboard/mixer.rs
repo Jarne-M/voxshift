@@ -89,6 +89,14 @@ impl SoundMixer {
         self.voices.iter().flatten().any(|v| v.id == id && !v.stopping)
     }
 
+    /// Ids of the voices playing (not fading out) per slot; 0 = empty slot.
+    pub fn ids(&self) -> [SoundId; VOICES] {
+        std::array::from_fn(|i| match &self.voices[i] {
+            Some(v) if !v.stopping => v.id,
+            _ => 0,
+        })
+    }
+
     /// Applies a command; may return a buffer that is no longer needed.
     pub fn apply(&mut self, cmd: SoundCmd) -> Option<SoundRetired> {
         match cmd {

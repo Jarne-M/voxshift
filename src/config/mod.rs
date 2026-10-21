@@ -3,6 +3,7 @@
 use crate::audio::device_manager::DeviceSettings;
 use crate::audio::mic_select::MicSettings;
 use crate::dsp::params::EffectSettings;
+use crate::soundboard::library::SoundEntry;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -16,6 +17,7 @@ pub struct Config {
     pub monitor_sounds: bool,
     /// Current slider values.
     pub effects: EffectSettings,
+    pub sounds: Vec<SoundEntry>,
 }
 
 impl Default for Config {
@@ -28,6 +30,7 @@ impl Default for Config {
             monitor_voice: true,
             monitor_sounds: true,
             effects: EffectSettings::new(),
+            sounds: Vec::new(),
         }
     }
 }

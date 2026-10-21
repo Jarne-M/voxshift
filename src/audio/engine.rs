@@ -165,6 +165,9 @@ impl BlockSource for Engine {
         self.shared
             .sounds_playing
             .store(self.sounds.playing() as u32, Relaxed);
+        for (slot, id) in self.shared.playing_ids.iter().zip(self.sounds.ids()) {
+            slot.store(id, Relaxed);
+        }
 
         let mut out_peak = 0.0f32;
         let mut clipped = false;

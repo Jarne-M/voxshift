@@ -2,7 +2,8 @@
 //! Everything here is a plain atomic, so the audio threads never wait for a lock.
 
 use crate::dsp::params::ParamStore;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed};
+use crate::soundboard::mixer::VOICES;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering::Relaxed};
 
 /// An `f32` stored in an `AtomicU32` (bit-cast). Relaxed ordering is enough: each value
 /// is independent and a reader seeing it one block late is harmless.
@@ -77,6 +78,8 @@ pub struct Shared {
     pub monitor_sounds: AtomicBool,
     /// Number of soundboard voices playing.
     pub sounds_playing: AtomicU32,
+    /// Sound id per mixer voice (0 = free), so the GUI can highlight playing sounds.
+    pub playing_ids: [AtomicU64; VOICES],
 }
 
 impl Default for Shared {
@@ -95,11 +98,16 @@ impl Default for Shared {
             monitor_voice: AtomicBool::new(true),
             monitor_sounds: AtomicBool::new(true),
             sounds_playing: AtomicU32::new(0),
+            playing_ids: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
 }
 
 impl Shared {
+    pub fn is_playing(&self, id: u64) -> bool {
+        id != 0 && self.playing_ids.iter().any(|a| a.load(Relaxed) == id)
+    }
+
     pub fn active_mic(&self) -> ActiveMic {
         ActiveMic::from_u8(self.active_mic.load(Relaxed))
     }

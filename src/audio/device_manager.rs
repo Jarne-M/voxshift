@@ -105,7 +105,7 @@ impl EnginePort {
         guard.as_mut().is_some_and(|tx| tx.push(cmd).is_ok())
     }
 
-    fn set(&self, tx: Option<Producer<EngineCmd>>) {
+    pub(crate) fn set(&self, tx: Option<Producer<EngineCmd>>) {
         *self.0.lock().unwrap_or_else(|e| e.into_inner()) = tx;
     }
 }
