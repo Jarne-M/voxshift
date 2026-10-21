@@ -11,9 +11,18 @@ use presets::Preset;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Which page of the main area is open (remembered between runs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Tab {
+    #[default]
+    Effects,
+    Soundboard,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub tab: Tab,
     pub devices: DeviceSettings,
     pub mic: MicSettings,
     pub voice_on: bool,
@@ -31,6 +40,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            tab: Tab::Effects,
             devices: DeviceSettings::default(),
             mic: MicSettings::default(),
             voice_on: true,

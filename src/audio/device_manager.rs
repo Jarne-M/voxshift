@@ -56,6 +56,8 @@ pub enum LinkState {
     Off,
     /// Selected but not connected.
     Missing,
+    /// Connected, but can only start once the virtual mic output is running.
+    Waiting,
     Running,
     /// Running but silent for too long (primary mic only).
     Silent,
@@ -527,7 +529,7 @@ impl Manager {
             return;
         }
         let Some((out_rate, out_period)) = self.out_info() else {
-            self.monitor.state = LinkState::Missing;
+            self.monitor.state = LinkState::Waiting;
             return;
         };
         let Some(name) = best_match(&self.devices.monitor, &output_names).cloned() else {
@@ -631,7 +633,7 @@ impl Manager {
             return;
         };
         let Some((out_rate, out_period)) = self.out_info() else {
-            self.mics[slot].state = LinkState::Missing;
+            self.mics[slot].state = LinkState::Waiting;
             return;
         };
         if now < self.mics[slot].retry_at {

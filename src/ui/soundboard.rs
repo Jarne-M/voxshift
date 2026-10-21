@@ -81,7 +81,9 @@ pub fn panel(ui: &mut Ui, v: &View) -> Vec<Action> {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
         for s in &v.board.sounds {
-            ui.allocate_ui(vec2(CELL, 150.0), |ui| {
+            // Each card stacks its controls vertically inside the wrapping row.
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            ui.allocate_ui_with_layout(vec2(CELL, 150.0), layout, |ui| {
                 egui::Frame::new()
                     .fill(CARD)
                     .corner_radius(8)
@@ -177,10 +179,16 @@ fn cell(
                 actions.push(Action::CancelHotkey);
             }
         } else {
-            let label = hotkey.map_or("Set key".to_string(), |h| format!("Key: {}", h.label));
+            let (label, tip) = match hotkey {
+                Some(h) => (
+                    h.label.clone(),
+                    format!("Hotkey: {}. Click to change.", h.label),
+                ),
+                None => ("Set key".to_string(), "Assign a global hotkey".to_string()),
+            };
             if ui
                 .add_enabled(v.hotkeys_available, egui::Button::new(label).small())
-                .on_hover_text("Assign a global hotkey")
+                .on_hover_text(tip)
                 .clicked()
             {
                 actions.push(Action::BeginHotkey(id));

@@ -1,6 +1,6 @@
 //! Device selection: virtual mic, the two mics with fallback, monitor and buffer size.
 
-use super::meters::level_bar;
+use super::meters::{MIC_FLOOR_DB, level_bar};
 use super::theme::{BAD, OFF, ON, WARN, card};
 use crate::audio::device_manager::{DeviceStatus, Endpoint, LinkState};
 use crate::audio::matching::best_match;
@@ -64,6 +64,10 @@ fn state_line(ui: &mut Ui, ep: &Endpoint) {
     let (text, color) = match &ep.state {
         LinkState::Off => ("not selected".to_string(), OFF),
         LinkState::Missing => ("not connected - waiting for it".to_string(), WARN),
+        LinkState::Waiting => (
+            "connected - starts once the virtual mic output runs".to_string(),
+            OFF,
+        ),
         LinkState::Running => {
             let ms = ep.period as f32 * 1000.0 / ep.rate.max(1) as f32;
             (format!("running, {} Hz, {:.1} ms buffer", ep.rate, ms), ON)
@@ -133,14 +137,15 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, status: &DeviceStatus, shared: &Shar
             ui.horizontal(|ui| {
                 let level = shared.mic_level[slot].get();
                 let marker = (slot == 0 && cfg.mic.silence_detect).then_some(cfg.mic.silence_db);
-                level_bar(ui, level, 140.0, marker);
+                level_bar(ui, level, 140.0, MIC_FLOOR_DB, marker);
                 ui.label(
                     RichText::new(format!("{:>4.0} dB", to_db(level)))
                         .monospace()
                         .small(),
                 );
-                state_line(ui, &status.mics[slot]);
             });
+            // On its own line so long messages wrap instead of widening the panel.
+            state_line(ui, &status.mics[slot]);
             ui.add_space(4.0);
         }
         ui.separator();

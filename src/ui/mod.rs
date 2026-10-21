@@ -28,17 +28,12 @@ use toast::Toasts;
 /// How long the clip lamp stays lit after a clip.
 const CLIP_HOLD_S: f64 = 1.5;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tab {
-    Effects,
-    Soundboard,
-}
+pub use crate::config::Tab;
 
 pub struct VoxApp {
     pub cfg: Config,
     /// Current effect values (mirrored into the shared atomics on every change).
     pub fx: Snapshot,
-    pub tab: Tab,
     shared: Arc<Shared>,
     manager: ManagerHandle,
     status: DeviceStatus,
@@ -97,7 +92,6 @@ impl VoxApp {
             changed_at: None,
             startup_notice: None,
             fx: Snapshot::from_settings(&cfg.effects),
-            tab: Tab::Effects,
             cfg,
             shared,
             manager,
@@ -180,18 +174,18 @@ impl VoxApp {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(
-                    &mut self.tab,
+                    &mut self.cfg.tab,
                     Tab::Effects,
                     RichText::new("Effects").heading(),
                 );
                 ui.selectable_value(
-                    &mut self.tab,
+                    &mut self.cfg.tab,
                     Tab::Soundboard,
                     RichText::new("Soundboard").heading(),
                 );
             });
             ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
+            egui::ScrollArea::vertical().show(ui, |ui| match self.cfg.tab {
                 Tab::Effects => {
                     if let Some(a) = presets::bar(ui, &self.cfg, &self.fx, &mut self.preset_name) {
                         self.apply_preset_action(ui.ctx(), a);
@@ -294,7 +288,7 @@ impl VoxApp {
             }
             drop(board);
             self.sounds_changed();
-            self.tab = Tab::Soundboard;
+            self.cfg.tab = Tab::Soundboard;
         }
         if !skipped.is_empty() {
             self.toasts.push(
@@ -502,9 +496,10 @@ impl VoxApp {
         }
         ui.horizontal(|ui| {
             ui.label("In");
-            meters::level_bar(ui, self.shared.input_level.get(), 180.0, None);
+            let floor = meters::PROGRAM_FLOOR_DB;
+            meters::level_bar(ui, self.shared.input_level.get(), 180.0, floor, None);
             ui.label("Out");
-            meters::level_bar(ui, self.shared.output_level.get(), 180.0, None);
+            meters::level_bar(ui, self.shared.output_level.get(), 180.0, floor, None);
             meters::clip_lamp(ui, now < self.clip_until)
                 .on_hover_text("Lights when the output exceeds full scale. Lower the output gain.");
             if let Some(ms) = self.status.latency_ms {
@@ -588,7 +583,7 @@ pub(crate) mod tests {
         theme::apply(&ctx);
         let mut t = 0.0;
         for tab in [Tab::Effects, Tab::Soundboard] {
-            app.tab = tab;
+            app.cfg.tab = tab;
             for size in [
                 (920.0, 600.0),
                 (1240.0, 800.0),
@@ -657,7 +652,7 @@ pub(crate) mod tests {
             ],
         );
         assert_eq!(app.cfg.sounds.len(), 2, "the .txt is skipped");
-        assert_eq!(app.tab, Tab::Soundboard);
+        assert_eq!(app.cfg.tab, Tab::Soundboard);
         app.capturing = Some(app.sounds.lock().sounds[0].id);
         for (i, size) in [(920.0, 600.0), (1920.0, 1080.0)].into_iter().enumerate() {
             frame(&ctx, &mut app, size, i as f64, vec![]);

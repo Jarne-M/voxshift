@@ -133,7 +133,15 @@ fn main() -> eframe::Result {
         selftest(args.get(i + 1).cloned());
         return Ok(());
     }
-    let app = ui::VoxApp::new(config::config_path());
+    // `--config <file>`: use another settings file (a second profile, or testing without
+    // touching your real settings).
+    let config_path = args
+        .iter()
+        .position(|a| a == "--config")
+        .and_then(|i| args.get(i + 1))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(config::config_path);
+    let app = ui::VoxApp::new(config_path);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("VoxShift")

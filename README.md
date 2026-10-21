@@ -140,6 +140,9 @@ panel (installed with the driver) can lower its internal buffer.
 stored **by name**. If the file is ever damaged, it's moved aside as `config.broken.json` and
 VoxShift starts with defaults.
 
+`voxshift.exe --config D:\path\other.json` uses a different settings file, for example a
+second profile, or trying things without touching your normal settings.
+
 ## 8. Testing on your hardware
 
 These were checked automatically: `cargo test` (80 tests) and the self-tests below on the
