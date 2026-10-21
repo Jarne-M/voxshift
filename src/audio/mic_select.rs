@@ -126,10 +126,165 @@ pub fn choose(
     }
 }
 
+/// What the device manager knows about the mics on one tick.
+#[derive(Clone, Copy, Debug)]
+pub struct MicInputs {
+    pub primary_configured: bool,
+    /// Stream open and delivering callbacks.
+    pub running: [bool; 2],
+    pub primary_level_db: f32,
+    pub dt: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Selection {
+    pub active: ActiveMic,
+    /// Why ("primary not available"); empty when the primary is in normal use.
+    pub reason: String,
+    pub primary_silent: bool,
+    /// True on the tick the active mic changed.
+    pub changed: bool,
+}
+
+/// Silence detection + [`choose`] + the reason shown in the UI, as one testable unit.
+#[derive(Clone, Debug, Default)]
+pub struct MicSelector {
+    silence: SilenceDetector,
+    active: ActiveMic,
+}
+
+impl MicSelector {
+    pub fn update(&mut self, s: &MicSettings, m: MicInputs) -> Selection {
+        let silent = if m.running[0] {
+            self.silence.update(m.primary_level_db, m.dt, s)
+        } else {
+            self.silence.reset();
+            false
+        };
+        let primary_ok = m.running[0] && !silent;
+        let mut new = choose(s.mode, s.switch_back, primary_ok, m.running[1], self.active);
+        // A silent primary is still better than no mic when there is nothing to fall back to.
+        if new == ActiveMic::None && m.running[0] && s.mode != MicMode::ForceFallback {
+            new = ActiveMic::Primary;
+        }
+        let reason = match new {
+            ActiveMic::Primary if s.mode == MicMode::ForcePrimary => "forced",
+            ActiveMic::Primary if silent => "silent, but no fallback available",
+            ActiveMic::Primary => "",
+            ActiveMic::Fallback if s.mode == MicMode::ForceFallback => "forced",
+            ActiveMic::Fallback if !m.primary_configured => "no primary mic set",
+            ActiveMic::Fallback if silent => "primary mic is silent",
+            ActiveMic::Fallback if !m.running[0] => "primary not available",
+            ActiveMic::Fallback => "staying on fallback, switch back is off",
+            ActiveMic::None => "no microphone available",
+        };
+        let changed = new != self.active;
+        self.active = new;
+        Selection {
+            active: new,
+            reason: reason.to_string(),
+            primary_silent: silent,
+            changed,
+        }
+    }
+
+    /// Call when settings that affect detection change.
+    pub fn reset_silence(&mut self) {
+        self.silence.reset();
+    }
+
+    pub fn active(&self) -> ActiveMic {
+        self.active
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ActiveMic::*;
+
+    /// Feeds `secs` of identical ticks (50 ms, like the device manager) and returns the last
+    /// selection plus how many times the mic changed.
+    fn run(sel: &mut MicSelector, s: &MicSettings, running: [bool; 2], db: f32, secs: f32) -> (Selection, usize) {
+        let mut changes = 0;
+        let mut last = Option::None;
+        for _ in 0..(secs / 0.05).round() as usize {
+            let r = sel.update(
+                s,
+                MicInputs {
+                    primary_configured: true,
+                    running,
+                    primary_level_db: db,
+                    dt: 0.05,
+                },
+            );
+            changes += usize::from(r.changed);
+            last = Some(r);
+        }
+        (last.unwrap(), changes)
+    }
+
+    #[test]
+    fn scenario_house_with_headset_then_house_with_desk_mic() {
+        let s = MicSettings::default();
+        let mut sel = MicSelector::default();
+        // Both plugged in, talking into the headset.
+        let (r, _) = run(&mut sel, &s, [true, true], -40.0, 2.0);
+        assert_eq!(r.active, Primary);
+        assert_eq!(r.reason, "");
+
+        // Headset dongle unplugged: the device disappears.
+        let (r, changes) = run(&mut sel, &s, [false, true], -120.0, 1.0);
+        assert_eq!((r.active, changes), (Fallback, 1));
+        assert_eq!(r.reason, "primary not available");
+
+        // Plugged back in.
+        let (r, changes) = run(&mut sel, &s, [true, true], -60.0, 1.0);
+        assert_eq!((r.active, changes), (Primary, 1));
+    }
+
+    #[test]
+    fn scenario_boom_mic_pulled_out_while_headset_stays_listed() {
+        let s = MicSettings::default(); // -85 dB for 5 s
+        let mut sel = MicSelector::default();
+        run(&mut sel, &s, [true, true], -65.0, 2.0); // room noise
+        // Boom pulled: digital silence. 4 s is not enough...
+        let (r, _) = run(&mut sel, &s, [true, true], -120.0, 4.0);
+        assert_eq!(r.active, Primary);
+        // ...5 s is.
+        let (r, changes) = run(&mut sel, &s, [true, true], -120.0, 1.5);
+        assert_eq!((r.active, changes), (Fallback, 1));
+        assert!(r.primary_silent);
+        assert_eq!(r.reason, "primary mic is silent");
+        // Boom back in: the noise floor alone (well above threshold) brings it back.
+        let (r, changes) = run(&mut sel, &s, [true, true], -65.0, 0.5);
+        assert_eq!((r.active, changes), (Primary, 1));
+    }
+
+    #[test]
+    fn scenario_switch_back_off_and_nothing_available() {
+        let s = MicSettings {
+            switch_back: false,
+            ..MicSettings::default()
+        };
+        let mut sel = MicSelector::default();
+        run(&mut sel, &s, [false, true], -120.0, 0.5);
+        let (r, _) = run(&mut sel, &s, [true, true], -50.0, 3.0);
+        assert_eq!(r.active, Fallback);
+        assert_eq!(r.reason, "staying on fallback, switch back is off");
+        let (r, _) = run(&mut sel, &s, [false, false], -120.0, 0.5);
+        assert_eq!(r.active, None);
+        assert_eq!(r.reason, "no microphone available");
+    }
+
+    #[test]
+    fn primary_only_setup_keeps_a_silent_primary() {
+        let s = MicSettings::default();
+        let mut sel = MicSelector::default();
+        let (r, _) = run(&mut sel, &s, [true, false], -120.0, 10.0);
+        assert_eq!(r.active, Primary, "silence alone never leaves you with no mic");
+        assert!(r.primary_silent);
+    }
 
     #[test]
     fn auto_prefers_primary_and_falls_back() {

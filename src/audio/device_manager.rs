@@ -10,7 +10,7 @@ use super::adaptive::{AdaptiveReader, target_fill};
 use super::block::BLOCK;
 use super::engine::{Engine, EngineCmd, Garbage, MonitorSource};
 use super::matching::{best_match, find_cable_input};
-use super::mic_select::{MicMode, MicSettings, SilenceDetector, choose};
+use super::mic_select::{MicInputs, MicSelector, MicSettings};
 use super::shared::{ActiveMic, Shared, to_db};
 use super::streams::{self, Opened, StreamHealth};
 use cpal::BufferSize;
@@ -244,7 +244,7 @@ struct Manager {
     monitor: Slot,
     mics: [Slot; 2],
 
-    silence: SilenceDetector,
+    selector: MicSelector,
     active: ActiveMic,
     reason: String,
     last_tick: Instant,
@@ -296,7 +296,7 @@ impl Manager {
             output_slot: Slot::new(now),
             monitor: Slot::new(now),
             mics: [Slot::new(now), Slot::new(now)],
-            silence: SilenceDetector::default(),
+            selector: MicSelector::default(),
             active: ActiveMic::None,
             reason: String::new(),
             last_tick: now,
@@ -353,7 +353,7 @@ impl Manager {
             }
             ManagerCmd::Mic(m) => {
                 if m.silence_db != self.mic.silence_db || m.silence_secs != self.mic.silence_secs {
-                    self.silence.reset();
+                    self.selector.reset_silence();
                 }
                 self.mic = m;
             }
@@ -655,9 +655,6 @@ impl Manager {
             self.port.send(EngineCmd::AttachMic(slot, None));
         }
         self.shared.mic_level[slot].set(0.0);
-        if slot == 0 {
-            self.silence.reset();
-        }
     }
 
     // ---- which mic ----
@@ -665,31 +662,21 @@ impl Manager {
     fn select_mic(&mut self, now: Instant) {
         let dt = now.duration_since(self.last_tick).as_secs_f32().min(0.5);
         let running = [self.mics[0].live.is_some(), self.mics[1].live.is_some()];
-        let silent = if running[0] {
-            let db = to_db(self.shared.mic_level[0].get());
-            self.silence.update(db, dt, &self.mic)
-        } else {
-            self.silence.reset();
-            false
-        };
+        let sel = self.selector.update(
+            &self.mic,
+            MicInputs {
+                primary_configured: !self.devices.primary.is_empty(),
+                running,
+                primary_level_db: to_db(self.shared.mic_level[0].get()),
+                dt,
+            },
+        );
         if running[0] {
-            self.mics[0].state = if silent { LinkState::Silent } else { LinkState::Running };
+            self.mics[0].state = if sel.primary_silent { LinkState::Silent } else { LinkState::Running };
         }
-        let primary_ok = running[0] && !silent;
-        let fallback_ok = running[1];
-        let new = choose(self.mic.mode, self.mic.switch_back, primary_ok, fallback_ok, self.active);
-
-        self.reason = match new {
-            ActiveMic::Primary if self.mic.mode == MicMode::ForcePrimary => "forced".into(),
-            ActiveMic::Primary => String::new(),
-            ActiveMic::Fallback if self.mic.mode == MicMode::ForceFallback => "forced".into(),
-            ActiveMic::Fallback if self.devices.primary.is_empty() => "no primary mic set".into(),
-            ActiveMic::Fallback if silent => "primary mic is silent".into(),
-            ActiveMic::Fallback if !running[0] => "primary not available".into(),
-            ActiveMic::Fallback => "staying on fallback (switch back is off)".into(),
-            ActiveMic::None => "no microphone available".into(),
-        };
-        if new != self.active {
+        self.reason = sel.reason;
+        let new = sel.active;
+        if sel.changed {
             self.active = new;
             self.shared.set_active_mic(new);
             if now.duration_since(self.started) > STARTUP_GRACE {

@@ -31,51 +31,92 @@ fn list_devices() {
     }
 }
 
-/// `voxshift --selftest [output name]`: runs the real device manager for 8 s without a GUI and
-/// prints its status. The mic mode is "force fallback" with no fallback set, so the default mic
-/// is opened and metered but nothing audible is sent to the output.
-fn selftest(output: Option<String>) {
-    use audio::device_manager::{DeviceSettings, ManagerHandle};
+/// `voxshift --selftest`: runs the real device manager for 8 s without a GUI and prints its
+/// status. The mic mode is "force fallback" with no fallback set, so the default mic is opened
+/// and metered but nothing audible is sent to the output.
+///
+/// `voxshift --selftest switch`: primary = first input, fallback = second input, auto mode,
+/// gains at -24 dB in and out (practically inaudible). At 4 s the primary is "unplugged" (its
+/// name is changed to one that does not exist), at 8 s it comes back.
+fn selftest(mode: Option<String>) {
+    use audio::device_manager::{DeviceSettings, ManagerCmd, ManagerHandle};
     use audio::mic_select::{MicMode, MicSettings};
     use cpal::traits::HostTrait;
+    use dsp::params::P;
     use std::sync::Arc;
+    let switch = mode.as_deref() == Some("switch");
     let host = cpal::default_host();
     let outputs: Vec<String> = host
         .output_devices()
         .map(|d| d.map(|d| d.to_string()).collect())
         .unwrap_or_default();
-    let output = output
-        .or_else(|| audio::matching::find_cable_input(&outputs).cloned())
+    let inputs: Vec<String> = host
+        .input_devices()
+        .map(|d| d.map(|d| d.to_string()).collect())
+        .unwrap_or_default();
+    let output = audio::matching::find_cable_input(&outputs)
+        .cloned()
         .or_else(|| host.default_output_device().map(|d| d.to_string()))
         .unwrap_or_default();
-    let devices = DeviceSettings {
+    let mut devices = DeviceSettings {
         output,
         primary: host.default_input_device().map(|d| d.to_string()).unwrap_or_default(),
         ..Default::default()
     };
-    let mic = MicSettings {
+    let mut mic = MicSettings {
         mode: MicMode::ForceFallback,
         ..Default::default()
     };
-    println!("output: {}\nprimary: {}", devices.output, devices.primary);
     let shared = Arc::new(audio::shared::Shared::default());
-    let manager = ManagerHandle::spawn(shared.clone(), devices, mic);
-    for second in 1..=8 {
+    if switch {
+        if inputs.len() < 2 {
+            println!("need two input devices");
+            return;
+        }
+        devices.primary = inputs[0].clone();
+        devices.fallback = inputs[1].clone();
+        mic.mode = MicMode::Auto;
+        shared.params.set(P::InputGain, -24.0);
+        shared.params.set(P::OutputGain, -24.0);
+    }
+    println!(
+        "output: {}\nprimary: {}\nfallback: {}",
+        devices.output, devices.primary, devices.fallback
+    );
+    let manager = ManagerHandle::spawn(shared.clone(), devices.clone(), mic);
+    let seconds = if switch { 12 } else { 8 };
+    for second in 1..=seconds {
         std::thread::sleep(std::time::Duration::from_secs(1));
+        if switch && second == 4 {
+            println!("-- unplugging primary");
+            let mut d = devices.clone();
+            d.primary = "Microphone (Not Connected)".into();
+            manager.send(ManagerCmd::Devices(d));
+        }
+        if switch && second == 8 {
+            println!("-- primary back");
+            manager.send(ManagerCmd::Devices(devices.clone()));
+        }
         let s = manager.status();
+        let db = |i: usize| audio::shared::to_db(shared.mic_level[i].get());
         println!(
-            "{second}s output={:?} {}Hz/{} | primary={:?} {}Hz/{} level={:.0}dB fill={:.1}ms | active={:?} out={:.0}dB",
+            "{second:>2}s out={:?} {}Hz/{} | primary={:?} {:.0}dB | fallback={:?} {:.0}dB | active={:?} '{}' in={:.0}dB latency={:?}",
             s.output.state,
             s.output.rate,
             s.output.period,
             s.mics[0].state,
-            s.mics[0].rate,
-            s.mics[0].period,
-            audio::shared::to_db(shared.mic_level[0].get()),
-            shared.mic_fill_ms[0].get(),
+            db(0),
+            s.mics[1].state,
+            db(1),
             s.active,
-            audio::shared::to_db(shared.output_level.get()),
+            s.reason,
+            audio::shared::to_db(shared.input_level.get()),
+            s.latency_ms.map(|ms| ms.round()),
         );
+        while let Ok(ev) = manager.events.try_recv() {
+            let audio::device_manager::Event::Switched { to, reason } = ev;
+            println!("   event: switched to {to:?} ({reason})");
+        }
     }
 }
 
