@@ -417,6 +417,9 @@ impl VoxApp {
                 melody::Action::Restart => {
                     self.shared.melody_restart.fetch_add(1, Relaxed);
                 }
+                melody::Action::Next => {
+                    self.shared.melody_next.fetch_add(1, Relaxed);
+                }
             }
         }
     }

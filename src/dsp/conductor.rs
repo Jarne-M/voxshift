@@ -211,6 +211,13 @@ pub struct Conductor {
     centre: Option<f32>,
     fold: f32,
     melody_middle: f32,
+    /// First note's start and last note's end, in beats.
+    melody_start: f32,
+    melody_end: f32,
+    /// Tempo mode: the clock is running (it starts with your voice).
+    running: bool,
+    /// "Next note" requests not acted on yet.
+    pending_next: u32,
 }
 
 impl Conductor {
@@ -232,6 +239,10 @@ impl Conductor {
             centre: None,
             fold: 0.0,
             melody_middle: 60.0,
+            melody_start: 0.0,
+            melody_end: 0.0,
+            running: false,
+            pending_next: 0,
         }
     }
 
@@ -242,6 +253,8 @@ impl Conductor {
     /// A new melody: start from its beginning.
     pub fn set_melody(&mut self, notes: &[Note]) {
         self.melody_middle = median_key(notes);
+        self.melody_start = notes.first().map_or(0.0, |n| n.start);
+        self.melody_end = notes.iter().map(|n| n.start + n.len).fold(0.0, f32::max);
         self.restart();
     }
 
@@ -249,6 +262,13 @@ impl Conductor {
     pub fn restart(&mut self) {
         self.pos = Position::default();
         self.note_age = 0.0;
+        self.running = false;
+        self.pending_next = 0;
+    }
+
+    /// Moves on to the next note at the next frame (the "next note" hotkey).
+    pub fn next_note(&mut self) {
+        self.pending_next += 1;
     }
 
     /// Advances by one frame; returns the target pitch.
@@ -256,6 +276,9 @@ impl Conductor {
         if let Some(m) = f.detected {
             let k = (self.dt / CENTRE_S).min(1.0);
             self.centre = Some(self.centre.map_or(m, |c| c + (m - c) * k));
+        }
+        for _ in 0..std::mem::take(&mut self.pending_next) {
+            self.skip(notes, s);
         }
         match s.mode {
             Mode::ScaleSnap => {
@@ -268,9 +291,89 @@ impl Conductor {
                 Some(n as f32 + s.transpose)
             }
             Mode::PerSyllable => self.per_syllable(f, s, notes),
-            // Tempo-synced and manual stepping arrive in the next stage.
-            Mode::Tempo | Mode::Manual => None,
+            Mode::Tempo => self.tempo(f, s, notes),
+            Mode::Manual => self.manual(f, s, notes),
         }
+    }
+
+    /// The "next note" request, in whatever mode.
+    fn skip(&mut self, notes: &[Note], s: &Settings) {
+        match s.mode {
+            Mode::ScaleSnap => {}
+            Mode::PerSyllable => {
+                // Skipping is not singing: the next syllable is not "too soon" after it.
+                let age = self.note_age;
+                self.advance(notes, s);
+                self.note_age = age;
+            }
+            Mode::Manual => {
+                if self.pos.note.is_none() {
+                    self.advance(notes, s); // to the first note, then on to the second
+                }
+                self.advance(notes, s);
+            }
+            Mode::Tempo => {
+                // Jump the clock to the next note's start.
+                let next = self.pos.note.map_or(0, |i| i + 1);
+                if let Some(n) = notes.get(next) {
+                    self.running = true;
+                    self.pos.beat = n.start;
+                }
+            }
+        }
+    }
+
+    /// You sing along with the melody as it plays at its own tempo.
+    fn tempo(&mut self, f: Frame, s: &Settings, notes: &[Note]) -> Option<f32> {
+        if notes.is_empty() {
+            return None;
+        }
+        if f.detected.is_some() {
+            self.silence = 0.0;
+        } else {
+            self.silence += self.dt;
+            if self.running && s.reset_after_s > 0.0 && self.silence >= s.reset_after_s {
+                self.restart(); // wait for your voice again, from the top
+            }
+        }
+        if !self.running {
+            // Waiting: the song starts the moment you do.
+            if f.detected.is_none() || self.pos.finished {
+                return None;
+            }
+            self.running = true;
+            self.pos.beat = self.melody_start;
+        } else {
+            self.pos.beat += s.bpm / 60.0 * self.dt;
+        }
+        if self.pos.beat >= self.melody_end {
+            if s.looped {
+                self.pos.beat -= self.melody_end - self.melody_start;
+                self.pos.beat = self.pos.beat.max(self.melody_start);
+            } else {
+                self.pos.finished = true;
+                self.running = false;
+                return None;
+            }
+        }
+        // The note playing now: the last one that has started (a rest keeps the note before).
+        let now = notes.partition_point(|n| n.start <= self.pos.beat + 1e-4);
+        let current = now.checked_sub(1);
+        if current != self.pos.note {
+            self.pos.note = current;
+            self.update_fold(s);
+        }
+        f.detected?;
+        self.target(notes, s)
+    }
+
+    /// The note only changes when you ask for the next one.
+    fn manual(&mut self, f: Frame, s: &Settings, notes: &[Note]) -> Option<f32> {
+        if self.pos.note.is_none() && !self.pos.finished {
+            self.advance(notes, s);
+        }
+        f.detected?;
+        self.target(notes, s)
     }
 
     /// One syllable, one note.
@@ -663,6 +766,125 @@ mod tests {
         let mut c = Conductor::new(DT);
         c.set_melody(&n);
         assert_eq!(syllable(&mut c, &s, &n, 69.0, 0.1), Some(72.0));
+    }
+
+    /// Tempo test melody at 120 BPM: C4 D4 E4 (rest) G4, half a second per beat.
+    fn tempo_song() -> (Vec<Note>, Settings) {
+        let n = vec![
+            Note {
+                start: 0.0,
+                len: 1.0,
+                key: 60,
+            },
+            Note {
+                start: 1.0,
+                len: 1.0,
+                key: 62,
+            },
+            Note {
+                start: 2.0,
+                len: 1.0,
+                key: 64,
+            },
+            Note {
+                start: 4.0,
+                len: 1.0,
+                key: 67,
+            },
+        ];
+        let mut s = settings(Mode::Tempo);
+        s.bpm = 120.0;
+        s.looped = false;
+        (n, s)
+    }
+
+    #[test]
+    fn tempo_waits_for_your_voice_then_plays_on_in_time() {
+        let (n, s) = tempo_song();
+        let mut c = Conductor::new(DT);
+        c.set_melody(&n);
+        // Silence: the song does not start without you.
+        feed(&mut c, &s, &n, 1.0, None, 0.001);
+        assert_eq!(c.position().note, None);
+        // You start: note 1 right away, note 2 half a second later.
+        assert_eq!(feed(&mut c, &s, &n, 0.25, Some(50.0), 0.1), Some(60.0));
+        assert_eq!(feed(&mut c, &s, &n, 0.5, Some(50.0), 0.1), Some(62.0));
+        // Silent through note 3: it passes by...
+        assert_eq!(feed(&mut c, &s, &n, 0.5, None, 0.001), None);
+        assert_eq!(c.position().note, Some(2));
+        // ...the rest after it keeps note 3 (sing through it)...
+        assert_eq!(feed(&mut c, &s, &n, 0.5, Some(50.0), 0.1), Some(64.0));
+        assert!(
+            (c.position().beat - 3.5).abs() < 0.05,
+            "{}",
+            c.position().beat
+        );
+        // ...then the last note.
+        assert_eq!(feed(&mut c, &s, &n, 0.5, Some(50.0), 0.1), Some(67.0));
+        // The end (no loop): the voice is left alone.
+        assert_eq!(feed(&mut c, &s, &n, 0.3, Some(50.0), 0.1), None);
+        assert!(c.position().finished);
+    }
+
+    #[test]
+    fn tempo_loops_follows_the_tempo_and_rearms_after_silence() {
+        let (n, mut s) = tempo_song();
+        s.looped = true;
+        let mut c = Conductor::new(DT);
+        c.set_melody(&n);
+        feed(&mut c, &s, &n, 2.5, Some(50.0), 0.1); // 5 beats: the whole song
+        assert_eq!(
+            feed(&mut c, &s, &n, 0.2, Some(50.0), 0.1),
+            Some(60.0),
+            "around again"
+        );
+        // Twice the tempo: a note lasts a quarter of a second.
+        s.bpm = 240.0;
+        assert_eq!(feed(&mut c, &s, &n, 0.25, Some(50.0), 0.1), Some(62.0));
+        // Silent longer than "back to start after silence": waits for you, from the top.
+        s.reset_after_s = 1.0;
+        feed(&mut c, &s, &n, 1.2, None, 0.001);
+        assert_eq!(c.position(), Position::default());
+        assert_eq!(feed(&mut c, &s, &n, 0.1, Some(50.0), 0.1), Some(60.0));
+    }
+
+    #[test]
+    fn manual_mode_moves_only_when_asked_and_next_works_everywhere() {
+        let n = notes(&[60, 62, 64]);
+        let mut s = settings(Mode::Manual);
+        s.looped = false;
+        let mut c = Conductor::new(DT);
+        // Syllables do not move it: you stay on the first note.
+        for _ in 0..3 {
+            assert_eq!(syllable(&mut c, &s, &n, 50.0, 0.1), Some(60.0));
+        }
+        c.next_note();
+        assert_eq!(syllable(&mut c, &s, &n, 50.0, 0.1), Some(62.0));
+        c.next_note();
+        c.next_note(); // past the end
+        assert_eq!(syllable(&mut c, &s, &n, 50.0, 0.1), None);
+        assert!(c.position().finished);
+        c.restart();
+        assert_eq!(syllable(&mut c, &s, &n, 50.0, 0.1), Some(60.0));
+
+        // Per syllable: "next" skips a note.
+        let s = settings(Mode::PerSyllable);
+        let mut c = Conductor::new(DT);
+        syllable(&mut c, &s, &n, 50.0, 0.1); // note 0
+        c.next_note(); // -> note 1
+        assert_eq!(
+            syllable(&mut c, &s, &n, 50.0, 0.1),
+            Some(64.0),
+            "the next syllable gets note 2"
+        );
+
+        // Tempo: "next" jumps the clock to the next note.
+        let (tn, ts) = tempo_song();
+        let mut c = Conductor::new(DT);
+        c.set_melody(&tn);
+        feed(&mut c, &ts, &tn, 0.1, Some(50.0), 0.1);
+        c.next_note();
+        assert_eq!(feed(&mut c, &ts, &tn, 0.05, Some(50.0), 0.1), Some(62.0));
     }
 
     #[test]

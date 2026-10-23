@@ -51,8 +51,9 @@ pub struct Engine {
     in_meter: PeakMeter,
     out_meter: PeakMeter,
     sample_rate: f32,
-    /// Last Melody Voice restart request acted on.
+    /// Last Melody Voice restart / next-note requests acted on.
     melody_restart_seen: u32,
+    melody_next_seen: u32,
 }
 
 /// The manager's ends of the engine queues.
@@ -67,6 +68,7 @@ impl Engine {
         let (garbage_tx, garbage_rx) = RingBuffer::new(CMD_QUEUE);
         let sr = sample_rate as f32;
         let melody_restart_seen = shared.melody_restart.load(Relaxed);
+        let melody_next_seen = shared.melody_next.load(Relaxed);
         let engine = Self {
             cmds: cmd_rx,
             garbage: garbage_tx,
@@ -82,6 +84,7 @@ impl Engine {
             out_meter: PeakMeter::new(sr, 0.3),
             sample_rate: sr,
             melody_restart_seen,
+            melody_next_seen,
         };
         let link = EngineLink {
             cmds: cmd_tx,
@@ -169,6 +172,11 @@ impl BlockSource for Engine {
             self.melody_restart_seen = restart;
             melody.restart();
         }
+        let next = self.shared.melody_next.load(Relaxed);
+        for _ in 0..next.wrapping_sub(self.melody_next_seen).min(16) {
+            melody.next_note();
+        }
+        self.melody_next_seen = next;
         self.chain.run(&mut voice, &params, voice_on);
         let melody = self.chain.melody().status();
         self.shared.melody_detected.set(melody.detected);
@@ -515,6 +523,21 @@ mod tests {
         let mut out = [0.0; BLOCK * 2];
         engine.render(&mut out);
         assert_eq!(shared.melody_note.load(Relaxed), -1, "back to the top");
+
+        // Manual mode: the "next note" requests move it, one each.
+        shared.params.set(P::MelodyMode, 2.0);
+        talk(&mut engine, &mut tx);
+        assert_eq!(
+            shared.melody_note.load(Relaxed),
+            0,
+            "talking does not move it"
+        );
+        shared.melody_next.fetch_add(2, Relaxed);
+        talk(&mut engine, &mut tx);
+        assert_eq!(shared.melody_note.load(Relaxed), 2);
+        shared.params.set(P::MelodyMode, 0.0);
+        shared.melody_restart.fetch_add(1, Relaxed);
+        engine.render(&mut out);
 
         // A new output device means a new engine: it still has the melody.
         let (mut engine, mut link) = Engine::new(shared.clone(), 48_000);

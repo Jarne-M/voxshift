@@ -55,6 +55,7 @@ pub enum Action {
     /// Open a file dialog for a MIDI file.
     Import,
     Restart,
+    Next,
 }
 
 #[derive(Default)]
@@ -268,8 +269,28 @@ pub fn panel(ui: &mut Ui, fx: &mut Snapshot, v: &View) -> Response {
                     {
                         r.actions.push(Action::Restart);
                     }
+                    if ui
+                        .button("Next note")
+                        .on_hover_text(
+                            "Step to the next note (in manual mode this is how it moves)",
+                        )
+                        .clicked()
+                    {
+                        r.actions.push(Action::Next);
+                    }
                 }
             });
+            if mode == Mode::Tempo {
+                r.changed |= control(ui, fx, P::MelodyBpm);
+                ui.label(
+                    RichText::new(
+                        "The song starts when you start singing and plays on at this tempo; \
+                         notes you are silent for pass by.",
+                    )
+                    .small()
+                    .weak(),
+                );
+            }
             if mode != Mode::ScaleSnap {
                 part_picker(ui, v, &mut r.actions);
             }
@@ -292,13 +313,12 @@ pub fn panel(ui: &mut Ui, fx: &mut Snapshot, v: &View) -> Response {
                         .weak(),
                 );
                 if mode != Mode::ScaleSnap {
-                    for id in [
-                        P::MelodyLoop,
-                        P::MelodyFold,
-                        P::MelodySensitivity,
-                        P::MelodyMinNote,
-                        P::MelodyResetAfter,
-                    ] {
+                    for id in [P::MelodyLoop, P::MelodyFold, P::MelodyResetAfter] {
+                        r.changed |= control(ui, fx, id);
+                    }
+                }
+                if mode == Mode::PerSyllable {
+                    for id in [P::MelodySensitivity, P::MelodyMinNote] {
                         r.changed |= control(ui, fx, id);
                     }
                 }

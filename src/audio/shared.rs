@@ -94,8 +94,9 @@ pub struct Shared {
     pub melody_target: AtomicF32,
     /// The melody being sung (written by the window, copied by the audio thread).
     pub melody: MelodyStore,
-    /// Bumped to send Melody Voice back to the first note.
+    /// Bumped to send Melody Voice back to the first note / on to the next note.
     pub melody_restart: AtomicU32,
+    pub melody_next: AtomicU32,
     /// Current note index (-1 = before the first) and playhead in beats.
     pub melody_note: AtomicI32,
     pub melody_beat: AtomicF32,
@@ -129,6 +130,7 @@ impl Default for Shared {
             melody_target: AtomicF32::new(f32::NAN),
             melody: MelodyStore::default(),
             melody_restart: AtomicU32::new(0),
+            melody_next: AtomicU32::new(0),
             melody_note: AtomicI32::new(-1),
             melody_beat: AtomicF32::zero(),
             melody_finished: AtomicBool::new(false),

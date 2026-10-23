@@ -192,6 +192,11 @@ impl MelodyVoice {
         }
     }
 
+    /// On to the next note (manual mode's step; also skips a note in the other modes).
+    pub fn next_note(&mut self) {
+        self.conductor.next_note();
+    }
+
     /// Back to the first note.
     pub fn restart(&mut self) {
         self.conductor.restart();
@@ -679,6 +684,57 @@ pub(crate) mod tests {
             );
         }
         assert_eq!(chain.melody().status().position.note, Some(11));
+    }
+
+    #[test]
+    fn a_held_vowel_follows_the_melody_in_time_in_tempo_mode() {
+        use crate::dsp::VoiceProcessor;
+        use crate::dsp::biquad::{Biquad, Coeffs};
+        use crate::dsp::chain::VoiceChain;
+        use crate::melody::{library, store::MelodyStore};
+        let store = MelodyStore::default();
+        let twinkle = library::get("Twinkle Twinkle Little Star").unwrap();
+        store.publish(&twinkle.notes);
+        let mut p = Snapshot::defaults();
+        p.set(P::MelodyOn, 1.0);
+        p.set(P::MelodyMode, 1.0);
+        p.set(P::MelodyBpm, 120.0);
+
+        // 0.2 s of silence, then one long "aaah" whose pitch wanders around 125 Hz.
+        let mut f1 = Biquad::new(Coeffs::peaking(FS, 650.0, 4.0, 14.0));
+        let mut f2 = Biquad::new(Coeffs::peaking(FS, 1100.0, 4.0, 10.0));
+        let start = 0.2;
+        let mut phase = 0.0f32;
+        let input: Vec<f32> = (0..(4.5 * FS) as usize)
+            .map(|i| {
+                let t = i as f32 / FS;
+                if t < start {
+                    return 0.0;
+                }
+                let hz = 125.0 * (0.12 * (2.0 * std::f32::consts::PI * 0.7 * t).sin()).exp2();
+                phase = (phase + hz / FS).fract();
+                0.15 * f2.process(f1.process(2.0 * phase - 1.0))
+            })
+            .collect();
+        let mut chain = VoiceChain::new(FS);
+        chain.melody().sync(&store);
+        let mut out = Vec::with_capacity(input.len());
+        for chunk in input.as_chunks::<BLOCK>().0 {
+            let mut b = *chunk;
+            chain.run(&mut b, &p, true);
+            out.extend_from_slice(&b);
+        }
+        // Each beat (0.5 s at 120 BPM) is one note of the tune, an octave down to the voice.
+        let beats: Vec<(f32, f32)> = (0..8)
+            .map(|k| (start + 0.5 * k as f32, start + 0.5 * (k + 1) as f32))
+            .collect();
+        let got = sung_notes(&out, &beats, chain.latency_samples());
+        let want = [48.0, 48.0, 55.0, 55.0, 57.0, 57.0, 55.0, 55.0];
+        println!("tempo mode sung {got:?}");
+        for (k, (g, w)) in got.iter().zip(want).enumerate() {
+            let g = g.unwrap_or_else(|| panic!("beat {k} not voiced"));
+            assert!((g - w).abs() < 0.25, "beat {k}: sung {g:.2}, wanted {w}");
+        }
     }
 
     #[test]
