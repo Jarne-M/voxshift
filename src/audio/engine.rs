@@ -576,7 +576,7 @@ mod tests {
             .melody
             .publish(&library::get("Ode to Joy").unwrap().notes);
         shared.set_active_mic(ActiveMic::Primary);
-        let (speech, _) = speech(3, 0.22, 0.13);
+        let (speech, _) = speech(3, 0.22, 0.13, 1.0);
         let talk = |engine: &mut Engine, tx: &mut Producer<f32>| {
             let mut out = [0.0; BLOCK * 2];
             for chunk in speech.chunks(BLOCK) {

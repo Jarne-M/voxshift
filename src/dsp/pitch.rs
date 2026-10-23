@@ -32,6 +32,8 @@ struct Head {
 
 pub struct PitchShifter {
     buf: Vec<f32>,
+    /// A second signal shifted by the very same heads (see [`process_pair`](Self::process_pair)).
+    aux: Vec<f32>,
     mask: usize,
     write: usize,
     window: f32,
@@ -49,6 +51,7 @@ impl PitchShifter {
         let mid = 1.0 + search as f32 + window / 2.0;
         Self {
             buf: vec![0.0; len],
+            aux: Vec::new(),
             mask: len - 1,
             write: 0,
             window,
@@ -67,6 +70,13 @@ impl PitchShifter {
         }
     }
 
+    /// A shifter that also carries a second signal (for [`process_pair`](Self::process_pair)).
+    pub fn with_aux(fs: f32) -> Self {
+        let mut s = Self::new(fs);
+        s.aux = vec![0.0; s.buf.len()];
+        s
+    }
+
     /// Delay added on average, in samples.
     pub fn latency(&self) -> usize {
         1 + self.search + (self.window / 2.0) as usize
@@ -82,15 +92,16 @@ impl PitchShifter {
         (self.buf.len() - 2) as f32
     }
 
-    /// Linear-interpolated read `delay` samples behind the write head (delay >= 0 is "now").
+    /// Linear-interpolated read of `buf`, `delay` samples behind the write head (delay >= 0
+    /// is "now").
     #[inline]
-    fn read(&self, delay: f32) -> f32 {
+    fn read(&self, buf: &[f32], delay: f32) -> f32 {
         let delay = delay.clamp(0.0, self.max_delay());
         let d = delay.floor();
         let frac = delay - d;
         let i = self.write.wrapping_sub(d as usize) & self.mask;
         let j = i.wrapping_sub(1) & self.mask;
-        self.buf[i] + (self.buf[j] - self.buf[i]) * frac
+        buf[i] + (buf[j] - buf[i]) * frac
     }
 
     #[inline]
@@ -107,37 +118,57 @@ impl PitchShifter {
             return nominal;
         }
         let reference = |j: usize| self.at(o - j);
-        let lo = (nominal as isize - self.search as isize).max(n as isize + 1) as usize;
-        let hi = ((nominal as usize) + self.search).min(self.buf.len() - 2);
-        let (mut best, mut best_score) = (nominal, f32::MIN);
-        // Step 2 is plenty: the final position is still sub-sample interpolated.
-        for d in (lo..=hi).step_by(2) {
+        let lo = (nominal as isize - self.search as isize).max(n as isize + 2) as usize;
+        let hi = ((nominal as usize) + self.search).min(self.buf.len() - 3);
+        let score = |d: usize| {
             let (mut dot, mut energy) = (0.0f32, 1e-9f32);
             for j in (0..n).step_by(2) {
                 let c = self.at(d - j);
                 dot += c * reference(j);
                 energy += c * c;
             }
-            let score = dot / energy.sqrt();
-            if score > best_score {
-                best_score = score;
-                best = d as f32;
+            dot / energy.sqrt()
+        };
+        // Coarse search in steps of 2, then the best spot's neighbours, then a parabola
+        // through the peak: the splice lands within a fraction of a sample, which also suits
+        // the spiky LPC residual that is shifted along with the voice (`process_pair`).
+        let (mut best, mut best_score) = (lo, f32::MIN);
+        for d in (lo..=hi).step_by(2) {
+            let s = score(d);
+            if s > best_score {
+                (best, best_score) = (d, s);
             }
         }
-        best
+        for d in [best.saturating_sub(1).max(lo), (best + 1).min(hi)] {
+            let s = score(d);
+            if s > best_score {
+                (best, best_score) = (d, s);
+            }
+        }
+        if best <= lo || best >= hi {
+            return best as f32;
+        }
+        let (a, b, c) = (score(best - 1), best_score, score(best + 1));
+        let den = a - 2.0 * b + c;
+        let offset = if den < -1e-9 {
+            (0.5 * (a - c) / den).clamp(-0.5, 0.5)
+        } else {
+            0.0
+        };
+        best as f32 + offset
     }
 
-    /// Processes one sample. `ratio` = 2^(semitones / 12).
+    /// Moves both heads on by one sample (restarting one at the best splice if its life is
+    /// over); returns each head's delay and fade gain. Call after writing the new sample.
     #[inline]
-    pub fn process(&mut self, x: f32, ratio: f32) -> f32 {
-        self.buf[self.write] = x;
+    fn step(&mut self, ratio: f32) -> [(f32, f32); 2] {
         let rate = 1.0 - ratio; // delay change per sample
         let speed = rate.abs().max(MIN_RATE);
         let age_step = speed / self.window;
         // Share of the window the delay sweeps in one life: -1 (up) .. 1 (down), smaller near 1.
         let sweep = rate / speed;
-        let mut y = 0.0;
-        for h in 0..2 {
+        let mut out = [(0.0, 0.0); 2];
+        for (h, o) in out.iter_mut().enumerate() {
             let mut head = self.heads[h];
             head.delay += rate;
             head.age += age_step;
@@ -150,15 +181,48 @@ impl PitchShifter {
                 head.delay = self.best_splice(nominal, self.heads[1 - h].delay);
             }
             let w = (std::f32::consts::PI * head.age).sin();
-            y += self.read(head.delay) * w * w;
+            *o = (head.delay, w * w);
             self.heads[h] = head;
         }
+        out
+    }
+
+    /// Processes one sample. `ratio` = 2^(semitones / 12). (The effects use
+    /// [`process_pair`](Self::process_pair); this is the plain shifter on its own.)
+    #[cfg(test)]
+    #[inline]
+    pub fn process(&mut self, x: f32, ratio: f32) -> f32 {
+        self.buf[self.write] = x;
+        let heads = self.step(ratio);
+        let y = heads
+            .iter()
+            .map(|&(d, w)| self.read(&self.buf, d) * w)
+            .sum();
         self.write = (self.write + 1) & self.mask;
         y
     }
 
+    /// Shifts `x` and, with exactly the same heads and splices, `aux` (needs
+    /// [`with_aux`](Self::with_aux)). The splices are chosen on `x`: the formant path shifts
+    /// the LPC residual this way, a spiky, noise-like signal whose own waveform is a poor guide
+    /// for splicing, and it saves a second splice search.
+    #[inline]
+    pub fn process_pair(&mut self, x: f32, aux: f32, ratio: f32) -> (f32, f32) {
+        self.buf[self.write] = x;
+        self.aux[self.write] = aux;
+        let heads = self.step(ratio);
+        let (mut y, mut z) = (0.0, 0.0);
+        for (d, w) in heads {
+            y += self.read(&self.buf, d) * w;
+            z += self.read(&self.aux, d) * w;
+        }
+        self.write = (self.write + 1) & self.mask;
+        (y, z)
+    }
+
     pub fn reset(&mut self) {
         self.buf.fill(0.0);
+        self.aux.fill(0.0);
     }
 }
 

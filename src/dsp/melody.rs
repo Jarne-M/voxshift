@@ -593,9 +593,15 @@ pub(crate) mod tests {
     }
 
     /// A synthetic speaker: `count` syllables of buzz through two vowel formants, each one
-    /// starting at its own pitch around 125 Hz and falling 3 semitones (like speech), with
-    /// quiet breath noise in the pauses. Returns the audio and each syllable's (start, end).
-    pub fn speech(count: usize, voiced_s: f32, pause_s: f32) -> (Vec<f32>, Vec<(f32, f32)>) {
+    /// starting at its own pitch around 125 Hz times `scale` and falling 3 semitones (like
+    /// speech), with quiet breath noise in the pauses. Returns the audio and each syllable's
+    /// (start, end).
+    pub fn speech(
+        count: usize,
+        voiced_s: f32,
+        pause_s: f32,
+        scale: f32,
+    ) -> (Vec<f32>, Vec<(f32, f32)>) {
         use crate::dsp::biquad::{Biquad, Coeffs};
         let mut f1 = Biquad::new(Coeffs::peaking(FS, 650.0, 4.0, 14.0));
         let mut f2 = Biquad::new(Coeffs::peaking(FS, 1100.0, 4.0, 10.0));
@@ -609,7 +615,7 @@ pub(crate) mod tests {
             let n = (voiced_s * FS) as usize;
             for i in 0..n {
                 let u = i as f32 / n as f32;
-                let hz = start_pitches[k % start_pitches.len()] * (-3.0 * u / 12.0).exp2();
+                let hz = scale * start_pitches[k % start_pitches.len()] * (-3.0 * u / 12.0).exp2();
                 phase = (phase + hz / FS).fract();
                 let env = (i as f32 / (0.015 * FS))
                     .min((n - i) as f32 / (0.02 * FS))
@@ -642,6 +648,39 @@ pub(crate) mod tests {
             .collect()
     }
 
+    /// Regression: the formant path used to turn big upward shifts of a high voice into a
+    /// rough, octave-low buzz (the whitened residual aliased when read faster).
+    #[test]
+    fn big_shifts_of_a_high_voice_stay_clean_with_formants_preserved() {
+        use crate::dsp::biquad::{Biquad, Coeffs};
+        for formant in [0.0, 1.0] {
+            for shift in [-12.0f32, -5.0, 7.0, 10.0, 11.0, 12.0, 13.0] {
+                let mut f1 = Biquad::new(Coeffs::peaking(FS, 650.0, 4.0, 14.0));
+                let mut f2 = Biquad::new(Coeffs::peaking(FS, 1100.0, 4.0, 10.0));
+                let input: Vec<f32> = voice(1.0, |_| 230.0)
+                    .into_iter()
+                    .map(|x| 0.75 * f2.process(f1.process(x)))
+                    .collect();
+                let mut st = PitchStage::new(FS);
+                let ratio = [semitones_to_ratio(shift); BLOCK];
+                let mut out = Vec::new();
+                for chunk in input.as_chunks::<BLOCK>().0 {
+                    let mut b = *chunk;
+                    st.run(&mut b, &ratio, formant);
+                    out.extend_from_slice(&b);
+                }
+                let want = hz_to_midi(230.0) + shift;
+                let p = frame_pitches(&out, 0.3);
+                let near = p.iter().filter(|m| (*m - want).abs() < 0.5).count();
+                assert!(
+                    p.len() >= 270 && near == p.len(),
+                    "formant {formant} shift {shift}: {near} of {} frames on {want:.1}",
+                    p.len()
+                );
+            }
+        }
+    }
+
     #[test]
     fn talking_through_the_full_chain_sings_twinkle_twinkle_one_syllable_per_note() {
         use crate::dsp::VoiceProcessor;
@@ -653,37 +692,40 @@ pub(crate) mod tests {
         let mut p = Snapshot::defaults();
         p.set(P::MelodyOn, 1.0); // per syllable, octave fold on: the defaults
 
-        let (input, spans) = speech(12, 0.22, 0.13);
-        let mut chain = VoiceChain::new(FS);
-        chain.melody().sync(&store);
-        let mut out = Vec::with_capacity(input.len());
-        for chunk in input.as_chunks::<BLOCK>().0 {
-            let mut b = *chunk;
-            chain.run(&mut b, &p, true);
-            out.extend_from_slice(&b);
-        }
-        let latency = chain.latency_samples();
-        // The voice sits around B2 (MIDI 47), the tune around E4 (64): sung an octave down.
-        let want: Vec<f32> = twinkle.notes[..12]
-            .iter()
-            .map(|n| f32::from(n.key) - 12.0)
-            .collect();
-        let got = sung_notes(&out, &spans, latency);
-        println!("wanted {want:?}");
-        println!(
-            "sung   {:?}",
-            got.iter()
-                .map(|g| g.map(|g| (g * 10.0).round() / 10.0))
-                .collect::<Vec<_>>()
-        );
-        for (k, (g, w)) in got.iter().zip(&want).enumerate() {
-            let g = g.unwrap_or_else(|| panic!("syllable {k} not voiced in the output"));
-            assert!(
-                (g - w).abs() < 0.25,
-                "syllable {k}: sung {g:.2}, wanted {w}"
+        // A low voice around B2 (MIDI 47) sings the tune (around E4, 64) an octave down; a
+        // high one around A#3 (58) sings it as written.
+        for (scale, octave) in [(1.0, -12.0), (1.9, 0.0)] {
+            let (input, spans) = speech(12, 0.22, 0.13, scale);
+            let mut chain = VoiceChain::new(FS);
+            chain.melody().sync(&store);
+            let mut out = Vec::with_capacity(input.len());
+            for chunk in input.as_chunks::<BLOCK>().0 {
+                let mut b = *chunk;
+                chain.run(&mut b, &p, true);
+                out.extend_from_slice(&b);
+            }
+            let latency = chain.latency_samples();
+            let want: Vec<f32> = twinkle.notes[..12]
+                .iter()
+                .map(|n| f32::from(n.key) + octave)
+                .collect();
+            let got = sung_notes(&out, &spans, latency);
+            println!("voice x{scale}: wanted {want:?}");
+            println!(
+                "voice x{scale}: sung   {:?}",
+                got.iter()
+                    .map(|g| g.map(|g| (g * 10.0).round() / 10.0))
+                    .collect::<Vec<_>>()
             );
+            for (k, (g, w)) in got.iter().zip(&want).enumerate() {
+                let g = g.unwrap_or_else(|| panic!("syllable {k} not voiced in the output"));
+                assert!(
+                    (g - w).abs() < 0.25,
+                    "voice x{scale} syllable {k}: sung {g:.2}, wanted {w}"
+                );
+            }
+            assert_eq!(chain.melody().status().position.note, Some(11));
         }
-        assert_eq!(chain.melody().status().position.note, Some(11));
     }
 
     #[test]

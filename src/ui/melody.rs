@@ -99,7 +99,7 @@ fn choice<T: Copy + PartialEq>(
     }
 }
 
-/// "You: A3 → Target: C4".
+/// "You: A3 » Target: C4".
 pub fn status_text(detected: f32, target: f32) -> String {
     let name = |m: f32| {
         if m.is_finite() {
@@ -108,11 +108,7 @@ pub fn status_text(detected: f32, target: f32) -> String {
             "-".to_string()
         }
     };
-    format!(
-        "You: {}  \u{2192}  Target: {}",
-        name(detected),
-        name(target)
-    )
+    format!("You: {}  \u{bb}  Target: {}", name(detected), name(target))
 }
 
 /// "Note 3 of 42", or what to do at the end.
@@ -443,12 +439,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_fonts_have_every_special_character_the_panel_uses() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
+        let font = egui::FontId::proportional(14.0);
+        // (The default fonts have no arrows: "→" would show as a box, hence "»".)
+        let candidates = [
+            '\u{bb}', '\u{2605}', '\u{2014}', '\u{2026}', '\u{fc}', '\u{e8}',
+        ];
+        let missing: Vec<char> = candidates
+            .into_iter()
+            .filter(|&c| !ctx.fonts_mut(|f| f.has_glyph(&font, c)))
+            .collect();
+        assert!(missing.is_empty(), "no glyph for {missing:?}");
+    }
+
+    #[test]
     fn texts() {
-        assert_eq!(status_text(57.2, 60.0), "You: A3  \u{2192}  Target: C4");
-        assert_eq!(
-            status_text(f32::NAN, f32::NAN),
-            "You: -  \u{2192}  Target: -"
-        );
+        assert_eq!(status_text(57.2, 60.0), "You: A3  \u{bb}  Target: C4");
+        assert_eq!(status_text(f32::NAN, f32::NAN), "You: -  \u{bb}  Target: -");
         assert_eq!(position_text(Some(2), false, 42), "Note 3 of 42");
         assert!(position_text(None, false, 42).starts_with("Ready"));
         assert!(position_text(Some(41), true, 42).contains("Restart"));

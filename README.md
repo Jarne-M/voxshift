@@ -17,8 +17,12 @@ its own is installed.
 - **Effects.** Pitch (±12 semitones, optional formant preservation), noise gate, tone (low and
   high cut plus a 3-band EQ), distortion, robot (ring modulator), chorus, echo, reverb, input and
   output gain, and master dry/wet. Every change is click-free.
-- **Presets.** Built-in: Clean, Deep Voice, Chipmunk, Robot, Cave, Radio, Telephone and Demon.
-  You can also save your own.
+- **Melody Voice.** Talk, and it comes out sung: your voice is retuned note by note to a
+  melody (one syllable per note, in time with the song, or a note per hotkey press), or snapped
+  to a key like auto-tune. Built-in public-domain tunes, or import your own MIDI files. See
+  [section 5c](#5c-melody-voice).
+- **Presets.** Built-in: Clean, Deep Voice, Chipmunk, Robot, Cave, Radio, Telephone, Demon,
+  Sing the Song (per-syllable) and Hard Tune. You can also save your own.
 - **Soundboard.** Add wav, mp3, ogg or flac files with the button or by drag and drop. Each sound
   has its own volume and an optional **global hotkey** that works while a game has focus. You can
   also play sounds in your headphones.
@@ -183,6 +187,78 @@ Your virtual mic only exists while VoxShift runs, so closing the window never qu
 - **Windows shutdown or logoff** saves your settings and exits without showing the dialog.
 - **Mute mic** (top bar or tray) fades your mic out; soundboard sounds still play.
 
+## 5c. Melody Voice
+
+Melody Voice sits at the top of the **Effects** tab. Turn it **ON**, pick a melody and talk:
+each syllable comes out on the next note of the song. Consonants and breaths (s, t, f, h)
+pass through untouched, so you stay understandable.
+
+**Modes**
+
+| Mode | What moves you to the next note |
+|---|---|
+| **Per syllable** (default) | Every new syllable: after a short pause, a dip in loudness ("hel-lo") or a jump in pitch. *Sensitivity* sets how readily a syllable is heard; *Min note length* stops glitches from skipping notes. |
+| **Tempo-synced** | The song plays at the *Tempo* slider's speed. It starts the moment you start singing; notes you are silent for pass by, and a rest keeps the note before it. |
+| **Manual step** | Only the *Next note* button or hotkey. |
+| **Scale snap (auto-tune)** | No melody: your pitch is pulled to the nearest note of the chosen key and scale (major, minor, major/minor pentatonic, chromatic). |
+
+**Controls**
+- **Retune speed:** 0 ms is the instant, robotic "hard tune". 150 ms and up keeps your own
+  vibrato and slides (natural). Default 5 ms.
+- **Glide:** how fast it slides from note to note while you keep sounding.
+- **Transpose:** ±24 semitones. **Octave-fold** moves the whole melody by octaves so it sits
+  around your voice, so a deep voice doesn't have to squeak out a song written for a high
+  one. It only changes octave between notes, never in the middle of one.
+- **Preserve formants** (on by default) keeps your voice's character when the melody goes high
+  or low (no chipmunk). **Formant shift** (±6 st) moves the character on purpose: down is
+  darker or bigger, up is brighter or smaller.
+- **Loop**, **Restart**, **Next note**, and **Back to start after silence** (seconds; 0 = never).
+- **Analysis window** (20–60 ms) trades latency for steadiness and how low a voice it can
+  hear. **Lowest / highest voice pitch** (default 70–500 Hz) covers a low male to a high
+  female voice; narrow it to yours if it ever jumps an octave.
+- The line **"You: A3 » Target: C4"** shows what it hears and where it is taking you. The
+  piano roll shows the melody, the current note (lit) and where it is (white line).
+- **Play melody** plays the tune as a soft synth tone at the tempo slider's speed, **in your
+  headphones only** (the monitor must be on). It never goes into your mic.
+
+**Melodies**
+- Built in, all public domain and typed in by hand (no audio or song files are bundled): Ode
+  to Joy, Twinkle Twinkle Little Star, Happy Birthday, Greensleeves, Für Elise (opening), Frère
+  Jacques, plus a major and a minor scale, a pentatonic run and a major arpeggio.
+- **Your own songs:** *Import MIDI…* or drop a `.mid` file on the window. VoxShift lists the
+  file's parts (each track and channel; drums are skipped) and picks the one most likely to
+  be the tune: the highest part that plays one note at a time (marked ★ under **Part**). If it
+  guessed wrong, pick another part. Chords are reduced to their top note. The file's tempo
+  sets the tempo slider; later tempo changes in the file are ignored. Imported files are
+  remembered in the melody list. Bring your own MIDI files; VoxShift doesn't download songs.
+
+**Presets and hotkeys.** A preset you save with Melody Voice on remembers its melody too. The
+built-in *Sing the Song (per-syllable)* and *Hard Tune* presets keep whatever melody you picked.
+Under **Voice changer hotkeys → Melody Voice** you can set global keys for **on/off**,
+**restart melody** and **next note**. They work in games and while VoxShift is in the tray.
+
+**Soundboard clips are never retuned:** they're mixed in after the voice effects.
+
+**Latency.** Melody Voice adds more delay than any other effect, and the panel shows how much.
+The pitch analysis and the pitch shifter overlap (whichever is longer sets the delay), so it
+adds:
+
+| Analysis window | Added delay (measured, 48 kHz) |
+|---|---|
+| 20 ms | 15.0 ms |
+| **30 ms (default)** | **16.2 ms** |
+| 45 ms | 23.8 ms |
+| 60 ms | 31.2 ms |
+
+That comes on top of the ~38–40 ms base latency (section 6), and on top of the Pitch effect's
+~15 ms if you use both. It's measured by an automated test that times a sound through the
+effect.
+
+**Limits.** It's a fast, time-domain shifter: big jumps (more than an octave) sound grainier
+than small ones, and very breathy or creaky speech may be left untuned for a moment. A
+hummed, almost pure tone gets a little quieter with formants preserved (a safety limiter, so
+it can never blow up).
+
 ## 6. Latency
 
 The estimate in the UI is the sum of:
@@ -190,6 +266,7 @@ The estimate in the UI is the sum of:
 - the ring buffer between mic and cable
 - one 64-sample processing block
 - the pitch shifter (about 15 ms, only while pitch is on)
+- Melody Voice (about 16 ms at its default analysis window, only while it is on; see 5c)
 - the output buffer
 
 It doesn't include VB-CABLE's own buffer or the receiving app.
@@ -212,8 +289,14 @@ second profile, or trying things without touching your normal settings.
 
 ## 8. Testing on your hardware
 
-These were checked automatically: `cargo test` (98 tests; they briefly show a tray icon) and the self-tests below on the
+These were checked automatically: `cargo test` (186 tests; they briefly show a tray icon) and the self-tests below on the
 development PC (USB PnP mic, webcam mic, HyperX Cloud II Wireless). The rest needs your setup.
+
+Melody Voice's tests feed synthetic voices through the real effect chain offline: a low and a
+high "speaker" saying 12 syllables come out singing the first 12 notes of Twinkle Twinkle
+(each within 0.25 semitones, in practice within 0.1), a held vowel follows the tune in
+tempo mode, and the pitch detector is checked on sines and sawtooths from 75 to 490 Hz (within
+1 %), on noise, whispers and silence.
 
 **Headless self-tests:**
 
@@ -277,6 +360,39 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
 19. **Duplicates.** Try giving the toggle the same key as a soundboard clip: you get a
     message, and nothing changes.
 
+**Melody Voice (needs your mic and headphones; turn the monitor on):**
+
+20. **Hear the target first.** Pick *Twinkle Twinkle Little Star*, click *Play melody*: a soft
+    tone plays the tune in your headphones and the green line runs along the piano roll.
+    Discord/CABLE Output hears nothing of it.
+21. **Talk the song.** Apply *Sing the Song (per-syllable)*. Say slowly, one syllable at a time
+    with a tiny gap: "twin - kle - twin - kle - lit - tle - star". You should hear yourself
+    *sing* C C G G A A G (the first line of the tune), and the lit note in the piano roll
+    moves one step per syllable. The top line reads like "You: A2 » Target: C3".
+    Say "sss" or whisper: it passes through unchanged. Stop talking: nothing moves.
+22. **Glitches.** Say one long "heeeeelloooo" with no gap: one or two notes, not a run of
+    them. If syllables get skipped or doubled, raise or lower *Sensitivity* and *Min note
+    length*.
+23. **Your range.** A low voice should get the tune in a low octave (the "Target" note is
+    near your own), a high voice in a higher one. Toggle *Octave-fold* off to hear the tune
+    as written (it may then sound strained or chipmunk-like far from your voice).
+24. **Formants.** With *Preserve formants* off, high notes sound chipmunk-like; with it on, still
+    you. Move *Formant shift* to −6 and +6: darker or bigger, then brighter or smaller, same notes.
+25. **Tempo-synced.** Switch mode, set the tempo to ~90, and hold one long "aaaah": it walks
+    through the tune in time. Stop for a few notes and start again: it carries on further
+    along, not where you stopped.
+26. **Manual and hotkeys.** Set *Next note* to a key (e.g. Page Down), switch to *Manual step*,
+    hold an "aaah" and press the key: one note per press. Set the *Restart melody* and
+    *on/off* keys and try them with VoxShift in the tray.
+27. **Hard Tune.** Apply the *Hard Tune* preset and slide your voice up and down slowly: it
+    jumps from note to note (the robotic auto-tune sound) instead of sliding.
+28. **Your MIDI file.** Drop a `.mid` on the window: a message names the part it picked (★ in
+    *Part*); the piano roll should look like the tune. If it is the bass or chords, pick
+    another part.
+29. **Soundboard stays clean.** With Melody Voice on, play a soundboard clip with singing or
+    speech: it must sound exactly like the original in Discord, not retuned.
+30. **Latency.** The top bar's latency estimate goes up by ~16 ms when Melody Voice turns on.
+
 ## 9. How it works
 
 ```
@@ -307,15 +423,24 @@ Win32 message loop, so it keeps working whatever the window does.
 src/
   shell/      tray icon thread, icon drawing, single instance, start with Windows (Win32)
   audio/      streams, engine, device manager, drift-compensating reader, mic selection, name matching
-  dsp/        one file per effect + params, smoothing, chain (all unit-tested)
+  dsp/        one file per effect + params, smoothing, chain (all unit-tested); Melody Voice:
+              pitch_detect (YIN), conductor (which note when), melody (the effect), preview
+  melody/     note type, built-in tunes, MIDI import (midly), lock-free hand-off to the engine
   soundboard/ decoding (symphonia + rubato), sound list + loader, RT mixer, global hotkeys
-  ui/         egui panels: devices, effects, presets, soundboard, meters, toasts
+  ui/         egui panels: devices, effects, Melody Voice, presets, soundboard, meters, toasts
   config/     settings file + presets
 ```
 
 The DSP is hand-written: RBJ biquads, Hann-windowed two-head pitch shifter with
 correlation-aligned splices, LPC (Levinson-Durbin + lattice filters) for formant preservation,
-Freeverb, etc. Each file explains its idea at the top.
+YIN pitch detection, Freeverb, etc. Each file explains its idea at the top.
+
+**Melody Voice in short:** a YIN detector runs on a 12 kHz copy of the mic every 2.5 ms; a
+tracker smooths it (median, octave-jump guard, voiced/unvoiced hysteresis); the conductor
+turns syllables, the clock or key presses into a target note; the shift (target − you) drives
+the formant-preserving pitch stage; unvoiced sounds take a dry path delayed by the same amount.
+The melody reaches the audio thread through a seqlock over fixed atomic arrays (no locks, no
+allocation, and it survives the engine being rebuilt).
 
 **Adding a neural voice model later:** implement `dsp::VoiceProcessor` (`process` one mono
 block in place and report `latency_samples`). The engine already calls the chain through that

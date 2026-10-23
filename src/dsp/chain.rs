@@ -6,6 +6,7 @@
 //! Every section fades in and out (20 ms) instead of switching, and is skipped entirely (and
 //! cleared, so no stale echo tail replays later) once it has faded out.
 
+use super::biquad::{Biquad, Coeffs};
 use super::chorus::Chorus;
 use super::distortion::Distortion;
 use super::echo::Echo;
@@ -25,10 +26,15 @@ use crate::audio::shared::from_db;
 const FADE_S: f32 = 0.02;
 
 /// Pitch shifting, optionally formant-preserving (see `lpc`). Both paths always run so the
-/// "preserve formants" switch can crossfade without a click.
+/// "preserve formants" switch can crossfade without a click. One shifter moves the voice and
+/// the LPC residual with the same heads, so the residual is spliced where the voice splices
+/// cleanly.
 pub struct PitchStage {
-    plain: PitchShifter,
-    residual: PitchShifter,
+    shifter: PitchShifter,
+    /// Anti-aliasing for the residual before it is sped up (see `run`).
+    alias: [Biquad; 2],
+    alias_cut: f32,
+    fs: f32,
     lpc: Lpc,
     whiten: Whitener,
     color: Colorer,
@@ -60,8 +66,10 @@ const PEAK_LIMIT: f32 = 2.0;
 impl PitchStage {
     pub fn new(fs: f32) -> Self {
         Self {
-            plain: PitchShifter::new(fs),
-            residual: PitchShifter::new(fs),
+            shifter: PitchShifter::with_aux(fs),
+            alias: [Biquad::default(); 2],
+            alias_cut: 0.0,
+            fs,
             lpc: Lpc::new(fs),
             whiten: Whitener::default(),
             color: Colorer::default(),
@@ -94,16 +102,29 @@ impl PitchStage {
     /// Shifts by a per-sample `ratio`. `formant`: 1 = formant-preserving, 0 = plain; changes
     /// are crossfaded.
     pub fn run(&mut self, block: &mut Block, ratio: &[f32; BLOCK], formant: f32) {
+        // Shifting up reads the buffer faster than it was written: a decimation, so whatever
+        // lies above Nyquist / ratio folds back down as inharmonic tones. The voice has little
+        // up there, but the whitened residual is flat right up to Nyquist: unfiltered it came
+        // out as a rough, octave-low buzz from about +9 semitones on. Low-pass it to fit.
+        let fastest = ratio.iter().copied().fold(1.0, f32::max);
+        let cut = (0.45 * self.fs / fastest).min(0.45 * self.fs);
+        if (cut - self.alias_cut).abs() > 1.0 {
+            self.alias_cut = cut;
+            // 4th-order Butterworth (two biquads with the Butterworth Qs).
+            self.alias[0].c = Coeffs::lowpass(self.fs, cut * 0.9, 0.541);
+            self.alias[1].c = Coeffs::lowpass(self.fs, cut * 0.9, 1.307);
+        }
         for (s, &ratio) in block.iter_mut().zip(ratio.iter()) {
             let x = *s;
-            let a = self.plain.process(x, ratio);
-
             let xp = x - PRE_EMPHASIS * self.pre_x;
             self.pre_x = x;
             self.lpc.push(xp);
             let (k, kc) = self.lpc.coeffs();
             let e = self.whiten.process(xp, k);
-            let yp = self.color.process(self.residual.process(e, ratio), kc);
+            let e = self.alias[0].process(e);
+            let e = self.alias[1].process(e);
+            let (a, shifted_e) = self.shifter.process_pair(x, e, ratio);
+            let yp = self.color.process(shifted_e, kc);
             let b = yp + PRE_EMPHASIS * self.de_y;
             self.de_y = b;
 
@@ -142,12 +163,14 @@ impl PitchStage {
     }
 
     pub fn latency(&self) -> usize {
-        self.plain.latency()
+        self.shifter.latency()
     }
 
     pub fn reset(&mut self) {
-        self.plain.reset();
-        self.residual.reset();
+        self.shifter.reset();
+        for f in &mut self.alias {
+            f.reset();
+        }
         self.lpc.reset();
         self.whiten = Whitener::default();
         self.color = Colorer::default();

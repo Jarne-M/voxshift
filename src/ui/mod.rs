@@ -1939,13 +1939,18 @@ pub(crate) mod tests {
         ));
         frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]); // pushes the binding
         std::thread::sleep(Duration::from_millis(100));
-        tap_f24();
-        tap_f24();
-        assert!(
-            wait_for(&ctx, &mut app, |a| a.shared.melody_next.load(Relaxed) == 2),
-            "two presses, two steps"
-        );
+        for presses in 1..=2 {
+            tap_f24();
+            assert!(
+                wait_for(&ctx, &mut app, |a| a.shared.melody_next.load(Relaxed)
+                    == presses),
+                "press {presses}: one step each"
+            );
+        }
         assert!(app.cfg.voice_on, "nothing else changed");
+        // Let the last key-up arrive here, not in the next listener test.
+        std::thread::sleep(Duration::from_millis(200));
+        frame(&ctx, &mut app, (1240.0, 800.0), 5.0, vec![]);
     }
 
     /// Assigning a key another action already uses is refused.
