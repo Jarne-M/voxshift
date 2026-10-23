@@ -87,14 +87,20 @@ pub fn bar(ui: &mut Ui, cfg: &Config, fx: &Snapshot, new_name: &mut String) -> O
             action = Some(Action::Delete(p.name.clone()));
         }
         ui.separator();
-        if ui
-            .button("Share\u{2026}")
+        // Built-in presets and melodies are in every copy of VoxShift: only your own count.
+        let shareable = !cfg.user_presets.is_empty() || !cfg.melody.files.is_empty();
+        let share = ui
+            .add_enabled(shareable, egui::Button::new("Share\u{2026}"))
             .on_hover_text(
                 "Save your presets and your Melody Voice MIDI files in one .voxpack file to \
                  send to a friend",
             )
-            .clicked()
-        {
+            .on_disabled_hover_text(
+                "Nothing to share yet. Built-in presets and melodies are already in everyone's \
+                 VoxShift. Save a preset of your own (type a name, click Save) or import a MIDI \
+                 file in Melody Voice first.",
+            );
+        if share.clicked() {
             action = Some(Action::Export);
         }
         if ui
