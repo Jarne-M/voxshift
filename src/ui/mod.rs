@@ -3,6 +3,7 @@
 
 pub mod devices;
 pub mod effects;
+pub mod hotkey_settings;
 pub mod meters;
 pub mod presets;
 pub mod settings;
@@ -13,19 +14,19 @@ pub mod tray_status;
 
 use crate::audio::device_manager::{DeviceStatus, Event, ManagerCmd, ManagerHandle};
 use crate::audio::shared::{ActiveMic, Shared};
-use crate::config::{self, CloseBehavior, Config};
+use crate::config::{self, CloseBehavior, Config, StartVoice};
 use crate::dsp::params::Snapshot;
-use crate::shell::tray::Tray;
+use crate::shell::tray::{Tray, TrayPoster};
 use crate::shell::{TrayAction, autostart};
 use crate::soundboard::decode;
-use crate::soundboard::hotkeys::{self, Captured, HotkeyService};
+use crate::soundboard::hotkeys::{self, Captured, HotkeyService, KeyHandler};
 use crate::soundboard::library::{SoundEntry, Soundboard};
-use crate::soundboard::mixer::SoundId;
+use crate::voice_keys::{self, Feedback, KeyTarget, VoiceKeys, VoiceRequest};
 use egui::{Color32, RichText, Ui, ViewportCommand};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use theme::{ACCENT, BAD, OFF, ON, WARN};
 use toast::Toasts;
@@ -48,9 +49,15 @@ pub struct VoxApp {
     defaults_applied: bool,
     sounds: Soundboard,
     hotkeys: Option<HotkeyService>,
-    /// Sound waiting for its hotkey to be pressed.
-    capturing: Option<SoundId>,
+    /// The hotkey waiting for a key combination (a sound, the voice toggle, ...).
+    capturing: Option<KeyTarget>,
     capture_watch: Option<CaptureWatch>,
+    /// Switches the voice changer and announces it (button, tray and hotkey all use this).
+    feedback: Arc<Feedback>,
+    /// Set once the tray exists (the overlay is drawn by the tray thread).
+    tray_poster: Arc<OnceLock<TrayPoster>>,
+    voice_keys: Option<Arc<VoiceKeys>>,
+    voice_requests: Option<mpsc::Receiver<VoiceRequest>>,
     preset_name: String,
     /// Where settings are saved (None in tests).
     config_path: Option<PathBuf>,
@@ -120,6 +127,22 @@ fn apply_to_shared(cfg: &Config, shared: &Shared) {
     shared.monitor_voice.store(cfg.monitor_voice, Relaxed);
     shared.monitor_sounds.store(cfg.monitor_sounds, Relaxed);
     shared.params.store(&Snapshot::from_settings(&cfg.effects));
+    apply_feedback(cfg, shared);
+}
+
+fn apply_feedback(cfg: &Config, shared: &Shared) {
+    shared.cue_enabled.store(cfg.feedback.cues, Relaxed);
+    shared.cue_volume.set(cfg.feedback.cue_volume);
+    shared.overlay_enabled.store(cfg.feedback.overlay, Relaxed);
+}
+
+/// Effects on or off at start, per "Start with effects".
+fn start_voice_on(cfg: &Config) -> bool {
+    match cfg.start_voice {
+        StartVoice::RememberLast => cfg.voice_on,
+        StartVoice::On => true,
+        StartVoice::Off => false,
+    }
 }
 
 impl VoxApp {
@@ -134,14 +157,36 @@ impl VoxApp {
         let manager = ManagerHandle::spawn(shared.clone(), cfg.devices.clone(), cfg.mic.clone());
         let mut app = Self::with_manager(cfg, shared, manager);
         hotkeys::diag::set_path(config_path.with_file_name("hotkeys-debug.log"));
-        app.hotkeys = Some(HotkeyService::start(app.sounds.board.clone()));
         app.config_path = Some(config_path);
         app.startup_notice = notice;
-        app.start_tray(ctx);
+        app.start_tray(ctx.clone());
+        app.start_hotkeys(ctx);
         app.start_hidden_pending = app.cfg.start_minimized && app.tray.is_some();
         app.autostart = autostart::is_enabled();
         app.autostart_elsewhere = autostart::points_elsewhere();
         app
+    }
+
+    /// Global hotkeys: soundboard clips plus the voice changer keys (toggle/hold, mute,
+    /// presets). Toggle and mute act on the shared state right on the hotkey thread; preset
+    /// keys come back to us through a channel, like the tray's requests.
+    fn start_hotkeys(&mut self, ctx: egui::Context) {
+        let (tx, rx) = mpsc::channel();
+        let poster = self.tray_poster.clone();
+        let keys = Arc::new(VoiceKeys::new(self.feedback.clone(), tx, move || {
+            ctx.request_repaint();
+            if let Some(p) = poster.get() {
+                p.refresh();
+            }
+        }));
+        keys.set_bindings(self.cfg.voice_keys.clone());
+        let handler: Arc<dyn KeyHandler> = keys.clone();
+        self.hotkeys = Some(HotkeyService::start(
+            self.sounds.board.clone(),
+            Some(handler),
+        ));
+        self.voice_keys = Some(keys);
+        self.voice_requests = Some(rx);
     }
 
     /// The tray runs on its own thread. Toggles and "stop all" act directly on the shared
@@ -151,6 +196,7 @@ impl VoxApp {
         let (tx, rx) = mpsc::channel();
         let status = self.manager.status_handle();
         let (shared_s, shared_a) = (self.shared.clone(), self.shared.clone());
+        let feedback = self.feedback.clone();
         let board = self.sounds.board.clone();
         let mirror = self.mirror.clone();
         let path = self.config_path.clone();
@@ -170,11 +216,11 @@ impl VoxApp {
                     ctx.request_repaint();
                 }
                 TrayAction::ToggleVoice => {
-                    shared_a.voice_on.fetch_xor(true, Relaxed);
+                    feedback.toggle_voice();
                     ctx.request_repaint();
                 }
                 TrayAction::ToggleMute => {
-                    shared_a.mic_muted.fetch_xor(true, Relaxed);
+                    feedback.toggle_mute();
                     ctx.request_repaint();
                 }
                 TrayAction::StopAllSounds => {
@@ -194,6 +240,7 @@ impl VoxApp {
         );
         match tray {
             Ok(t) => {
+                let _ = self.tray_poster.set(t.poster());
                 self.tray = Some(t);
                 self.shell_requests = Some(rx);
             }
@@ -205,10 +252,22 @@ impl VoxApp {
         }
     }
 
-    fn with_manager(cfg: Config, shared: Arc<Shared>, manager: ManagerHandle) -> Self {
+    fn with_manager(mut cfg: Config, shared: Arc<Shared>, manager: ManagerHandle) -> Self {
+        cfg.voice_on = start_voice_on(&cfg);
         apply_to_shared(&cfg, &shared);
         let sounds = Soundboard::new(manager.port.clone(), cfg.sounds.clone());
+        let tray_poster: Arc<OnceLock<TrayPoster>> = Arc::new(OnceLock::new());
+        let poster = tray_poster.clone();
+        let feedback = Arc::new(Feedback::new(shared.clone(), move |on| {
+            if let Some(p) = poster.get() {
+                p.overlay(on);
+            }
+        }));
         Self {
+            feedback,
+            tray_poster,
+            voice_keys: None,
+            voice_requests: None,
             clock: Instant::now(),
             tray: None,
             shell_requests: None,
@@ -285,6 +344,7 @@ impl VoxApp {
         }
         self.handle_manager_events(ctx);
         self.handle_shell_requests(ctx);
+        self.sync_voice_keys(ctx);
         self.handle_close_request(ctx);
         // eframe shows the window after painting the first frame, overriding any earlier
         // hide, so "start minimized" hides it on the frame after (it starts off-screen).
@@ -323,6 +383,47 @@ impl VoxApp {
                     }
                 }
             }
+        }
+    }
+
+    /// Pushes changed voice hotkey settings to the hotkey thread and handles preset keys.
+    fn sync_voice_keys(&mut self, ctx: &egui::Context) {
+        if let Some(keys) = &self.voice_keys
+            && keys.bindings() != self.cfg.voice_keys
+        {
+            keys.set_bindings(self.cfg.voice_keys.clone());
+            // A hold mode may have just set its resting state.
+            self.cfg.voice_on = self.shared.voice_on.load(Relaxed);
+        }
+        apply_feedback(&self.cfg, &self.shared);
+        let requests: Vec<VoiceRequest> = match &self.voice_requests {
+            Some(rx) => rx.try_iter().collect(),
+            None => return,
+        };
+        for VoiceRequest::Preset(name) in requests {
+            let all = config::presets::builtin()
+                .into_iter()
+                .chain(self.cfg.user_presets.iter().cloned());
+            let Some(preset) = all.into_iter().find(|p| p.name == name) else {
+                self.notify(ctx, format!("Preset \"{name}\" no longer exists"));
+                continue;
+            };
+            self.fx = config::presets::apply(&preset, &self.fx);
+            self.effects_changed();
+            self.cfg.preset = Some(preset.name.clone());
+            // Jumping to a preset means you want to hear it.
+            self.feedback.set_voice(true, true);
+            self.cfg.voice_on = true;
+            self.refresh_tray();
+            self.notify(ctx, format!("Preset: {}", preset.name));
+        }
+    }
+
+    /// A toast, or a tray balloon while the window is hidden.
+    fn notify(&mut self, ctx: &egui::Context, text: String) {
+        match (&self.tray, self.hidden) {
+            (Some(t), true) => t.notify("VoxShift", &text),
+            _ => self.toasts.push(ctx, text),
         }
     }
 
@@ -537,6 +638,8 @@ impl VoxApp {
                     if let Some(on) = settings::panel(ui, &mut self.cfg, &view) {
                         self.set_autostart(&ctx, on);
                     }
+                    ui.add_space(6.0);
+                    self.hotkey_settings(ui);
                 });
             });
         egui::CentralPanel::default().show(ui, |ui| {
@@ -574,6 +677,45 @@ impl VoxApp {
         ctx.request_repaint_after(Duration::from_millis(33));
     }
 
+    fn preset_names(&self) -> Vec<String> {
+        config::presets::builtin()
+            .into_iter()
+            .map(|p| p.name)
+            .chain(self.cfg.user_presets.iter().map(|p| p.name.clone()))
+            .collect()
+    }
+
+    fn hotkey_settings(&mut self, ui: &mut Ui) {
+        let view = hotkey_settings::View {
+            capturing: self.capturing,
+            hotkeys_available: self.hotkeys.as_ref().is_some_and(|h| h.available()),
+            monitor_on: self.cfg.devices.monitor_enabled,
+            preset_names: self.preset_names(),
+        };
+        for action in hotkey_settings::panel(ui, &mut self.cfg, &view) {
+            match action {
+                hotkey_settings::Action::Capture(t) => self.begin_capture(t),
+                hotkey_settings::Action::CancelCapture => self.cancel_capture(),
+                hotkey_settings::Action::Clear(t) => self.clear_hotkey(t),
+                hotkey_settings::Action::AddPresetKey => {
+                    let row = hotkey_settings::new_preset_key(
+                        &self.cfg.voice_keys.presets,
+                        &view.preset_names,
+                    );
+                    self.cfg.voice_keys.presets.push(row);
+                }
+                hotkey_settings::Action::RemovePresetKey(i) => {
+                    if matches!(self.capturing, Some(KeyTarget::Preset(_))) {
+                        self.cancel_capture(); // indexes are about to shift
+                    }
+                    if i < self.cfg.voice_keys.presets.len() {
+                        self.cfg.voice_keys.presets.remove(i);
+                    }
+                }
+            }
+        }
+    }
+
     fn set_autostart(&mut self, ctx: &egui::Context, on: bool) {
         match autostart::set_enabled(on) {
             Ok(()) => {
@@ -598,7 +740,10 @@ impl VoxApp {
             let view = soundboard::View {
                 board: &board,
                 shared: &self.shared,
-                capturing: self.capturing,
+                capturing: match self.capturing {
+                    Some(KeyTarget::Sound(id)) => Some(id),
+                    _ => None,
+                },
                 hotkeys_available: self.hotkeys.as_ref().is_some_and(|h| h.available()),
                 monitor_sounds: self.cfg.monitor_sounds,
                 monitor_on: self.cfg.devices.monitor_enabled,
@@ -636,31 +781,9 @@ impl VoxApp {
                 self.sounds.lock().set_volume(id, v);
                 self.sounds_changed();
             }
-            A::BeginHotkey(id) => {
-                if let Some(h) = &self.hotkeys {
-                    h.begin_capture();
-                    self.capturing = Some(id);
-                    self.capture_watch = Some(CaptureWatch {
-                        presses_at_start: h.presses_seen(),
-                        window_key_at: None,
-                        last_log: 0.0,
-                    });
-                }
-            }
-            A::CancelHotkey => {
-                hotkeys::diag::log("window: the 'Press a key' button was clicked -> cancel");
-                if let Some(h) = &self.hotkeys {
-                    h.cancel_capture();
-                }
-                self.capturing = None;
-                self.capture_watch = None;
-            }
-            A::ClearHotkey(id) => {
-                if let Some(s) = self.sounds.lock().get_mut(id) {
-                    s.entry.hotkey = None;
-                }
-                self.sounds_changed();
-            }
+            A::BeginHotkey(id) => self.begin_capture(KeyTarget::Sound(id)),
+            A::CancelHotkey => self.cancel_capture(),
+            A::ClearHotkey(id) => self.clear_hotkey(KeyTarget::Sound(id)),
             A::MonitorSounds(on) => {
                 self.cfg.monitor_sounds = on;
                 apply_to_shared(&self.cfg, &self.shared);
@@ -724,8 +847,63 @@ impl VoxApp {
         }
     }
 
+    /// Waits for the next key combination for `target` (pressed anywhere).
+    fn begin_capture(&mut self, target: KeyTarget) {
+        if let Some(h) = &self.hotkeys {
+            h.begin_capture();
+            self.capturing = Some(target);
+            self.capture_watch = Some(CaptureWatch {
+                presses_at_start: h.presses_seen(),
+                window_key_at: None,
+                last_log: 0.0,
+            });
+        }
+    }
+
+    fn cancel_capture(&mut self) {
+        hotkeys::diag::log("window: the 'Press a key' button was clicked -> cancel");
+        if let Some(h) = &self.hotkeys {
+            h.cancel_capture();
+        }
+        self.capturing = None;
+        self.capture_watch = None;
+    }
+
+    fn clear_hotkey(&mut self, target: KeyTarget) {
+        self.set_hotkey(target, None);
+    }
+
+    fn set_hotkey(&mut self, target: KeyTarget, key: Option<hotkeys::Hotkey>) {
+        let vk = &mut self.cfg.voice_keys;
+        match target {
+            KeyTarget::Sound(id) => {
+                if let Some(s) = self.sounds.lock().get_mut(id) {
+                    s.entry.hotkey = key;
+                }
+                self.sounds_changed();
+            }
+            KeyTarget::Toggle => vk.toggle = key,
+            KeyTarget::Mute => vk.mute = key,
+            KeyTarget::Preset(i) => {
+                if let Some(p) = vk.presets.get_mut(i) {
+                    p.hotkey = key;
+                }
+            }
+        }
+    }
+
+    /// Who else uses this key combination, if anyone.
+    fn hotkey_conflict(&self, key: &hotkeys::Hotkey, target: KeyTarget) -> Option<String> {
+        let board = self.sounds.lock();
+        let sounds = board
+            .sounds
+            .iter()
+            .map(|s| (s.id, s.entry.name.as_str(), s.entry.hotkey.as_ref()));
+        voice_keys::conflict(key, target, &self.cfg.voice_keys, sounds)
+    }
+
     fn poll_hotkey_capture(&mut self, ctx: &egui::Context) {
-        let (Some(h), Some(id)) = (&self.hotkeys, self.capturing) else {
+        let (Some(h), Some(target)) = (&self.hotkeys, self.capturing) else {
             self.capture_watch = None;
             return;
         };
@@ -740,28 +918,18 @@ impl VoxApp {
             return;
         };
         hotkeys::diag::log(format!("window: got key {} -> saving", key.label));
-        let mut board = self.sounds.lock();
-        let clash = board
-            .hotkey_owner(&key)
-            .filter(|&other| other != id)
-            .and_then(|other| {
-                board
-                    .sounds
-                    .iter()
-                    .find(|s| s.id == other)
-                    .map(|s| s.entry.name.clone())
-            });
         let label = key.label.clone();
-        if let Some(s) = board.get_mut(id) {
-            s.entry.hotkey = Some(key);
+        if let Some(owner) = self.hotkey_conflict(&key, target) {
+            self.toasts.push(
+                ctx,
+                format!(
+                    "{label} is already used by {owner}. Pick another key, or clear that one first."
+                ),
+            );
+            return;
         }
-        drop(board);
-        self.sounds_changed();
-        let msg = match clash {
-            Some(other) => format!("{label} assigned (also used by \"{other}\": both will play)"),
-            None => format!("Hotkey {label} assigned"),
-        };
-        self.toasts.push(ctx, msg);
+        self.set_hotkey(target, Some(key));
+        self.toasts.push(ctx, format!("Hotkey {label} assigned"));
     }
 
     fn apply_preset_action(&mut self, ctx: &egui::Context, action: presets::Action) {
@@ -871,7 +1039,8 @@ impl VoxApp {
     fn top_bar(&mut self, ui: &mut Ui) {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let on = self.cfg.voice_on;
+            // The shared state is the truth: the tray and hotkeys change it too.
+            let on = self.shared.voice_on.load(Relaxed);
             let (text, fill) = if on {
                 ("Voice changer ON", ON)
             } else {
@@ -885,13 +1054,16 @@ impl VoxApp {
             )
             .fill(fill)
             .min_size(egui::vec2(230.0, 44.0));
-            if ui
-                .add(button)
-                .on_hover_text("Off = your clean voice passes straight through")
-                .clicked()
-            {
+            let tip = match &self.cfg.voice_keys.toggle {
+                Some(k) => format!(
+                    "Off = your clean voice passes straight through. Hotkey: {}",
+                    k.label
+                ),
+                None => "Off = your clean voice passes straight through".to_string(),
+            };
+            if ui.add(button).on_hover_text(tip).clicked() {
+                self.feedback.toggle_voice();
                 self.cfg.voice_on = !on;
-                self.shared.voice_on.store(self.cfg.voice_on, Relaxed);
                 self.refresh_tray();
             }
             let muted = self.shared.mic_muted.load(Relaxed);
@@ -1242,7 +1414,7 @@ pub(crate) mod tests {
         use crate::soundboard::hotkeys::tests::{HOOK_TESTS, tap_f24};
         let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut app = test_app();
-        app.hotkeys = Some(HotkeyService::start(app.sounds.board.clone()));
+        app.hotkeys = Some(HotkeyService::start(app.sounds.board.clone(), None));
         let ctx = egui::Context::default();
         app.add_sounds(&ctx, vec!["C:/nope/airhorn.wav".into()]);
         let id = app.sounds.lock().sounds[0].id;
@@ -1250,7 +1422,11 @@ pub(crate) mod tests {
 
         app.apply_sound_action(&ctx, soundboard::Action::BeginHotkey(id));
         frame(&ctx, &mut app, (1240.0, 800.0), 0.1, vec![]);
-        assert_eq!(app.capturing, Some(id), "waiting for a key");
+        assert_eq!(
+            app.capturing,
+            Some(KeyTarget::Sound(id)),
+            "waiting for a key"
+        );
         std::thread::sleep(Duration::from_millis(100));
         tap_f24();
         let mut t = 0.2;
@@ -1278,7 +1454,7 @@ pub(crate) mod tests {
         use crate::soundboard::hotkeys::tests::HOOK_TESTS;
         let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut app = test_app();
-        app.hotkeys = Some(HotkeyService::start(app.sounds.board.clone()));
+        app.hotkeys = Some(HotkeyService::start(app.sounds.board.clone(), None));
         let ctx = egui::Context::default();
         app.add_sounds(&ctx, vec!["C:/nope/airhorn.wav".into()]);
         let id = app.sounds.lock().sounds[0].id;
@@ -1292,12 +1468,147 @@ pub(crate) mod tests {
             modifiers: egui::Modifiers::NONE,
         }];
         frame(&ctx, &mut app, (1240.0, 800.0), 0.0, key);
-        assert_eq!(app.capturing, Some(id), "a short delay is allowed");
+        assert_eq!(
+            app.capturing,
+            Some(KeyTarget::Sound(id)),
+            "a short delay is allowed"
+        );
         std::thread::sleep(Duration::from_millis(900));
         frame(&ctx, &mut app, (1240.0, 800.0), 1.0, vec![]);
         assert_eq!(app.capturing, None, "gave up");
         assert!(app.cfg.sounds[0].hotkey.is_none());
         assert!(app.toasts.contains("did not receive that key press"));
+    }
+
+    /// Waits until `cond` holds, running app frames meanwhile (up to 2 s).
+    #[cfg(windows)]
+    fn wait_for(
+        ctx: &egui::Context,
+        app: &mut VoxApp,
+        mut cond: impl FnMut(&VoxApp) -> bool,
+    ) -> bool {
+        for i in 0..100 {
+            frame(ctx, app, (1240.0, 800.0), f64::from(i) * 0.02, vec![]);
+            if cond(app) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// The real key listener: F24 (a key no keyboard has) as the voice changer hotkey.
+    #[cfg(windows)]
+    #[test]
+    fn voice_hotkey_toggles_and_holds_with_the_real_listener() {
+        use crate::soundboard::hotkeys::tests::{HOOK_TESTS, VK_F24, f24, tap_f24};
+        use crate::voice_keys::VoiceKeyMode;
+        let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.start_hotkeys(ctx.clone());
+        app.cfg.voice_keys.toggle = Some(hotkeys::Hotkey::new(
+            VK_F24, false, false, false, false, "F24",
+        ));
+        app.shared.cue_enabled.store(true, Relaxed);
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]); // pushes the binding
+        let before = app.fx;
+        std::thread::sleep(Duration::from_millis(100));
+
+        tap_f24();
+        assert!(
+            wait_for(&ctx, &mut app, |a| !a.cfg.voice_on),
+            "first press: clean"
+        );
+        assert_eq!(app.shared.take_cue(), Some(false), "OFF beep");
+        tap_f24();
+        assert!(
+            wait_for(&ctx, &mut app, |a| a.cfg.voice_on),
+            "second press: effects"
+        );
+        assert_eq!(app.fx, before, "sliders untouched");
+
+        // Push-to-talk effect: clean at rest, effects only while held.
+        app.cfg.voice_keys.mode = VoiceKeyMode::HoldForEffects;
+        assert!(wait_for(&ctx, &mut app, |a| !a.cfg.voice_on), "rests clean");
+        f24(true);
+        assert!(
+            wait_for(&ctx, &mut app, |a| a.cfg.voice_on),
+            "held: effects"
+        );
+        f24(false);
+        assert!(
+            wait_for(&ctx, &mut app, |a| !a.cfg.voice_on),
+            "released: clean"
+        );
+    }
+
+    /// Assigning a key another action already uses is refused.
+    #[cfg(windows)]
+    #[test]
+    fn duplicate_hotkeys_are_refused() {
+        use crate::soundboard::hotkeys::tests::{HOOK_TESTS, VK_F24, tap_f24};
+        let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.start_hotkeys(ctx.clone());
+        app.add_sounds(&ctx, vec!["C:/nope/airhorn.wav".into()]);
+        let id = app.sounds.lock().sounds[0].id;
+        let f24_key = hotkeys::Hotkey::new(VK_F24, false, false, false, false, "F24");
+        app.set_hotkey(KeyTarget::Sound(id), Some(f24_key));
+
+        app.begin_capture(KeyTarget::Toggle);
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
+        std::thread::sleep(Duration::from_millis(100));
+        tap_f24();
+        assert!(wait_for(&ctx, &mut app, |a| a.capturing.is_none()));
+        assert!(app.cfg.voice_keys.toggle.is_none(), "not assigned");
+        assert!(app.toasts.contains("already used by the sound \"airhorn\""));
+    }
+
+    #[test]
+    fn hotkey_settings_draw_in_every_state() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.cfg.voice_keys.toggle =
+            Some(hotkeys::Hotkey::new(0x77, false, false, false, false, "F8"));
+        app.cfg
+            .voice_keys
+            .presets
+            .push(crate::voice_keys::PresetHotkey {
+                preset: "Robot".into(),
+                hotkey: None,
+            });
+        app.capturing = Some(KeyTarget::Preset(0));
+        for size in [(920.0, 600.0), (1920.0, 1080.0)] {
+            frame(&ctx, &mut app, size, 0.0, vec![]);
+        }
+    }
+
+    #[test]
+    fn start_state_setting_is_applied() {
+        for (start, saved, want) in [
+            (StartVoice::RememberLast, false, false),
+            (StartVoice::RememberLast, true, true),
+            (StartVoice::On, false, true),
+            (StartVoice::Off, true, false),
+        ] {
+            let cfg = Config {
+                start_voice: start,
+                voice_on: saved,
+                ..Config::default()
+            };
+            let app = VoxApp::with_manager(
+                cfg,
+                Arc::new(Shared::default()),
+                ManagerHandle::detached(fake_status()),
+            );
+            assert_eq!(
+                app.shared.voice_on.load(Relaxed),
+                want,
+                "{start:?} saved={saved}"
+            );
+        }
     }
 
     #[test]
@@ -1314,7 +1625,7 @@ pub(crate) mod tests {
         );
         assert_eq!(app.cfg.sounds.len(), 2, "the .txt is skipped");
         assert_eq!(app.cfg.tab, Tab::Soundboard);
-        app.capturing = Some(app.sounds.lock().sounds[0].id);
+        app.capturing = Some(KeyTarget::Sound(app.sounds.lock().sounds[0].id));
         for (i, size) in [(920.0, 600.0), (1920.0, 1080.0)].into_iter().enumerate() {
             frame(&ctx, &mut app, size, i as f64, vec![]);
         }

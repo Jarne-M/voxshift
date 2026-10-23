@@ -145,6 +145,7 @@ impl Board {
     }
 
     /// The sound that already uses this key combination, if any.
+    #[cfg(test)]
     pub fn hotkey_owner(&self, key: &Hotkey) -> Option<SoundId> {
         self.sounds
             .iter()

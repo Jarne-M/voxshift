@@ -101,18 +101,39 @@ pub fn is_modifier(vk: u32) -> bool {
     matches!(vk, 0x10..=0x12 | 0xA0..=0xA5 | 0x5B | 0x5C)
 }
 
-/// Turns raw key events into "combination pressed" events: ignores modifiers on their own and
-/// the auto-repeat of a held key.
+/// What a key did, after filtering.
+#[derive(Clone, Debug, PartialEq)]
+pub enum KeyEvent {
+    /// A key combination went down (once: auto-repeat is ignored).
+    Pressed(Hotkey),
+    /// The (non-modifier) key with this code went up.
+    Released(u32),
+}
+
+/// Turns raw key events into "combination pressed" / "key released" events: ignores modifiers
+/// on their own and the auto-repeat of a held key.
 #[derive(Default)]
 pub struct KeyTracker {
     held: HashSet<u32>,
 }
 
 impl KeyTracker {
+    #[cfg(test)]
     pub fn feed(&mut self, k: RawKey, name: impl FnOnce(&RawKey) -> String) -> Option<Hotkey> {
+        match self.feed_event(k, name) {
+            Some(KeyEvent::Pressed(h)) => Some(h),
+            _ => None,
+        }
+    }
+
+    pub fn feed_event(
+        &mut self,
+        k: RawKey,
+        name: impl FnOnce(&RawKey) -> String,
+    ) -> Option<KeyEvent> {
         if !k.down {
-            self.held.remove(&k.vk);
-            return None;
+            let was_held = self.held.remove(&k.vk);
+            return (was_held && !is_modifier(k.vk)).then_some(KeyEvent::Released(k.vk));
         }
         if is_modifier(k.vk) || !self.held.insert(k.vk) {
             return None;
@@ -129,8 +150,18 @@ impl KeyTracker {
             }
         }
         label.push_str(&name(&k));
-        Some(Hotkey::new(k.vk, k.ctrl, k.shift, k.alt, k.win, &label))
+        Some(KeyEvent::Pressed(Hotkey::new(
+            k.vk, k.ctrl, k.shift, k.alt, k.win, &label,
+        )))
     }
+}
+
+/// Something besides the soundboard that reacts to hotkeys (the voice changer controls).
+/// Called on the hotkey worker thread.
+pub trait KeyHandler: Send + Sync {
+    /// Returns true if the key belonged to it (then no sound plays).
+    fn pressed(&self, key: &Hotkey) -> bool;
+    fn released(&self, vk: u32);
 }
 
 /// What the GUI hears back while assigning a key.
@@ -151,9 +182,10 @@ pub struct HotkeyService {
 }
 
 impl HotkeyService {
-    /// Starts listening. Key presses play matching sounds of `board` directly from the worker
-    /// thread, so hotkeys work even while the window is hidden and not repainting.
-    pub fn start(board: Arc<Mutex<Board>>) -> Self {
+    /// Starts listening. Key presses go to `handler` first (voice changer controls), then play
+    /// matching sounds of `board`, directly from the worker thread, so hotkeys work even while
+    /// the window is hidden and not repainting.
+    pub fn start(board: Arc<Mutex<Board>>, handler: Option<Arc<dyn KeyHandler>>) -> Self {
         let (raw_tx, raw_rx) = mpsc::channel::<RawKey>();
         let (cap_tx, cap_rx) = mpsc::channel();
         let capture = Arc::new(Mutex::new(false));
@@ -191,14 +223,25 @@ impl HotkeyService {
                         ));
                     }
                     #[cfg(windows)]
-                    let pressed = tracker.feed(raw, win::key_name);
+                    let event = tracker.feed_event(raw, win::key_name);
                     #[cfg(not(windows))]
-                    let pressed = tracker.feed(raw, |k| format!("Key {}", k.vk));
-                    let Some(key) = pressed else {
-                        if waiting && raw.down {
-                            diag::log("worker: ignored (modifier on its own, or key still held)");
+                    let event = tracker.feed_event(raw, |k| format!("Key {}", k.vk));
+                    let key = match event {
+                        Some(KeyEvent::Pressed(key)) => key,
+                        Some(KeyEvent::Released(vk)) => {
+                            if !waiting && let Some(h) = &handler {
+                                h.released(vk);
+                            }
+                            continue;
                         }
-                        continue;
+                        None => {
+                            if waiting && raw.down {
+                                diag::log(
+                                    "worker: ignored (modifier on its own, or key still held)",
+                                );
+                            }
+                            continue;
+                        }
                     };
                     let mut capturing = cap.lock().unwrap_or_else(|e| e.into_inner());
                     if *capturing {
@@ -217,6 +260,9 @@ impl HotkeyService {
                         continue;
                     }
                     drop(capturing);
+                    if handler.as_ref().is_some_and(|h| h.pressed(&key)) {
+                        continue;
+                    }
                     board
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
@@ -523,24 +569,32 @@ pub(crate) mod tests {
     /// this is harmless wherever the focus is; the raw input listener still sees it.
     #[cfg(windows)]
     pub(crate) fn tap_f24() {
+        f24(true);
+        f24(false);
+    }
+
+    /// F24 down or up (see [`tap_f24`]).
+    #[cfg(windows)]
+    pub(crate) fn f24(down: bool) {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
             INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
         };
-        let key = |flags| INPUT {
+        let input = INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: 0x87, // VK_F24
+                    wVk: VK_F24 as u16,
                     wScan: 0,
-                    dwFlags: flags,
+                    dwFlags: if down { 0 } else { KEYEVENTF_KEYUP },
                     time: 0,
                     dwExtraInfo: 0,
                 },
             },
         };
-        let inputs = [key(0), key(KEYEVENTF_KEYUP)];
-        unsafe { SendInput(2, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+        unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
     }
+
+    pub(crate) const VK_F24: u32 = 0x87;
 
     #[cfg(windows)]
     #[test]
@@ -549,7 +603,7 @@ pub(crate) mod tests {
         use crate::soundboard::library::Soundboard;
         let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let sb = Soundboard::new(Arc::new(EnginePort::default()), vec![]);
-        let service = HotkeyService::start(sb.board.clone());
+        let service = HotkeyService::start(sb.board.clone(), None);
         assert!(service.available());
         service.begin_capture();
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -586,7 +640,7 @@ pub(crate) mod tests {
         use crate::soundboard::library::Soundboard;
         let sb = Soundboard::new(Arc::new(EnginePort::default()), vec![]);
         for _ in 0..2 {
-            let service = HotkeyService::start(sb.board.clone());
+            let service = HotkeyService::start(sb.board.clone(), None);
             assert!(service.available(), "raw input registration failed");
             service.begin_capture();
             assert!(service.poll_capture().is_none());
@@ -601,7 +655,7 @@ pub(crate) mod tests {
         use crate::soundboard::library::Soundboard;
         let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let sb = Soundboard::new(Arc::new(EnginePort::default()), vec![]);
-        let service = HotkeyService::start(sb.board.clone());
+        let service = HotkeyService::start(sb.board.clone(), None);
         std::thread::sleep(std::time::Duration::from_millis(100));
         let before = service.presses_seen();
         tap_f24();

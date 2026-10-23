@@ -38,6 +38,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_BALLOON: u32 = WM_APP + 3;
 const WM_REFRESH: u32 = WM_APP + 4;
+/// wparam: 1 = show "ON", 0 = "OFF".
+const WM_OVERLAY: u32 = WM_APP + 5;
 const ICON_ID: u32 = 1;
 const TIMER_ID: usize = 1;
 const REFRESH_MS: u32 = 500;
@@ -63,6 +65,8 @@ struct Ctx {
     last: RefCell<Option<TrayStatus>>,
     balloon: Arc<Mutex<Option<(String, String)>>>,
     taskbar_created: u32,
+    /// The ON/OFF banner, created the first time it is needed.
+    overlay: RefCell<HWND>,
 }
 
 impl Ctx {
@@ -214,6 +218,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             ctx.show_balloon();
             0
         }
+        WM_OVERLAY => {
+            let mut banner = ctx.overlay.borrow_mut();
+            if banner.is_null() {
+                *banner = super::overlay::create();
+            }
+            super::overlay::show(*banner, wparam != 0);
+            0
+        }
         WM_QUERYENDSESSION => 1,
         WM_ENDSESSION => {
             if wparam != 0 {
@@ -290,6 +302,22 @@ fn make_icon(rgba: &[u8], size: u32) -> HICON {
     }
 }
 
+/// Posts to the tray thread from anywhere (posting to a window that is gone does nothing).
+#[derive(Clone, Copy, Debug)]
+pub struct TrayPoster(isize);
+
+impl TrayPoster {
+    /// Re-reads the status now (icon, tooltip).
+    pub fn refresh(self) {
+        unsafe { PostMessageW(self.0 as HWND, WM_REFRESH, 0, 0) };
+    }
+
+    /// Shows the "Voice changer: ON/OFF" banner for about a second.
+    pub fn overlay(self, on: bool) {
+        unsafe { PostMessageW(self.0 as HWND, WM_OVERLAY, usize::from(on), 0) };
+    }
+}
+
 /// Owned by the app. Dropping it removes the icon and ends the thread.
 pub struct Tray {
     hwnd: isize,
@@ -336,7 +364,12 @@ impl Tray {
 
     /// Re-reads the status right away (instead of waiting for the next timer tick).
     pub fn refresh(&self) {
-        unsafe { PostMessageW(self.hwnd as HWND, WM_REFRESH, 0, 0) };
+        self.poster().refresh();
+    }
+
+    /// A handle other threads can use to poke the tray.
+    pub fn poster(&self) -> TrayPoster {
+        TrayPoster(self.hwnd)
     }
 
     /// Removes the icon and stops the thread. Safe to call twice.
@@ -407,6 +440,7 @@ fn run(
             last: RefCell::new(None),
             balloon,
             taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
+            overlay: RefCell::new(std::ptr::null_mut()),
         });
         let ptr = Box::into_raw(ctx);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr as isize);
@@ -431,6 +465,33 @@ fn run(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Run by hand (it shows the banner on screen): the overlay appears and hides itself.
+    #[test]
+    #[ignore]
+    fn overlay_shows_and_hides_itself() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, IsWindowVisible};
+        let mut tray = Tray::start(
+            || TrayStatus {
+                health: Health::Ok,
+                voice_on: true,
+                muted: false,
+                active: String::new(),
+                tooltip: "VoxShift overlay test".into(),
+            },
+            |_| {},
+        )
+        .unwrap();
+        tray.poster().overlay(true);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let class = wide("VoxShift.Overlay");
+        let hwnd = unsafe { FindWindowW(class.as_ptr(), std::ptr::null()) };
+        assert!(!hwnd.is_null(), "banner window exists");
+        assert!(unsafe { IsWindowVisible(hwnd) } != 0, "banner visible");
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        assert!(unsafe { IsWindowVisible(hwnd) } == 0, "hidden again after ~1 s");
+        tray.shutdown();
+    }
 
     #[test]
     fn icon_conversion_produces_a_handle() {

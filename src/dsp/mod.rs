@@ -4,6 +4,7 @@
 pub mod biquad;
 pub mod chain;
 pub mod chorus;
+pub mod cue;
 pub mod delay;
 pub mod distortion;
 pub mod echo;

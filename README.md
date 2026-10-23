@@ -119,6 +119,33 @@ background, but only listens. It can't block or change keys and adds no delay to
 raw input doesn't have that problem.) If you press a key while VoxShift waits for a hotkey and
 it hears nothing, it tells you instead of waiting forever.
 
+## 5a. Voice changer hotkeys
+
+Under **Voice changer hotkeys** in the left panel:
+
+- **Effects on/off:** click *Set hotkey*, then press a key or combination (Ctrl/Alt/Shift +
+  key). It works in the background, in the tray and in games, and the game still gets the key.
+  Holding the key doesn't repeat. The mode can be:
+  - **Toggle:** each press switches.
+  - **Hold for effects (push-to-talk):** clean, with effects only while held.
+  - **Hold for clean (push-to-clean):** effects, clean only while held.
+- **Mute / unmute mic** has its own hotkey.
+- **Jump to a preset:** add a row, pick a preset, give it a key. Pressing it loads that preset
+  and turns effects on.
+- **Duplicates are refused:** a key already used by a clip, the toggle, mute or a preset key
+  shows a message instead.
+- **Switching never changes your sliders or preset.** Switching back gives exactly what was
+  active before. The switch is a 25 ms crossfade, and an echo or reverb that's still sounding
+  rings out naturally instead of being cut off. Clean mode keeps your input gain (mic
+  calibration), so the volume doesn't jump.
+- **Feedback:** a short beep in your headphones (rising = ON, falling = OFF). It plays on the
+  monitor output only and never goes into your mic. You can set its volume or turn it off. The
+  monitor must be on; untick "my voice" there to hear only the beeps. Optionally a
+  "Voice changer: ON/OFF" banner shows at the top of the screen for a second (it doesn't show
+  over games in exclusive fullscreen). The big button, the tray icon and its tooltip always
+  show the current state.
+- **At start:** remember the last state (default), always effects ON, or always OFF.
+
 ## 5b. Closing, the tray icon and startup
 
 Your virtual mic only exists while VoxShift runs, so closing the window never quietly kills it:
@@ -241,6 +268,14 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
 15. **Start with Windows.** Tick it and *Start minimized to tray*, sign out and back in:
     VoxShift is only in the tray, and the mic works. In Task Manager → Startup apps, VoxShift
     is listed. Untick it: the entry is gone.
+16. **Voice hotkey while talking.** Set a toggle key (e.g. F8) and talk while monitoring. Press
+    it a few times: you hear the beeps, and the switch between effects and clean has no pop.
+17. **Echo tail.** Turn on Echo (or the Cave preset), say something short, and press the
+    hotkey right after: the echoes keep sounding and fade away naturally.
+18. **In a game.** Focus a game, press the hotkey: the beep confirms it, Discord hears the
+    change, and the game still reacts to the key normally. Try *Hold for effects* too.
+19. **Duplicates.** Try giving the toggle the same key as a soundboard clip: you get a
+    message, and nothing changes.
 
 ## 9. How it works
 

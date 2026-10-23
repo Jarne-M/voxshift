@@ -3,6 +3,7 @@
 pub mod autostart;
 pub mod icon;
 pub mod instance;
+pub mod overlay;
 pub mod tray;
 
 /// Overall state, shown by the tray icon colour. Ordered from fine to worst.

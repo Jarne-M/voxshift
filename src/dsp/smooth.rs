@@ -35,10 +35,6 @@ impl Smoother {
         self.value
     }
 
-    pub fn reset(&mut self, v: f32) {
-        self.value = v;
-    }
-
     /// True once the value has (practically) arrived.
     pub fn settled(&self, target: f32) -> bool {
         (self.value - target).abs() < 1e-4

@@ -15,7 +15,7 @@ use super::params::{P, Snapshot};
 use super::pitch::{PitchShifter, semitones_to_ratio};
 use super::reverb::Reverb;
 use super::robot::Robot;
-use super::smooth::Smoother;
+use super::smooth::{Ramp, Smoother};
 use super::{Block, VoiceProcessor};
 use crate::audio::block::BLOCK;
 use crate::audio::shared::from_db;
@@ -147,8 +147,14 @@ pub struct VoiceChain {
     input_gain: Smoother,
     output_gain: Smoother,
     dry_wet: Smoother,
-    /// 1 = processed voice, 0 = clean passthrough (master toggle off).
-    engaged: Smoother,
+    fs: f32,
+    /// Input to the effects: 1 = effects on, 0 = clean (master toggle off).
+    engaged: Ramp,
+    /// Input gain for the clean path.
+    clean_gain: Smoother,
+    /// Switched to clean and the tail has died away: the effects are not run at all.
+    resting: bool,
+    quiet_blocks: u32,
     faders: [Smoother; SECTIONS],
     idle: [bool; SECTIONS],
     gate: Gate,
@@ -193,7 +199,11 @@ impl VoiceChain {
             input_gain: Smoother::new(fs, 0.02, 1.0),
             output_gain: Smoother::new(fs, 0.02, 1.0),
             dry_wet: Smoother::new(fs, 0.02, 1.0),
-            engaged: Smoother::new(fs, FADE_S, 1.0),
+            fs,
+            engaged: Ramp::new(fs, SWITCH_S, 1.0),
+            clean_gain: Smoother::new(fs, 0.02, 1.0),
+            resting: false,
+            quiet_blocks: 0,
             faders: [Smoother::new(fs, FADE_S, 0.0); SECTIONS],
             idle: [true; SECTIONS],
             gate: Gate::new(fs),
@@ -207,26 +217,80 @@ impl VoiceChain {
         }
     }
 
-    /// Runs the chain; `voice_on == false` crossfades to the untouched input.
+    /// Runs the chain; `voice_on == false` switches to the clean mic.
+    ///
+    /// The switch fades the chain's *input* over 25 ms, not its output, while the clean mic
+    /// fades in: your voice crossfades without a click, and whatever the effects still have
+    /// in flight (an echo, a reverb tail) rings out naturally instead of being cut. Once that
+    /// tail has died away the chain rests and the output is exactly the clean mic (with the
+    /// input gain, which is mic calibration, so the level does not jump).
     pub fn run(&mut self, block: &mut Block, params: &Snapshot, voice_on: bool) {
-        let dry = *block;
-        self.process(block, params);
+        let gin = from_db(params.get(P::InputGain));
+        if self.resting {
+            if !voice_on {
+                for s in block.iter_mut() {
+                    *s *= self.clean_gain.next(gin);
+                }
+                return;
+            }
+            self.resting = false;
+        }
         let target = if voice_on { 1.0 } else { 0.0 };
-        if voice_on && self.engaged.settled(1.0) {
-            return;
+        let clean = *block;
+        let mut fade = [0.0; BLOCK];
+        for (s, f) in block.iter_mut().zip(fade.iter_mut()) {
+            *f = self.engaged.next(target);
+            *s *= *f;
         }
-        if !voice_on && self.engaged.settled(0.0) {
-            // Fully bypassed: exactly the clean input.
-            self.engaged.reset(0.0);
-            *block = dry;
-            return;
+        self.process(block, params);
+        let tail_peak = block.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        for ((s, c), f) in block.iter_mut().zip(clean.iter()).zip(fade.iter()) {
+            *s += c * self.clean_gain.next(gin) * (1.0 - f);
         }
-        for (s, d) in block.iter_mut().zip(dry.iter()) {
-            let e = self.engaged.next(target);
-            *s = *d + (*s - *d) * e;
+
+        if !voice_on && self.engaged.value() == 0.0 {
+            // An echo is silent between repeats: only call the tail over once it has been
+            // quiet for longer than the echo time.
+            let gap_s = if params.on(P::EchoOn) {
+                params.get(P::EchoTime) / 1000.0
+            } else {
+                0.0
+            };
+            let needed = ((TAIL_QUIET_S + gap_s) * self.fs / BLOCK as f32) as u32;
+            if tail_peak < TAIL_SILENT {
+                self.quiet_blocks += 1;
+                if self.quiet_blocks >= needed {
+                    self.resting = true;
+                    self.quiet_blocks = 0;
+                    self.reset_effects();
+                }
+            } else {
+                self.quiet_blocks = 0;
+            }
+        } else {
+            self.quiet_blocks = 0;
         }
     }
+
+    /// Clears every effect's memory (used when the chain goes to rest).
+    fn reset_effects(&mut self) {
+        self.gate.reset();
+        self.pitch.reset();
+        self.tone.reset();
+        self.dist.reset();
+        self.robot.reset();
+        self.chorus.reset();
+        self.echo.reset();
+        self.reverb.reset();
+    }
 }
+
+/// Crossfade time between effects and clean.
+const SWITCH_S: f32 = 0.025;
+/// After switching to clean, the effect tail plays until it stays below this level...
+const TAIL_SILENT: f32 = 1e-5;
+/// ...for this long (plus the echo time if the echo is on); then the chain rests.
+const TAIL_QUIET_S: f32 = 0.05;
 
 impl VoiceProcessor for VoiceChain {
     fn process(&mut self, block: &mut Block, p: &Snapshot) {
@@ -495,12 +559,12 @@ mod tests {
     }
 
     #[test]
-    fn bypass_passes_the_clean_input() {
+    fn clean_is_the_mic_with_its_input_gain_once_the_tail_is_gone() {
         let mut chain = VoiceChain::new(FS);
         let mut p = Snapshot::defaults();
         p.set(P::RobotOn, 1.0);
-        p.set(P::InputGain, 12.0);
-        let mut last = [0.0; BLOCK];
+        p.set(P::InputGain, 6.0);
+        let gain = from_db(6.0);
         for n in 0..200 {
             let mut b = [0.0; BLOCK];
             for (i, s) in b.iter_mut().enumerate() {
@@ -508,11 +572,67 @@ mod tests {
             }
             let input = b;
             chain.run(&mut b, &p, false);
-            last = b;
-            if n > 160 {
-                assert_eq!(input, b);
+            if n > 150 {
+                assert!(chain.resting, "effects stopped running");
+                for (x, y) in input.iter().zip(b.iter()) {
+                    assert!((x * gain - y).abs() < 1e-4, "clean: {x} -> {y}");
+                }
             }
         }
-        let _ = last;
+    }
+
+    /// Effects on for a burst, then switch to clean: the echo of the burst keeps sounding
+    /// after the switch instead of being cut off.
+    #[test]
+    fn switching_to_clean_lets_the_echo_ring_out() {
+        let mut chain = VoiceChain::new(FS);
+        let mut p = Snapshot::defaults();
+        p.set(P::EchoOn, 1.0);
+        p.set(P::EchoFeedback, 0.5);
+        p.set(P::EchoMix, 0.8);
+        let mut out = Vec::new();
+        let blocks_per_s = FS as usize / BLOCK;
+        // 6 s: with feedback 0.5 the repeats take ~4 s to fall below the silence threshold.
+        for n in 0..blocks_per_s * 6 {
+            let mut b = [0.0; BLOCK];
+            if n < blocks_per_s / 10 {
+                // 100 ms burst
+                for (i, s) in b.iter_mut().enumerate() {
+                    *s = 0.3 * (2.0 * PI * 300.0 * (n * BLOCK + i) as f32 / FS).sin();
+                }
+            }
+            let voice_on = n < blocks_per_s / 10 + 5; // switch right after the burst
+            chain.run(&mut b, &p, voice_on);
+            out.extend_from_slice(&b);
+        }
+        // The first echo arrives 250 ms after the burst, long after the switch.
+        let echo = &out[(0.26 * FS) as usize..(0.34 * FS) as usize];
+        let peak = echo.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(peak > 0.05, "echo tail after switching to clean: {peak}");
+        assert!(chain.resting, "and once it has died away the chain rests");
+    }
+
+    #[test]
+    fn toggling_while_talking_never_clicks_and_comes_back_exactly() {
+        let mut chain = VoiceChain::new(FS);
+        let mut p = Snapshot::defaults();
+        p.set(P::RobotOn, 1.0);
+        p.set(P::ReverbOn, 1.0);
+        p.set(P::InputGain, 3.0);
+        let mut out = Vec::new();
+        for n in 0..3000 {
+            let mut b = [0.0; BLOCK];
+            for (i, s) in b.iter_mut().enumerate() {
+                *s = 0.3 * (2.0 * PI * 220.0 * (n * BLOCK + i) as f32 / FS).sin();
+            }
+            let voice_on = (n / 200) % 2 == 0; // switch every ~270 ms
+            chain.run(&mut b, &p, voice_on);
+            out.extend_from_slice(&b);
+        }
+        let step = max_step(&out);
+        // The sine itself (at +3 dB) moves up to ~0.012 per sample; ring modulation and the
+        // reverb add some more, but nothing like a click (a jump of 0.3+).
+        assert!(step < 0.06, "max step {step}");
+        assert!(out.iter().all(|x| x.is_finite()));
     }
 }

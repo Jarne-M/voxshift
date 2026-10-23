@@ -63,6 +63,12 @@ pub struct Shared {
     pub voice_on: AtomicBool,
     /// Mutes the mic (fades out like a mic switch); the soundboard keeps playing.
     pub mic_muted: AtomicBool,
+    /// Beep in the headphones (monitor only) when the voice changer is switched.
+    pub cue_enabled: AtomicBool,
+    pub cue_volume: AtomicF32,
+    /// 0 = nothing, 1 = play the ON beep, 2 = the OFF beep. Taken by the engine.
+    cue_request: AtomicU8,
+    pub overlay_enabled: AtomicBool,
     active_mic: AtomicU8,
     /// Per-mic level (linear peak with ~300 ms release), written by the input callbacks.
     pub mic_level: [AtomicF32; 2],
@@ -90,6 +96,10 @@ impl Default for Shared {
             params: ParamStore::default(),
             voice_on: AtomicBool::new(true),
             mic_muted: AtomicBool::new(false),
+            cue_enabled: AtomicBool::new(true),
+            cue_volume: AtomicF32::new(0.5),
+            cue_request: AtomicU8::new(0),
+            overlay_enabled: AtomicBool::new(false),
             active_mic: AtomicU8::new(0),
             mic_level: [AtomicF32::zero(), AtomicF32::zero()],
             mic_fill_ms: [AtomicF32::zero(), AtomicF32::zero()],
@@ -107,6 +117,20 @@ impl Default for Shared {
 }
 
 impl Shared {
+    /// Asks the engine to play the ON or OFF beep on the monitor output.
+    pub fn request_cue(&self, on: bool) {
+        self.cue_request.store(if on { 1 } else { 2 }, Relaxed);
+    }
+
+    /// Takes a pending beep request (engine side).
+    pub fn take_cue(&self) -> Option<bool> {
+        match self.cue_request.swap(0, Relaxed) {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
+    }
+
     pub fn is_playing(&self, id: u64) -> bool {
         id != 0 && self.playing_ids.iter().any(|a| a.load(Relaxed) == id)
     }

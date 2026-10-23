@@ -7,6 +7,7 @@ use crate::audio::device_manager::DeviceSettings;
 use crate::audio::mic_select::MicSettings;
 use crate::dsp::params::EffectSettings;
 use crate::soundboard::library::SoundEntry;
+use crate::voice_keys::VoiceHotkeys;
 use presets::Preset;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -29,10 +30,44 @@ pub enum CloseBehavior {
     Quit,
 }
 
+/// Whether the voice changer starts with effects on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StartVoice {
+    /// As it was when VoxShift last closed.
+    #[default]
+    RememberLast,
+    On,
+    Off,
+}
+
+/// How a voice changer switch is announced.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FeedbackSettings {
+    /// Beep in the headphones (monitor output only).
+    pub cues: bool,
+    pub cue_volume: f32,
+    /// Small always-on-top "Voice changer ON/OFF" for about a second.
+    pub overlay: bool,
+}
+
+impl Default for FeedbackSettings {
+    fn default() -> Self {
+        Self {
+            cues: true,
+            cue_volume: 0.5,
+            overlay: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub tab: Tab,
+    pub voice_keys: VoiceHotkeys,
+    pub feedback: FeedbackSettings,
+    pub start_voice: StartVoice,
     pub close_behavior: CloseBehavior,
     /// Start hidden in the tray (useful with "Start with Windows", which lives in the
     /// registry, not here).
@@ -55,6 +90,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             tab: Tab::Effects,
+            voice_keys: VoiceHotkeys::default(),
+            feedback: FeedbackSettings::default(),
+            start_voice: StartVoice::RememberLast,
             close_behavior: CloseBehavior::Ask,
             start_minimized: false,
             devices: DeviceSettings::default(),
@@ -160,6 +198,47 @@ mod tests {
             loaded.sounds[0].hotkey.as_ref().unwrap().label,
             "Ctrl+Num 1"
         );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn voice_hotkeys_feedback_and_start_state_round_trip() {
+        use crate::voice_keys::{PresetHotkey, VoiceKeyMode};
+        let dir = temp_dir("config-voicekeys");
+        let path = dir.join("config.json");
+        let cfg = Config {
+            voice_keys: VoiceHotkeys {
+                toggle: Some(Hotkey::new(0x77, false, false, false, false, "F8")),
+                mode: VoiceKeyMode::HoldForClean,
+                mute: Some(Hotkey::new(0x4D, true, false, false, false, "Ctrl+M")),
+                presets: vec![PresetHotkey {
+                    preset: "Deep Voice".into(),
+                    hotkey: Some(Hotkey::new(0x61, false, false, true, false, "Alt+Num 1")),
+                }],
+            },
+            feedback: FeedbackSettings {
+                cues: false,
+                cue_volume: 0.25,
+                overlay: true,
+            },
+            start_voice: StartVoice::Off,
+            ..Config::default()
+        };
+        save_to(&path, &cfg).unwrap();
+        let (loaded, warning) = load_from(&path);
+        assert!(warning.is_none());
+        assert_eq!(loaded, cfg);
+        assert_eq!(
+            loaded.voice_keys.presets[0].hotkey.as_ref().unwrap().label,
+            "Alt+Num 1"
+        );
+
+        // Older files: toggle mode, beeps on, overlay off, remember the last state.
+        std::fs::write(&path, r#"{ "voice_on": false }"#).unwrap();
+        let (old, _) = load_from(&path);
+        assert_eq!(old.voice_keys, VoiceHotkeys::default());
+        assert!(old.feedback.cues && !old.feedback.overlay);
+        assert_eq!(old.start_voice, StartVoice::RememberLast);
         std::fs::remove_dir_all(dir).ok();
     }
 

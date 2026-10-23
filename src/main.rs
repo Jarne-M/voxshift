@@ -9,6 +9,7 @@ mod dsp;
 mod shell;
 mod soundboard;
 mod ui;
+mod voice_keys;
 
 /// `voxshift --list-devices`: prints what cpal sees (no streams are opened).
 fn list_devices() {

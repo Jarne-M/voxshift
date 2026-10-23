@@ -9,6 +9,7 @@ use super::adaptive::AdaptiveReader;
 use super::block::{BLOCK, BlockSource, StereoBlock};
 use super::shared::{PeakMeter, Shared};
 use crate::dsp::chain::VoiceChain;
+use crate::dsp::cue::Cue;
 use crate::dsp::smooth::Ramp;
 use crate::dsp::{Block, VoiceProcessor};
 use crate::soundboard::mixer::{SoundCmd, SoundMixer, SoundRetired};
@@ -46,6 +47,7 @@ pub struct Engine {
     chain: VoiceChain,
     sounds: SoundMixer,
     monitor: Option<Producer<f32>>,
+    cue: Cue,
     in_meter: PeakMeter,
     out_meter: PeakMeter,
     sample_rate: f32,
@@ -72,6 +74,7 @@ impl Engine {
             chain: VoiceChain::new(sr),
             sounds: SoundMixer::with_rate(sample_rate),
             monitor: None,
+            cue: Cue::new(sr),
             in_meter: PeakMeter::new(sr, 0.3),
             out_meter: PeakMeter::new(sr, 0.3),
             sample_rate: sr,
@@ -193,6 +196,19 @@ impl BlockSource for Engine {
             .output_level
             .set(self.out_meter.update(out_peak, BLOCK));
 
+        // Switch beeps go to the monitor (headphones) only, never into the virtual mic.
+        if let Some(on) = self.shared.take_cue()
+            && self.monitor.is_some()
+        {
+            self.cue.start(on);
+        }
+        let mut cue = [0.0; BLOCK];
+        if self.cue.active() {
+            let vol = self.shared.cue_volume.get() * 0.5;
+            for c in cue.iter_mut() {
+                *c = self.cue.next() * vol;
+            }
+        }
         if let Some(tx) = &mut self.monitor {
             let vol = self.shared.monitor_volume.get();
             let gv = if self.shared.monitor_voice.load(Relaxed) {
@@ -206,7 +222,8 @@ impl BlockSource for Engine {
                 0.0
             };
             if let Ok(chunk) = tx.write_chunk_uninit(BLOCK * 2) {
-                let it = (0..BLOCK * 2).map(|j| (voice[j / 2] * gv + sfx[j] * gs).clamp(-1.0, 1.0));
+                let it = (0..BLOCK * 2)
+                    .map(|j| (voice[j / 2] * gv + sfx[j] * gs + cue[j / 2]).clamp(-1.0, 1.0));
                 chunk.fill_from_iter(it);
             }
         }
@@ -333,6 +350,31 @@ mod tests {
         shared.mic_muted.store(false, Relaxed);
         let back = run(&mut engine, &mut txs, [0.5, 0.0], 100);
         assert!((back.last().unwrap() - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn switch_beep_goes_to_the_monitor_only() {
+        let shared = Arc::new(Shared::default());
+        let (mut engine, mut link) = Engine::new(shared.clone(), 48_000);
+        let (mon_tx, mut mon_rx) = RingBuffer::new(48_000);
+        link.cmds
+            .push(EngineCmd::AttachMonitor(Some(mon_tx)))
+            .ok()
+            .unwrap();
+        shared.request_cue(true);
+        let mut out = [0.0; BLOCK * 2];
+        let mut out_peak = 0.0f32;
+        for _ in 0..150 {
+            engine.render(&mut out);
+            out_peak = out.iter().fold(out_peak, |m, x| m.max(x.abs()));
+        }
+        let mut mon_peak = 0.0f32;
+        while let Ok(s) = mon_rx.pop() {
+            mon_peak = mon_peak.max(s.abs());
+        }
+        assert_eq!(out_peak, 0.0, "nothing in the virtual mic");
+        assert!(mon_peak > 0.05, "beep in the headphones: {mon_peak}");
+        assert_eq!(shared.take_cue(), None, "request consumed");
     }
 
     #[test]
