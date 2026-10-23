@@ -2,8 +2,9 @@
 //! Everything here is a plain atomic, so the audio threads never wait for a lock.
 
 use crate::dsp::params::ParamStore;
+use crate::melody::store::MelodyStore;
 use crate::soundboard::mixer::VOICES;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering::Relaxed};
 
 /// An `f32` stored in an `AtomicU32` (bit-cast). Relaxed ordering is enough: each value
 /// is independent and a reader seeing it one block late is harmless.
@@ -91,6 +92,15 @@ pub struct Shared {
     /// Melody Voice: your pitch and the note you are tuned to (MIDI numbers, NaN = none).
     pub melody_detected: AtomicF32,
     pub melody_target: AtomicF32,
+    /// The melody being sung (written by the window, copied by the audio thread).
+    pub melody: MelodyStore,
+    /// Bumped to send Melody Voice back to the first note.
+    pub melody_restart: AtomicU32,
+    /// Current note index (-1 = before the first) and playhead in beats.
+    pub melody_note: AtomicI32,
+    pub melody_beat: AtomicF32,
+    /// Reached the end of the melody (loop off).
+    pub melody_finished: AtomicBool,
 }
 
 impl Default for Shared {
@@ -117,6 +127,11 @@ impl Default for Shared {
             playing_ids: std::array::from_fn(|_| AtomicU64::new(0)),
             melody_detected: AtomicF32::new(f32::NAN),
             melody_target: AtomicF32::new(f32::NAN),
+            melody: MelodyStore::default(),
+            melody_restart: AtomicU32::new(0),
+            melody_note: AtomicI32::new(-1),
+            melody_beat: AtomicF32::zero(),
+            melody_finished: AtomicBool::new(false),
         }
     }
 }

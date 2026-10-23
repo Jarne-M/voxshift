@@ -16,7 +16,8 @@ pub mod tray_status;
 use crate::audio::device_manager::{DeviceStatus, Event, ManagerCmd, ManagerHandle};
 use crate::audio::shared::{ActiveMic, Shared};
 use crate::config::{self, CloseBehavior, Config, StartVoice};
-use crate::dsp::params::Snapshot;
+use crate::dsp::params::{P, Snapshot};
+use crate::melody::{Loaded, MelodySource};
 use crate::shell::tray::{Tray, TrayPoster};
 use crate::shell::{TrayAction, autostart};
 use crate::soundboard::decode;
@@ -41,6 +42,8 @@ pub struct VoxApp {
     pub cfg: Config,
     /// Current effect values (mirrored into the shared atomics on every change).
     pub fx: Snapshot,
+    /// Melody Voice's melody (also published to the audio thread).
+    melody: Option<Loaded>,
     shared: Arc<Shared>,
     manager: ManagerHandle,
     status: DeviceStatus,
@@ -159,7 +162,12 @@ impl VoxApp {
         let mut app = Self::with_manager(cfg, shared, manager);
         hotkeys::diag::set_path(config_path.with_file_name("hotkeys-debug.log"));
         app.config_path = Some(config_path);
-        app.startup_notice = notice;
+        if let Some(n) = notice {
+            app.startup_notice = Some(match app.startup_notice.take() {
+                Some(m) => format!("{n}\n{m}"),
+                None => n,
+            });
+        }
         app.start_tray(ctx.clone());
         app.start_hotkeys(ctx);
         app.start_hidden_pending = app.cfg.start_minimized && app.tray.is_some();
@@ -264,7 +272,8 @@ impl VoxApp {
                 p.overlay(on);
             }
         }));
-        Self {
+        let mut app = Self {
+            melody: None,
             feedback,
             tray_poster,
             voice_keys: None,
@@ -301,6 +310,114 @@ impl VoxApp {
             clip_seen: 0,
             clip_until: 0.0,
             defaults_applied: false,
+        };
+        let source = app.cfg.melody.source.clone();
+        match app.select_melody(source, false) {
+            Ok(warning) => app.startup_notice = warning,
+            Err(e) => {
+                app.startup_notice = Some(format!("Melody Voice: {e}. Using the default melody."));
+                let _ = app.select_melody(MelodySource::default(), false);
+            }
+        }
+        app
+    }
+
+    /// Loads a melody, hands it to the audio thread and remembers the choice. On failure the
+    /// current melody stays. `adopt_tempo` also sets the tempo slider to the melody's own.
+    /// `Ok(Some(..))` is a warning worth showing (a melody cut short).
+    pub fn select_melody(
+        &mut self,
+        source: MelodySource,
+        adopt_tempo: bool,
+    ) -> Result<Option<String>, String> {
+        let loaded = crate::melody::load(&source)?;
+        let kept = self.shared.melody.publish(&loaded.melody.notes);
+        if adopt_tempo {
+            self.fx.set(P::MelodyBpm, loaded.melody.bpm);
+            self.effects_changed();
+        }
+        self.cfg.melody.source = match source {
+            MelodySource::File { path, .. } => {
+                self.cfg.melody.remember_file(&path);
+                MelodySource::File {
+                    path,
+                    part: loaded.part,
+                }
+            }
+            builtin => builtin,
+        };
+        let total = loaded.melody.notes.len();
+        self.melody = Some(loaded);
+        Ok((kept < total)
+            .then(|| format!("The melody has {total} notes; only the first {kept} are used.")))
+    }
+
+    /// Uses a MIDI file as the melody (from the button or a drop) and says which part.
+    pub fn import_midi(&mut self, ctx: &egui::Context, path: PathBuf) {
+        let source = MelodySource::File { path, part: None };
+        match self.select_melody(source, true) {
+            Ok(warning) => {
+                if let Some(w) = warning {
+                    self.toasts.push(ctx, w);
+                }
+                let msg = match &self.melody {
+                    Some(Loaded {
+                        song: Some(song),
+                        part: Some(part),
+                        melody,
+                    }) => format!(
+                        "Melody: {} \u{2014} {} ({} of {} parts; pick another under Part)",
+                        melody.name,
+                        song.parts[*part].describe(),
+                        part + 1,
+                        song.parts.len()
+                    ),
+                    _ => "Melody imported".to_string(),
+                };
+                self.toasts.push(ctx, msg);
+                self.cfg.tab = Tab::Effects;
+            }
+            Err(e) => self
+                .toasts
+                .push(ctx, format!("Could not use that MIDI file: {e}")),
+        }
+    }
+
+    fn melody_panel(&mut self, ui: &mut Ui) {
+        let note = self.shared.melody_note.load(Relaxed);
+        let view = melody::View {
+            detected: self.shared.melody_detected.get(),
+            target: self.shared.melody_target.get(),
+            latency_ms: crate::dsp::melody::latency_ms(&self.fx, self.status.output.rate),
+            note: usize::try_from(note).ok(),
+            finished: self.shared.melody_finished.load(Relaxed),
+            melody: self.melody.as_ref(),
+            source: &self.cfg.melody.source,
+            files: &self.cfg.melody.files,
+        };
+        let response = melody::panel(ui, &mut self.fx, &view);
+        if response.changed {
+            self.effects_changed();
+        }
+        for action in response.actions {
+            match action {
+                melody::Action::Select(source) => match self.select_melody(source, true) {
+                    Ok(None) => {}
+                    Ok(Some(warning)) => self.toasts.push(ui.ctx(), warning),
+                    Err(e) => self.toasts.push(ui.ctx(), format!("Melody: {e}")),
+                },
+                melody::Action::Import => {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("MIDI", &["mid", "midi"])
+                        .pick_file()
+                    {
+                        self.import_midi(ui.ctx(), path);
+                    }
+                }
+                melody::Action::Restart => {
+                    self.shared.melody_restart.fetch_add(1, Relaxed);
+                }
+            }
         }
     }
 
@@ -663,17 +780,7 @@ impl VoxApp {
                         self.apply_preset_action(ui.ctx(), a);
                     }
                     ui.add_space(6.0);
-                    let status = melody::Status {
-                        detected: self.shared.melody_detected.get(),
-                        target: self.shared.melody_target.get(),
-                        latency_ms: crate::dsp::melody::latency_ms(
-                            &self.fx,
-                            self.status.output.rate,
-                        ),
-                    };
-                    if melody::panel(ui, &mut self.fx, &status) {
-                        self.effects_changed();
-                    }
+                    self.melody_panel(ui);
                     ui.add_space(8.0);
                     if effects::panel(ui, &mut self.fx) {
                         self.effects_changed();
@@ -840,8 +947,14 @@ impl VoxApp {
                 .filter(|p| !p.as_os_str().is_empty())
                 .collect()
         });
-        if !dropped.is_empty() {
-            self.add_sounds(ctx, dropped);
+        // MIDI files are melodies for Melody Voice; everything else goes to the soundboard.
+        let (midi, sounds): (Vec<_>, Vec<_>) =
+            dropped.into_iter().partition(|p| crate::melody::is_midi(p));
+        if let Some(path) = midi.into_iter().next() {
+            self.import_midi(ctx, path);
+        }
+        if !sounds.is_empty() {
+            self.add_sounds(ctx, sounds);
         }
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             let screen = ctx.content_rect();
@@ -853,7 +966,7 @@ impl VoxApp {
             painter.text(
                 screen.center(),
                 egui::Align2::CENTER_CENTER,
-                "Drop to add to the soundboard",
+                "Drop sounds for the soundboard, or a MIDI file for Melody Voice",
                 egui::FontId::proportional(28.0),
                 Color32::WHITE,
             );
@@ -1398,21 +1511,131 @@ pub(crate) mod tests {
                 t += 0.1;
             }
         }
-        let status = melody::Status {
-            detected: 57.2,
-            target: 60.0,
-            latency_ms: 15.0,
+        app.shared.melody_note.store(3, Relaxed);
+        app.shared.melody_finished.store(true, Relaxed);
+        frame(&ctx, &mut app, (1240.0, 800.0), t, vec![]);
+    }
+
+    #[test]
+    fn the_saved_melody_is_loaded_and_published_at_start() {
+        let mut out = Vec::with_capacity(crate::melody::store::MAX_NOTES);
+        // Default: the built-in default melody reaches the audio thread.
+        let app = test_app();
+        app.shared.melody.read_into(&mut out).unwrap();
+        let twinkle = crate::melody::library::get("Twinkle Twinkle Little Star").unwrap();
+        assert_eq!(out, twinkle.notes);
+
+        // A saved choice is restored...
+        let cfg = Config {
+            melody: config::MelodySettings {
+                source: MelodySource::BuiltIn("Ode to Joy".into()),
+                files: vec![],
+            },
+            ..Config::default()
         };
-        assert_eq!(
-            melody::status_text(&status),
-            "You: A3  \u{2192}  Target: C4"
+        let app = VoxApp::with_manager(
+            cfg,
+            Arc::new(Shared::default()),
+            ManagerHandle::detached(fake_status()),
         );
-        let silent = melody::Status {
-            detected: f32::NAN,
-            target: f32::NAN,
-            latency_ms: 15.0,
+        app.shared.melody.read_into(&mut out).unwrap();
+        assert_eq!(out.len(), 62);
+        // ...and a missing file falls back to the default with a notice.
+        let cfg = Config {
+            melody: config::MelodySettings {
+                source: MelodySource::File {
+                    path: "C:/nope/gone.mid".into(),
+                    part: None,
+                },
+                files: vec![],
+            },
+            ..Config::default()
         };
-        assert_eq!(melody::status_text(&silent), "You: -  \u{2192}  Target: -");
+        let app = VoxApp::with_manager(
+            cfg,
+            Arc::new(Shared::default()),
+            ManagerHandle::detached(fake_status()),
+        );
+        assert_eq!(app.cfg.melody.source, MelodySource::default());
+        assert!(
+            app.startup_notice
+                .as_ref()
+                .unwrap()
+                .contains("Melody Voice")
+        );
+    }
+
+    #[test]
+    fn importing_a_midi_file_picks_the_melody_part_and_remembers_the_file() {
+        use crate::melody::midi::tests::{TestNote, build};
+        let dir = crate::soundboard::decode::tests::temp_dir("app-midi");
+        let path = dir.join("my song.mid");
+        let tune: Vec<TestNote> = (0..10).map(|i| (0, 76, i * 480, i * 480 + 400)).collect();
+        let bass: Vec<TestNote> = (0..10).map(|i| (1, 36, i * 480, i * 480 + 400)).collect();
+        std::fs::write(
+            &path,
+            build(midly::Format::Parallel, &[("Bass", &bass), ("Tune", &tune)]),
+        )
+        .unwrap();
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.import_midi(&ctx, path.clone());
+        assert_eq!(
+            app.cfg.melody.source,
+            MelodySource::File {
+                path: path.clone(),
+                part: Some(1)
+            },
+            "the higher part was guessed"
+        );
+        assert_eq!(app.cfg.melody.files, vec![path.clone()]);
+        assert!(app.toasts.contains("2 of 2 parts"));
+        assert!((app.fx.get(P::MelodyBpm) - 90.0).abs() < 0.01, "file tempo");
+        let mut out = Vec::with_capacity(crate::melody::store::MAX_NOTES);
+        app.shared.melody.read_into(&mut out).unwrap();
+        assert!(out.iter().all(|n| n.key == 76));
+        // The part picker's choice:
+        app.select_melody(
+            MelodySource::File {
+                path: path.clone(),
+                part: Some(0),
+            },
+            false,
+        )
+        .unwrap();
+        app.shared.melody.read_into(&mut out).unwrap();
+        assert!(out.iter().all(|n| n.key == 36));
+        app.fx.set(P::MelodyOn, 1.0);
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]); // draws the part picker
+        // A broken file leaves the current melody alone.
+        let junk = dir.join("junk.mid");
+        std::fs::write(&junk, b"nope").unwrap();
+        app.import_midi(&ctx, junk);
+        assert!(app.toasts.contains("Could not use that MIDI file"));
+        assert!(matches!(
+            app.cfg.melody.source,
+            MelodySource::File { part: Some(0), .. }
+        ));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn picking_a_melody_adopts_its_tempo_and_restart_reaches_the_audio_thread() {
+        let mut app = test_app();
+        app.select_melody(
+            MelodySource::BuiltIn("F\u{fc}r Elise (opening)".into()),
+            true,
+        )
+        .unwrap();
+        assert_eq!(app.fx.get(P::MelodyBpm), 70.0);
+        assert_eq!(app.shared.params.snapshot().get(P::MelodyBpm), 70.0);
+        let before = app.shared.melody_restart.load(Relaxed);
+        let ctx = egui::Context::default();
+        app.fx.set(P::MelodyOn, 1.0);
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
+        // What the Restart button does:
+        app.shared.melody_restart.fetch_add(1, Relaxed);
+        assert_eq!(app.shared.melody_restart.load(Relaxed), before + 1);
     }
 
     #[test]

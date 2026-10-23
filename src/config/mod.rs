@@ -6,6 +6,7 @@ pub mod presets;
 use crate::audio::device_manager::DeviceSettings;
 use crate::audio::mic_select::MicSettings;
 use crate::dsp::params::EffectSettings;
+use crate::melody::MelodySource;
 use crate::soundboard::library::SoundEntry;
 use crate::voice_keys::VoiceHotkeys;
 use presets::Preset;
@@ -61,6 +62,27 @@ impl Default for FeedbackSettings {
     }
 }
 
+/// Melody Voice's melody choice and your imported MIDI files.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MelodySettings {
+    pub source: MelodySource,
+    /// MIDI files you imported, newest first.
+    pub files: Vec<PathBuf>,
+}
+
+/// How many imported MIDI files are remembered.
+pub const MAX_MELODY_FILES: usize = 20;
+
+impl MelodySettings {
+    /// Remembers an imported file (moving it to the front).
+    pub fn remember_file(&mut self, path: &Path) {
+        self.files.retain(|p| p != path);
+        self.files.insert(0, path.to_path_buf());
+        self.files.truncate(MAX_MELODY_FILES);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -84,6 +106,7 @@ pub struct Config {
     pub preset: Option<String>,
     pub user_presets: Vec<Preset>,
     pub sounds: Vec<SoundEntry>,
+    pub melody: MelodySettings,
 }
 
 impl Default for Config {
@@ -105,6 +128,7 @@ impl Default for Config {
             preset: None,
             user_presets: Vec::new(),
             sounds: Vec::new(),
+            melody: MelodySettings::default(),
         }
     }
 }

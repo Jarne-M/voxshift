@@ -51,6 +51,8 @@ pub struct Engine {
     in_meter: PeakMeter,
     out_meter: PeakMeter,
     sample_rate: f32,
+    /// Last Melody Voice restart request acted on.
+    melody_restart_seen: u32,
 }
 
 /// The manager's ends of the engine queues.
@@ -64,6 +66,7 @@ impl Engine {
         let (cmd_tx, cmd_rx) = RingBuffer::new(CMD_QUEUE);
         let (garbage_tx, garbage_rx) = RingBuffer::new(CMD_QUEUE);
         let sr = sample_rate as f32;
+        let melody_restart_seen = shared.melody_restart.load(Relaxed);
         let engine = Self {
             cmds: cmd_rx,
             garbage: garbage_tx,
@@ -78,6 +81,7 @@ impl Engine {
             in_meter: PeakMeter::new(sr, 0.3),
             out_meter: PeakMeter::new(sr, 0.3),
             sample_rate: sr,
+            melody_restart_seen,
         };
         let link = EngineLink {
             cmds: cmd_tx,
@@ -158,10 +162,23 @@ impl BlockSource for Engine {
 
         let params = self.shared.params.snapshot();
         let voice_on = self.shared.voice_on.load(Relaxed);
+        let melody = self.chain.melody();
+        melody.sync(&self.shared.melody);
+        let restart = self.shared.melody_restart.load(Relaxed);
+        if restart != self.melody_restart_seen {
+            self.melody_restart_seen = restart;
+            melody.restart();
+        }
         self.chain.run(&mut voice, &params, voice_on);
         let melody = self.chain.melody().status();
         self.shared.melody_detected.set(melody.detected);
         self.shared.melody_target.set(melody.target);
+        let pos = melody.position;
+        self.shared
+            .melody_note
+            .store(pos.note.map_or(-1, |n| n as i32), Relaxed);
+        self.shared.melody_beat.set(pos.beat);
+        self.shared.melody_finished.store(pos.finished, Relaxed);
         let latency = if voice_on {
             self.chain.latency_samples()
         } else {
@@ -404,6 +421,111 @@ mod tests {
             returned += 1;
         }
         assert_eq!(returned, 2);
+    }
+
+    /// Melody Voice on and hard-tuning to C major pentatonic.
+    fn melody_on(shared: &Shared) {
+        use crate::dsp::params::P;
+        shared.params.set(P::MelodyOn, 1.0);
+        shared.params.set(P::MelodyMode, 3.0);
+        shared.params.set(P::MelodyScale, 2.0);
+        shared.params.set(P::MelodyRetune, 0.0);
+    }
+
+    #[test]
+    fn soundboard_clips_never_go_through_melody_voice() {
+        use crate::dsp::melody::tests::measured_midi;
+        use crate::soundboard::mixer::{SoundCmd, SoundData};
+        let shared = Arc::new(Shared::default());
+        melody_on(&shared);
+        let (mut engine, mut link) = Engine::new(shared.clone(), 48_000);
+        // A 3 s clip of a buzzy tone at 150 Hz (D3 + 0.37 st): Melody Voice would pull a
+        // voice like that to D3 (the pentatonic note nearest it).
+        let mut phase = 0.0f32;
+        let frames: Vec<f32> = (0..48_000 * 3)
+            .flat_map(|_| {
+                phase = (phase + 150.0 / 48_000.0).fract();
+                let x = 0.2 * (2.0 * phase - 1.0);
+                [x, x]
+            })
+            .collect();
+        let data = Arc::new(SoundData {
+            frames,
+            sample_rate: 48_000,
+        });
+        link.cmds
+            .push(EngineCmd::Sound(SoundCmd::Play {
+                id: 1,
+                data,
+                volume: 1.0,
+            }))
+            .ok()
+            .unwrap();
+        let mut out = [0.0; BLOCK * 2];
+        let mut left = Vec::new();
+        for _ in 0..1500 {
+            engine.render(&mut out);
+            left.extend(out.as_chunks::<2>().0.iter().map(|f| f[0]));
+        }
+        let got = measured_midi(&left, 0.3).unwrap();
+        assert!((got - 50.37).abs() < 0.1, "the clip came out at {got:.2}");
+        assert!(
+            shared.melody_detected.get().is_nan(),
+            "Melody Voice never heard it"
+        );
+    }
+
+    #[test]
+    fn the_melody_and_restart_reach_the_audio_thread_and_survive_a_new_engine() {
+        use crate::dsp::melody::tests::speech;
+        use crate::dsp::params::P;
+        use crate::melody::library;
+        let shared = Arc::new(Shared::default());
+        shared.params.set(P::MelodyOn, 1.0);
+        shared
+            .melody
+            .publish(&library::get("Ode to Joy").unwrap().notes);
+        shared.set_active_mic(ActiveMic::Primary);
+        let (speech, _) = speech(3, 0.22, 0.13);
+        let talk = |engine: &mut Engine, tx: &mut Producer<f32>| {
+            let mut out = [0.0; BLOCK * 2];
+            for chunk in speech.chunks(BLOCK) {
+                for &x in chunk {
+                    let _ = tx.push(x);
+                }
+                engine.render(&mut out);
+            }
+        };
+        let (mut engine, mut link) = Engine::new(shared.clone(), 48_000);
+        let (mut tx, reader) = mic(0.0);
+        link.cmds
+            .push(EngineCmd::AttachMic(0, Some(reader)))
+            .ok()
+            .unwrap();
+        feed(&mut tx, 0.0, 512);
+        talk(&mut engine, &mut tx);
+        assert_eq!(
+            shared.melody_note.load(Relaxed),
+            2,
+            "three syllables, three notes"
+        );
+        assert!(shared.melody_target.get().is_nan(), "silent at the end");
+
+        shared.melody_restart.fetch_add(1, Relaxed);
+        let mut out = [0.0; BLOCK * 2];
+        engine.render(&mut out);
+        assert_eq!(shared.melody_note.load(Relaxed), -1, "back to the top");
+
+        // A new output device means a new engine: it still has the melody.
+        let (mut engine, mut link) = Engine::new(shared.clone(), 48_000);
+        let (mut tx, reader) = mic(0.0);
+        link.cmds
+            .push(EngineCmd::AttachMic(0, Some(reader)))
+            .ok()
+            .unwrap();
+        feed(&mut tx, 0.0, 512);
+        talk(&mut engine, &mut tx);
+        assert_eq!(shared.melody_note.load(Relaxed), 2);
     }
 
     #[test]

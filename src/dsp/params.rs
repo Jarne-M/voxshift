@@ -333,7 +333,7 @@ pub const PARAMS: [ParamInfo; COUNT] = [
         P::MelodyRetune,
         "melody_retune",
         "Retune speed",
-        (0.0, 400.0, 15.0),
+        (0.0, 400.0, 5.0),
         "ms",
         Linear,
     ),

@@ -9,6 +9,7 @@ description = "Local real-time voice changer and soundboard (VB-CABLE virtual mi
 cpal = "0.18.2"
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "default_fonts", "links"] }
 egui = "0.36.2"
+midly = { version = "0.5.3", default-features = false, features = ["std", "alloc"] }
 rfd = "0.17.2"
 rtrb = "0.4.0"
 rubato = "5.0.1"

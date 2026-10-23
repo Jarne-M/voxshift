@@ -19,7 +19,7 @@
 
 use super::Block;
 use super::chain::PitchStage;
-use super::conductor::{Conductor, Frame, Settings};
+use super::conductor::{Conductor, Frame, Position, Settings};
 use super::delay::DelayLine;
 use super::params::{P, Snapshot};
 use super::pitch::{PitchShifter, semitones_to_ratio};
@@ -29,6 +29,8 @@ use super::pitch_detect::{
 use super::smooth::Smoother;
 use crate::audio::block::BLOCK;
 use crate::audio::shared::from_db;
+use crate::melody::Note;
+use crate::melody::store::{MAX_NOTES, MelodyStore};
 
 /// Decision queue length, in blocks.
 const CTRL: usize = 64;
@@ -49,6 +51,7 @@ pub struct MelodyStatus {
     pub detected: f32,
     /// The note you are being tuned to (MIDI), NaN when the voice is left alone.
     pub target: f32,
+    pub position: Position,
 }
 
 impl Default for MelodyStatus {
@@ -56,6 +59,7 @@ impl Default for MelodyStatus {
         Self {
             detected: f32::NAN,
             target: f32::NAN,
+            position: Position::default(),
         }
     }
 }
@@ -92,6 +96,10 @@ pub struct MelodyVoice {
     det_cfg: DetectorSettings,
     tracker: PitchTracker,
     conductor: Conductor,
+    /// The melody (copied from the shared store; never reallocated).
+    notes: Vec<Note>,
+    /// Store version the notes were copied from.
+    seen: Option<u32>,
     stage: PitchStage,
     stage_latency: usize,
     input: DelayLine,
@@ -119,7 +127,8 @@ impl MelodyVoice {
         let p = Snapshot::defaults();
         let det_cfg = detector_settings(&p);
         let det = PitchDetector::new(fs, det_cfg);
-        let tracker = PitchTracker::new(det.hop_s());
+        let tracker_hop = det.hop_s();
+        let tracker = PitchTracker::new(tracker_hop);
         let stage = PitchStage::new(fs);
         let stage_latency = stage.latency();
         let mut m = Self {
@@ -127,7 +136,9 @@ impl MelodyVoice {
             det,
             det_cfg,
             tracker,
-            conductor: Conductor::new(),
+            conductor: Conductor::new(tracker_hop),
+            notes: Vec::with_capacity(MAX_NOTES),
+            seen: None,
             stage,
             stage_latency,
             input: DelayLine::new((MAX_DELAY_S * fs) as usize),
@@ -169,6 +180,24 @@ impl MelodyVoice {
         self.status
     }
 
+    /// Picks up a newly published melody (cheap when nothing changed; never allocates).
+    pub fn sync(&mut self, store: &MelodyStore) {
+        if self.seen == Some(store.version()) {
+            return;
+        }
+        if let Some(v) = store.read_into(&mut self.notes) {
+            self.seen = Some(v);
+            self.conductor.set_melody(&self.notes);
+            self.status.position = self.conductor.position();
+        }
+    }
+
+    /// Back to the first note.
+    pub fn restart(&mut self) {
+        self.conductor.restart();
+        self.status.position = self.conductor.position();
+    }
+
     fn configure(&mut self, p: &Snapshot) {
         let cfg = detector_settings(p);
         if cfg != self.det_cfg {
@@ -198,10 +227,12 @@ impl MelodyVoice {
                 level: t.level,
             },
             s,
+            &self.notes,
         );
         self.status = MelodyStatus {
             detected: detected.unwrap_or(f32::NAN),
             target: target.unwrap_or(f32::NAN),
+            position: self.conductor.position(),
         };
         match (detected, target) {
             (Some(m), Some(target)) => {
@@ -273,7 +304,10 @@ impl MelodyVoice {
         self.gate.set_value(0.0);
         self.gate_prev = 0.0;
         self.shift.set_value(0.0);
-        self.status = MelodyStatus::default();
+        self.status = MelodyStatus {
+            position: self.conductor.position(),
+            ..MelodyStatus::default()
+        };
     }
 }
 
@@ -551,6 +585,100 @@ pub(crate) mod tests {
                 assert!(out.iter().all(|x| x.is_finite() && x.abs() < 0.5));
             }
         }
+    }
+
+    /// A synthetic speaker: `count` syllables of buzz through two vowel formants, each one
+    /// starting at its own pitch around 125 Hz and falling 3 semitones (like speech), with
+    /// quiet breath noise in the pauses. Returns the audio and each syllable's (start, end).
+    pub fn speech(count: usize, voiced_s: f32, pause_s: f32) -> (Vec<f32>, Vec<(f32, f32)>) {
+        use crate::dsp::biquad::{Biquad, Coeffs};
+        let mut f1 = Biquad::new(Coeffs::peaking(FS, 650.0, 4.0, 14.0));
+        let mut f2 = Biquad::new(Coeffs::peaking(FS, 1100.0, 4.0, 10.0));
+        let mut noise = crate::dsp::pitch_detect::tests::noise(21);
+        let start_pitches = [126.0, 118.0, 133.0, 121.0, 129.0, 115.0, 124.0, 131.0];
+        let (mut out, mut spans) = (Vec::new(), Vec::new());
+        let mut phase = 0.0f32;
+        for k in 0..count {
+            let t0 = out.len() as f32 / FS;
+            spans.push((t0, t0 + voiced_s));
+            let n = (voiced_s * FS) as usize;
+            for i in 0..n {
+                let u = i as f32 / n as f32;
+                let hz = start_pitches[k % start_pitches.len()] * (-3.0 * u / 12.0).exp2();
+                phase = (phase + hz / FS).fract();
+                let env = (i as f32 / (0.015 * FS))
+                    .min((n - i) as f32 / (0.02 * FS))
+                    .min(1.0);
+                out.push(0.15 * env * f2.process(f1.process(2.0 * phase - 1.0)));
+            }
+            for _ in 0..(pause_s * FS) as usize {
+                out.push(0.003 * noise());
+            }
+        }
+        (out, spans)
+    }
+
+    /// Median output pitch of each syllable, measured in its steady middle part.
+    pub fn sung_notes(out: &[f32], spans: &[(f32, f32)], latency: usize) -> Vec<Option<f32>> {
+        let lat = latency as f32 / FS;
+        spans
+            .iter()
+            .map(|&(a, b)| {
+                let from = ((a + lat + 0.06) * FS) as usize;
+                let to = (((b + lat - 0.02) * FS) as usize).min(out.len());
+                let p = frame_pitches(&out[from.saturating_sub((0.03 * FS) as usize)..to], 0.03);
+                if p.len() < 5 {
+                    return None;
+                }
+                let mut p = p;
+                p.sort_by(f32::total_cmp);
+                Some(p[p.len() / 2])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn talking_through_the_full_chain_sings_twinkle_twinkle_one_syllable_per_note() {
+        use crate::dsp::VoiceProcessor;
+        use crate::dsp::chain::VoiceChain;
+        use crate::melody::{library, store::MelodyStore};
+        let store = MelodyStore::default();
+        let twinkle = library::get("Twinkle Twinkle Little Star").unwrap();
+        store.publish(&twinkle.notes);
+        let mut p = Snapshot::defaults();
+        p.set(P::MelodyOn, 1.0); // per syllable, octave fold on: the defaults
+
+        let (input, spans) = speech(12, 0.22, 0.13);
+        let mut chain = VoiceChain::new(FS);
+        chain.melody().sync(&store);
+        let mut out = Vec::with_capacity(input.len());
+        for chunk in input.as_chunks::<BLOCK>().0 {
+            let mut b = *chunk;
+            chain.run(&mut b, &p, true);
+            out.extend_from_slice(&b);
+        }
+        let latency = chain.latency_samples();
+        // The voice sits around B2 (MIDI 47), the tune around E4 (64): sung an octave down.
+        let want: Vec<f32> = twinkle.notes[..12]
+            .iter()
+            .map(|n| f32::from(n.key) - 12.0)
+            .collect();
+        let got = sung_notes(&out, &spans, latency);
+        println!("wanted {want:?}");
+        println!(
+            "sung   {:?}",
+            got.iter()
+                .map(|g| g.map(|g| (g * 10.0).round() / 10.0))
+                .collect::<Vec<_>>()
+        );
+        for (k, (g, w)) in got.iter().zip(&want).enumerate() {
+            let g = g.unwrap_or_else(|| panic!("syllable {k} not voiced in the output"));
+            assert!(
+                (g - w).abs() < 0.25,
+                "syllable {k}: sung {g:.2}, wanted {w}"
+            );
+        }
+        assert_eq!(chain.melody().status().position.note, Some(11));
     }
 
     #[test]
