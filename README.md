@@ -52,8 +52,12 @@ playback device, or every Windows sound would end up in your mic.
 
 Requires Rust (stable) on Windows 10 or 11.
 
+With the portable toolchain next to this folder (`..\.toolchain`), the easiest way is to
+**double-click `build.cmd`**. It sets up the toolchain and builds the release exe; quit
+VoxShift first. In PowerShell you can also dot-source `env.ps1`, which needs scripts to be
+allowed (`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`):
+
 ```powershell
-# With the portable toolchain next to this folder (..\.toolchain):
 . .\env.ps1
 cargo run --release
 # Or with a normal rustup install: just `cargo run --release`.
