@@ -5,24 +5,29 @@ pub mod devices;
 pub mod effects;
 pub mod meters;
 pub mod presets;
+pub mod settings;
 pub mod soundboard;
 pub mod theme;
 pub mod toast;
+pub mod tray_status;
 
 use crate::audio::device_manager::{DeviceStatus, Event, ManagerCmd, ManagerHandle};
 use crate::audio::shared::{ActiveMic, Shared};
-use crate::config::{self, Config};
+use crate::config::{self, CloseBehavior, Config};
 use crate::dsp::params::Snapshot;
+use crate::shell::tray::Tray;
+use crate::shell::{TrayAction, autostart};
 use crate::soundboard::decode;
 use crate::soundboard::hotkeys::{Captured, HotkeyService};
 use crate::soundboard::library::{SoundEntry, Soundboard};
 use crate::soundboard::mixer::SoundId;
-use egui::{Color32, RichText, Ui};
+use egui::{Color32, RichText, Ui, ViewportCommand};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
-use std::time::Duration;
-use theme::{BAD, OFF, ON, WARN};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
+use theme::{ACCENT, BAD, OFF, ON, WARN};
 use toast::Toasts;
 
 /// How long the clip lamp stays lit after a clip.
@@ -52,10 +57,48 @@ pub struct VoxApp {
     changed_at: Option<f64>,
     /// Shown as a toast on the first frame (e.g. "settings file was damaged").
     startup_notice: Option<String>,
+    /// Wall clock for autosave: egui's input time stands still while the window is hidden.
+    clock: Instant,
+
+    tray: Option<Tray>,
+    /// Show / Quit requests from the tray thread (or a second launch of the app).
+    shell_requests: Option<mpsc::Receiver<TrayAction>>,
+    /// Latest config, for the tray thread to save on Windows shutdown/logoff.
+    mirror: Arc<Mutex<Config>>,
+    session_ending: Arc<AtomicBool>,
+    close_dialog: Option<CloseDialog>,
+    /// Set when we really want to exit: the next close request is let through.
+    quitting: bool,
+    hidden: bool,
+    /// The "still running in the tray" balloon was shown this run.
+    tray_hint_shown: bool,
+    start_hidden_pending: bool,
+    recenter_on_show: bool,
+    frames_drawn: u64,
+    autostart: bool,
+    autostart_elsewhere: bool,
 }
+
+struct CloseDialog {
+    remember: bool,
+    focus_pending: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloseChoice {
+    Minimize,
+    Quit,
+    Cancel,
+}
+
+pub const WINDOW_SIZE: [f32; 2] = [1240.0, 800.0];
+/// Where the window starts when "Start minimized to tray" is on (moved back when first shown).
+pub const OFFSCREEN: [f32; 2] = [-32000.0, -32000.0];
 
 /// Save this long after the last change, so dragging a slider does not write 30 times a second.
 const SAVE_DELAY_S: f64 = 1.0;
+/// How often the app logic ticks while the window is hidden.
+const HIDDEN_TICK: Duration = Duration::from_millis(250);
 
 /// Pushes the non-device parts of the config into the shared atomics.
 fn apply_to_shared(cfg: &Config, shared: &Shared) {
@@ -67,22 +110,105 @@ fn apply_to_shared(cfg: &Config, shared: &Shared) {
 }
 
 impl VoxApp {
-    /// Loads the settings from `config_path`, starts audio and hotkeys.
-    pub fn new(config_path: PathBuf) -> Self {
-        let (cfg, notice) = config::load_from(&config_path);
+    /// Starts audio, hotkeys and the tray icon with settings loaded from `config_path`.
+    pub fn new(
+        config_path: PathBuf,
+        cfg: Config,
+        notice: Option<String>,
+        ctx: egui::Context,
+    ) -> Self {
         let shared = Arc::new(Shared::default());
         let manager = ManagerHandle::spawn(shared.clone(), cfg.devices.clone(), cfg.mic.clone());
         let mut app = Self::with_manager(cfg, shared, manager);
         app.hotkeys = Some(HotkeyService::start(app.sounds.board.clone()));
         app.config_path = Some(config_path);
         app.startup_notice = notice;
+        app.start_tray(ctx);
+        app.start_hidden_pending = app.cfg.start_minimized && app.tray.is_some();
+        app.autostart = autostart::is_enabled();
+        app.autostart_elsewhere = autostart::points_elsewhere();
         app
+    }
+
+    /// The tray runs on its own thread. Toggles and "stop all" act directly on the shared
+    /// state; Show and Quit come back to us through a channel plus a repaint request, which
+    /// wakes `logic` even while the window is hidden.
+    fn start_tray(&mut self, ctx: egui::Context) {
+        let (tx, rx) = mpsc::channel();
+        let status = self.manager.status_handle();
+        let (shared_s, shared_a) = (self.shared.clone(), self.shared.clone());
+        let board = self.sounds.board.clone();
+        let mirror = self.mirror.clone();
+        let path = self.config_path.clone();
+        let ending = self.session_ending.clone();
+        let tray = Tray::start(
+            move || {
+                let dev = status.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                tray_status::compute(
+                    &dev,
+                    shared_s.voice_on.load(Relaxed),
+                    shared_s.mic_muted.load(Relaxed),
+                )
+            },
+            move |action| match action {
+                TrayAction::Show | TrayAction::Quit => {
+                    let _ = tx.send(action);
+                    ctx.request_repaint();
+                }
+                TrayAction::ToggleVoice => {
+                    shared_a.voice_on.fetch_xor(true, Relaxed);
+                    ctx.request_repaint();
+                }
+                TrayAction::ToggleMute => {
+                    shared_a.mic_muted.fetch_xor(true, Relaxed);
+                    ctx.request_repaint();
+                }
+                TrayAction::StopAllSounds => {
+                    board.lock().unwrap_or_else(|e| e.into_inner()).stop_all();
+                }
+                TrayAction::SessionEnd => {
+                    // The process may be ended right after this returns: save synchronously.
+                    ending.store(true, Relaxed);
+                    let mut cfg = mirror.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    cfg.voice_on = shared_a.voice_on.load(Relaxed);
+                    if let Some(p) = &path {
+                        let _ = config::save_to(p, &cfg);
+                    }
+                    ctx.request_repaint();
+                }
+            },
+        );
+        match tray {
+            Ok(t) => {
+                self.tray = Some(t);
+                self.shell_requests = Some(rx);
+            }
+            Err(e) => {
+                self.startup_notice = Some(format!(
+                    "Tray icon unavailable ({e}); closing will minimize instead"
+                ));
+            }
+        }
     }
 
     fn with_manager(cfg: Config, shared: Arc<Shared>, manager: ManagerHandle) -> Self {
         apply_to_shared(&cfg, &shared);
         let sounds = Soundboard::new(manager.port.clone(), cfg.sounds.clone());
         Self {
+            clock: Instant::now(),
+            tray: None,
+            shell_requests: None,
+            mirror: Arc::new(Mutex::new(cfg.clone())),
+            session_ending: Arc::new(AtomicBool::new(false)),
+            close_dialog: None,
+            quitting: false,
+            hidden: false,
+            tray_hint_shown: false,
+            start_hidden_pending: false,
+            recenter_on_show: false,
+            frames_drawn: 0,
+            autostart: false,
+            autostart_elsewhere: false,
             sounds,
             hotkeys: None,
             capturing: None,
@@ -130,11 +256,43 @@ impl VoxApp {
         }
     }
 
-    pub fn draw(&mut self, ui: &mut Ui) {
-        let ctx = ui.ctx().clone();
+    /// Everything that must keep running while the window is hidden. Called from
+    /// `App::logic`, which eframe keeps calling for a hidden window as long as repaints are
+    /// requested (we request one every 250 ms while hidden, and the tray wakes us on clicks).
+    pub fn tick(&mut self, ctx: &egui::Context) {
         self.status = self.manager.status();
         self.first_run_defaults();
         self.sounds.lock().set_output_rate(self.status.output.rate);
+        // The tray may have toggled the voice changer.
+        let voice_on = self.shared.voice_on.load(Relaxed);
+        if voice_on != self.cfg.voice_on {
+            self.cfg.voice_on = voice_on;
+        }
+        self.handle_manager_events(ctx);
+        self.handle_shell_requests(ctx);
+        self.handle_close_request(ctx);
+        // eframe shows the window after painting the first frame, overriding any earlier
+        // hide, so "start minimized" hides it on the frame after (it starts off-screen).
+        if self.start_hidden_pending {
+            if self.frames_drawn >= 1 {
+                self.start_hidden_pending = false;
+                self.recenter_on_show = true;
+                self.hide_to_tray(ctx, false);
+            } else {
+                ctx.request_repaint();
+            }
+        }
+        if let Some(n) = self.startup_notice.take() {
+            self.toasts.push(ctx, n);
+        }
+        self.autosave(self.clock.elapsed().as_secs_f64());
+        self.sync_mirror();
+        if self.hidden {
+            ctx.request_repaint_after(HIDDEN_TICK);
+        }
+    }
+
+    fn handle_manager_events(&mut self, ctx: &egui::Context) {
         while let Ok(ev) = self.manager.events.try_recv() {
             match ev {
                 Event::Switched { to, reason } => {
@@ -143,11 +301,197 @@ impl VoxApp {
                         ActiveMic::Fallback => format!("Switched to the fallback mic ({reason})"),
                         ActiveMic::None => "No microphone available - sending silence".to_string(),
                     };
-                    self.toasts.push(&ctx, text);
+                    // Hidden in the tray, a toast would go unseen: use a tray balloon.
+                    match (&self.tray, self.hidden) {
+                        (Some(t), true) => t.notify("VoxShift", &text),
+                        _ => self.toasts.push(ctx, text),
+                    }
                 }
             }
         }
+    }
 
+    fn handle_shell_requests(&mut self, ctx: &egui::Context) {
+        let requests: Vec<TrayAction> = match &self.shell_requests {
+            Some(rx) => rx.try_iter().collect(),
+            None => return,
+        };
+        for r in requests {
+            match r {
+                TrayAction::Show => self.show_window(ctx),
+                TrayAction::Quit => self.quit(ctx),
+                _ => {}
+            }
+        }
+    }
+
+    /// The X button or Alt+F4. Closing must never silently kill the virtual mic.
+    fn handle_close_request(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        if self.session_ending.load(Relaxed) {
+            self.quitting = true; // Windows is shutting down: no dialog
+        }
+        if self.quitting {
+            return; // let it close
+        }
+        match self.cfg.close_behavior {
+            CloseBehavior::Quit => self.quitting = true,
+            CloseBehavior::MinimizeToTray => {
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                self.hide_to_tray(ctx, true);
+            }
+            CloseBehavior::Ask => {
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                self.show_window(ctx);
+                self.close_dialog = Some(CloseDialog {
+                    remember: false,
+                    focus_pending: true,
+                });
+            }
+        }
+    }
+
+    fn hide_to_tray(&mut self, ctx: &egui::Context, show_hint: bool) {
+        let Some(tray) = &self.tray else {
+            // Without a tray icon a hidden window could not be brought back: minimize.
+            ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+            return;
+        };
+        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        self.hidden = true;
+        if show_hint && !self.tray_hint_shown {
+            self.tray_hint_shown = true;
+            tray.notify(
+                "VoxShift is still running in the tray",
+                "Your virtual mic keeps working. Right-click the tray icon to quit.",
+            );
+        }
+        ctx.request_repaint_after(HIDDEN_TICK);
+    }
+
+    fn show_window(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.recenter_on_show) {
+            // Started off-screen ("start minimized"): bring it to the middle of the monitor.
+            let monitor = ctx
+                .input(|i| i.viewport().monitor_size)
+                .unwrap_or(egui::vec2(1920.0, 1080.0));
+            let size = egui::Vec2::from(WINDOW_SIZE);
+            let pos = ((monitor - size) / 2.0).max(egui::Vec2::ZERO);
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos.to_pos2()));
+        }
+        ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(ViewportCommand::Focus);
+        self.hidden = false;
+        ctx.request_repaint();
+    }
+
+    /// Really exit: the next close request is let through, and `on_exit` cleans up.
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.quitting = true;
+        self.close_dialog = None;
+        ctx.send_viewport_cmd(ViewportCommand::Close);
+        ctx.request_repaint();
+    }
+
+    fn refresh_tray(&self) {
+        if let Some(t) = &self.tray {
+            t.refresh();
+        }
+    }
+
+    fn sync_mirror(&self) {
+        let mut m = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+        if *m != self.cfg {
+            *m = self.cfg.clone();
+        }
+    }
+
+    /// Stops the tray, the hotkey hook and all audio. Safe to call twice.
+    fn shutdown_background(&mut self) {
+        if let Some(mut t) = self.tray.take() {
+            t.shutdown(); // removes the icon, so no ghost stays in the tray
+        }
+        self.hotkeys = None;
+        self.manager.shutdown();
+    }
+
+    fn close_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &mut self.close_dialog else {
+            return;
+        };
+        let tray_ok = self.tray.is_some();
+        let mut choice = None;
+        let response = egui::Modal::new(egui::Id::new("close_dialog")).show(ctx, |ui| {
+            ui.set_width(400.0);
+            ui.heading("Close VoxShift?");
+            ui.add_space(4.0);
+            ui.label(
+                "Your virtual mic only works while VoxShift is running. If you quit, Discord \
+                 and games hear nothing until you start it again.",
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let minimize = egui::Button::new(
+                    RichText::new(if tray_ok {
+                        "Minimize to tray"
+                    } else {
+                        "Minimize"
+                    })
+                    .strong()
+                    .color(Color32::WHITE),
+                )
+                .fill(ACCENT);
+                let r = ui.add(minimize);
+                if std::mem::take(&mut dialog.focus_pending) {
+                    r.request_focus(); // Enter picks the default
+                }
+                if r.clicked() {
+                    choice = Some(CloseChoice::Minimize);
+                }
+                if ui.button("Quit completely").clicked() {
+                    choice = Some(CloseChoice::Quit);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(CloseChoice::Cancel);
+                }
+            });
+            ui.add_space(4.0);
+            ui.checkbox(&mut dialog.remember, "Remember my choice")
+                .on_hover_text("Change it later under Window & startup");
+        });
+        if choice.is_none() && response.should_close() {
+            choice = Some(CloseChoice::Cancel); // Esc or a click outside
+        }
+        if let Some(c) = choice {
+            self.apply_close_choice(ctx, c);
+        }
+    }
+
+    fn apply_close_choice(&mut self, ctx: &egui::Context, choice: CloseChoice) {
+        let remember = self.close_dialog.take().is_some_and(|d| d.remember);
+        match choice {
+            CloseChoice::Minimize => {
+                if remember {
+                    self.cfg.close_behavior = CloseBehavior::MinimizeToTray;
+                }
+                self.hide_to_tray(ctx, true);
+            }
+            CloseChoice::Quit => {
+                if remember {
+                    self.cfg.close_behavior = CloseBehavior::Quit;
+                }
+                self.quit(ctx);
+            }
+            CloseChoice::Cancel => {}
+        }
+    }
+
+    pub fn draw(&mut self, ui: &mut Ui) {
+        let ctx = ui.ctx().clone();
+        self.frames_drawn += 1;
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
         egui::Panel::left("devices")
             .resizable(true)
@@ -168,6 +512,15 @@ impl VoxApp {
                     }
                     if ch.rescan {
                         self.manager.send(ManagerCmd::Rescan);
+                    }
+                    ui.add_space(6.0);
+                    let view = settings::View {
+                        autostart: self.autostart,
+                        autostart_elsewhere: self.autostart_elsewhere,
+                        tray_available: self.tray.is_some(),
+                    };
+                    if let Some(on) = settings::panel(ui, &mut self.cfg, &view) {
+                        self.set_autostart(&ctx, on);
                     }
                 });
             });
@@ -201,12 +554,27 @@ impl VoxApp {
 
         self.handle_dropped_files(&ctx);
         self.poll_hotkey_capture(&ctx);
-        if let Some(n) = self.startup_notice.take() {
-            self.toasts.push(&ctx, n);
-        }
-        self.autosave(ctx.input(|i| i.time));
+        self.close_dialog(&ctx);
         self.toasts.show(&ctx);
         ctx.request_repaint_after(Duration::from_millis(33));
+    }
+
+    fn set_autostart(&mut self, ctx: &egui::Context, on: bool) {
+        match autostart::set_enabled(on) {
+            Ok(()) => {
+                self.autostart = on;
+                self.autostart_elsewhere = false;
+                let msg = if on {
+                    "VoxShift will start with Windows"
+                } else {
+                    "VoxShift will no longer start with Windows"
+                };
+                self.toasts.push(ctx, msg);
+            }
+            Err(e) => self
+                .toasts
+                .push(ctx, format!("Could not change startup: {e}")),
+        }
     }
 
     fn soundboard_tab(&mut self, ui: &mut Ui) {
@@ -449,6 +817,24 @@ impl VoxApp {
             {
                 self.cfg.voice_on = !on;
                 self.shared.voice_on.store(self.cfg.voice_on, Relaxed);
+                self.refresh_tray();
+            }
+            let muted = self.shared.mic_muted.load(Relaxed);
+            let (text, fill) = if muted {
+                ("Mic muted", BAD)
+            } else {
+                ("Mute mic", Color32::from_gray(52))
+            };
+            let mute = egui::Button::new(RichText::new(text).strong().color(Color32::WHITE))
+                .fill(fill)
+                .min_size(egui::vec2(110.0, 44.0));
+            if ui
+                .add(mute)
+                .on_hover_text("Silences your mic; the soundboard still plays")
+                .clicked()
+            {
+                self.shared.mic_muted.store(!muted, Relaxed);
+                self.refresh_tray();
             }
             ui.add_space(12.0);
             ui.vertical(|ui| {
@@ -463,6 +849,9 @@ impl VoxApp {
         let s = &self.status;
         let device = |slot: usize| s.mics[slot].device.clone().unwrap_or_default();
         let (text, color) = match s.active {
+            ActiveMic::Primary | ActiveMic::Fallback if self.shared.mic_muted.load(Relaxed) => {
+                ("Mic muted - only the soundboard is sent".to_string(), BAD)
+            }
             ActiveMic::Primary if s.reason.is_empty() => {
                 (format!("Active: Primary mic - {}", device(0)), ON)
             }
@@ -510,12 +899,17 @@ impl VoxApp {
 }
 
 impl eframe::App for VoxApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.tick(ctx);
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.draw(ui);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_now();
+        self.shutdown_background();
     }
 }
 
@@ -573,7 +967,133 @@ pub(crate) mod tests {
             events,
             ..Default::default()
         };
-        ctx.run_ui(input, |ui| app.draw(ui)).textures_delta.clear();
+        ctx.run_ui(input, |ui| {
+            app.tick(ui.ctx()); // what eframe's `App::logic` does
+            app.draw(ui)
+        })
+        .textures_delta
+        .clear();
+    }
+
+    /// One frame where the window's X was clicked; returns the root viewport commands.
+    fn close_frame(ctx: &egui::Context, app: &mut VoxApp) -> Vec<ViewportCommand> {
+        let mut info = egui::ViewportInfo::default();
+        info.events.push(egui::ViewportEvent::Close);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1240.0, 800.0),
+            )),
+            viewports: std::iter::once((egui::ViewportId::ROOT, info)).collect(),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.tick(ui.ctx());
+            app.draw(ui)
+        });
+        out.textures_delta.clear();
+        out.viewport_output
+            .remove(&egui::ViewportId::ROOT)
+            .map(|v| v.commands)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn closing_asks_and_remembering_quit_stops_asking() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        let cmds = close_frame(&ctx, &mut app);
+        assert!(
+            cmds.contains(&ViewportCommand::CancelClose),
+            "the X never closes silently"
+        );
+        assert!(app.close_dialog.is_some(), "dialog shown");
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.1, vec![]); // dialog draws
+
+        app.close_dialog.as_mut().unwrap().remember = true;
+        app.apply_close_choice(&ctx, CloseChoice::Quit);
+        assert_eq!(app.cfg.close_behavior, CloseBehavior::Quit);
+        assert!(app.quitting && app.close_dialog.is_none());
+        let cmds = close_frame(&ctx, &mut app);
+        assert!(
+            !cmds.contains(&ViewportCommand::CancelClose),
+            "now it really closes"
+        );
+    }
+
+    #[test]
+    fn cancel_keeps_running_and_does_not_remember() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        close_frame(&ctx, &mut app);
+        app.close_dialog.as_mut().unwrap().remember = true;
+        app.apply_close_choice(&ctx, CloseChoice::Cancel);
+        assert_eq!(app.cfg.close_behavior, CloseBehavior::Ask);
+        assert!(!app.quitting && !app.hidden && app.close_dialog.is_none());
+    }
+
+    #[test]
+    fn remembered_choices_skip_the_dialog() {
+        let ctx = egui::Context::default();
+        // "Always quit": the close goes through.
+        let mut app = test_app();
+        app.cfg.close_behavior = CloseBehavior::Quit;
+        assert!(!close_frame(&ctx, &mut app).contains(&ViewportCommand::CancelClose));
+        assert!(app.close_dialog.is_none());
+
+        // "Always minimize", but no tray icon (as in tests): minimize instead of hiding,
+        // so the window can always be found again.
+        let mut app = test_app();
+        app.cfg.close_behavior = CloseBehavior::MinimizeToTray;
+        let cmds = close_frame(&ctx, &mut app);
+        assert!(cmds.contains(&ViewportCommand::CancelClose));
+        assert!(cmds.contains(&ViewportCommand::Minimized(true)));
+        assert!(!cmds.contains(&ViewportCommand::Visible(false)));
+        assert!(app.close_dialog.is_none() && !app.hidden);
+    }
+
+    #[test]
+    fn windows_shutdown_closes_without_a_dialog() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.session_ending.store(true, Relaxed);
+        let cmds = close_frame(&ctx, &mut app);
+        assert!(!cmds.contains(&ViewportCommand::CancelClose));
+        assert!(app.close_dialog.is_none());
+    }
+
+    #[test]
+    fn tray_show_and_quit_requests_reach_the_window_even_without_drawing() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        let (tx, rx) = mpsc::channel();
+        app.shell_requests = Some(rx);
+        app.hidden = true;
+        tx.send(TrayAction::Show).unwrap();
+        // While hidden, eframe runs only the logic (`run_logic`), never a ui pass.
+        let out = ctx.run_logic(&egui::RawInput::default(), |ctx| app.tick(ctx));
+        let cmds = &out.viewport_commands[&egui::ViewportId::ROOT];
+        assert!(cmds.contains(&ViewportCommand::Visible(true)));
+        assert!(cmds.contains(&ViewportCommand::Focus));
+        assert!(!app.hidden);
+
+        tx.send(TrayAction::Quit).unwrap();
+        let out = ctx.run_logic(&egui::RawInput::default(), |ctx| app.tick(ctx));
+        assert!(out.viewport_commands[&egui::ViewportId::ROOT].contains(&ViewportCommand::Close));
+        assert!(app.quitting);
+    }
+
+    #[test]
+    fn tray_toggles_reach_the_config_and_the_mirror_follows() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.shared.voice_on.store(false, Relaxed); // what the tray's "Voice changer" item does
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
+        assert!(!app.cfg.voice_on);
+        assert!(
+            !app.mirror.lock().unwrap().voice_on,
+            "saved on Windows shutdown"
+        );
     }
 
     #[test]

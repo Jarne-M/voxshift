@@ -116,6 +116,43 @@ turn off the driver's noise suppression, raise the seconds, or turn silence dete
 Hotkeys use a standard Windows low-level keyboard hook (the same mechanism as Discord's
 push-to-talk). The hook only reads key presses and never blocks or changes them.
 
+## 5b. Closing, the tray icon and startup
+
+Your virtual mic only exists while VoxShift runs, so closing the window never quietly kills it:
+
+- **The X (or Alt+F4)** asks: **Minimize to tray** (the default; Enter picks it), **Quit
+  completely**, or **Cancel**. Tick *Remember my choice* to stop asking. You can change or reset
+  it later under **Window & startup** in the left panel: *Ask every time*, *Always minimize to
+  tray* or *Always quit*.
+- **Hidden in the tray**, everything keeps running: audio, mic fallback, soundboard and hotkeys.
+  The first time per run, a notification says so. Mic switches while hidden also show as a
+  notification.
+- **Tray icon:** left-click or double-click shows the window. Right-click opens a menu with:
+  - Show VoxShift
+  - Voice changer ON/OFF
+  - Mute mic
+  - the active mic (read-only)
+  - Stop all sounds
+  - Quit VoxShift (always quits, no question)
+
+  The tooltip shows the status, and the icon colour shows problems at a glance:
+
+  | Colour | Meaning |
+  |---|---|
+  | violet | all good |
+  | grey | voice changer off |
+  | grey with a red slash | mic muted |
+  | orange | no microphone available |
+  | red | virtual mic output missing |
+- **Only one copy runs.** Starting VoxShift again (e.g. from the desktop shortcut) brings the
+  running one to the front, even from the tray, instead of starting a second copy that would
+  fight over the cable.
+- **Start with Windows** adds VoxShift to your user's startup programs. That's the
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` registry key, so no admin rights are
+  needed. **Start minimized to tray** starts it straight in the tray. Both are off by default.
+- **Windows shutdown or logoff** saves your settings and exits without showing the dialog.
+- **Mute mic** (top bar or tray) fades your mic out; soundboard sounds still play.
+
 ## 6. Latency
 
 The estimate in the UI is the sum of:
@@ -145,7 +182,7 @@ second profile, or trying things without touching your normal settings.
 
 ## 8. Testing on your hardware
 
-These were checked automatically: `cargo test` (80 tests) and the self-tests below on the
+These were checked automatically: `cargo test` (98 tests; they briefly show a tray icon) and the self-tests below on the
 development PC (USB PnP mic, webcam mic, HyperX Cloud II Wireless). The rest needs your setup.
 
 **Headless self-tests:**
@@ -184,7 +221,23 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
 8. **Soundboard.** Drop an mp3 on the window, click it: Discord hears it mixed with your voice.
    Assign Ctrl+Numpad1, focus a game or another window, press it: it plays, and the game still
    gets the key.
-9. **Persistence.** Close and reopen: devices, sliders, presets, sounds and hotkeys are back.
+9. **Persistence.** Quit and reopen: devices, sliders, presets, sounds and hotkeys are back.
+10. **Close to tray.** Talk with Discord's input meter (or a recording) running. Click the X and
+    choose *Minimize to tray*: the window disappears, the notification appears, and the meter
+    keeps moving without a gap. Click the tray icon: the window comes back with no audio glitch.
+11. **Tray menu.** Right-click the icon and try *Voice changer* (the icon turns grey), *Mute
+    mic* (red slash; Discord hears silence but sounds still play), *Stop all sounds*, and check
+    that the read-only line shows the active mic. Pull the primary mic: the icon tooltip says
+    *Fallback mic*. Unplug both mics: the icon turns orange.
+12. **Quit from the tray.** The icon disappears at once (no ghost icon when you hover the tray)
+    and CABLE Output goes silent.
+13. **Second launch.** With VoxShift in the tray, double-click the exe again: no second copy
+    in Task Manager, and the existing window comes to the front.
+14. **Remember my choice.** Tick it and choose *Quit completely*: the next X quits right away.
+    Set it back to *Ask every time* under *Window & startup*.
+15. **Start with Windows.** Tick it and *Start minimized to tray*, sign out and back in:
+    VoxShift is only in the tray, and the mic works. In Task Manager → Startup apps, VoxShift
+    is listed. Untick it: the entry is gone.
 
 ## 9. How it works
 
@@ -208,8 +261,13 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
   running engine, so the virtual-mic stream keeps running when they come and go. It restarts
   only when you change the output device or buffer size.
 
+The window is only a view. While it's hidden, eframe runs only `App::logic` (not `ui`), which
+handles tray requests, close requests and saving. The tray runs on its own thread with its own
+Win32 message loop, so it keeps working whatever the window does.
+
 ```
 src/
+  shell/      tray icon thread, icon drawing, single instance, start with Windows (Win32)
   audio/      streams, engine, device manager, drift-compensating reader, mic selection, name matching
   dsp/        one file per effect + params, smoothing, chain (all unit-tested)
   soundboard/ decoding (symphonia + rubato), sound list + loader, RT mixer, global hotkeys

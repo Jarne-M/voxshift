@@ -124,7 +124,12 @@ impl Engine {
                 None => self.mic_buf[slot].fill(0.0),
             }
         }
-        let active = self.shared.active_mic().slot();
+        // Muting just aims both mic gains at zero: the 50 ms ramp makes it click-free.
+        let active = if self.shared.mic_muted.load(Relaxed) {
+            None
+        } else {
+            self.shared.active_mic().slot()
+        };
         let targets = [active == Some(0), active == Some(1)].map(|on| if on { 1.0 } else { 0.0 });
         let mut voice = [0.0; BLOCK];
         for (i, v) in voice.iter_mut().enumerate() {
@@ -299,6 +304,35 @@ mod tests {
         shared.set_active_mic(ActiveMic::None);
         let c = run(&mut engine, &mut txs, [0.5, 0.2], 100);
         assert!(c.last().unwrap().abs() < 1e-6);
+    }
+
+    #[test]
+    fn mute_fades_the_mic_out_and_back_without_clicks() {
+        let shared = Arc::new(Shared::default());
+        let (mut engine, mut link) = Engine::new(shared.clone(), 48_000);
+        let (tx0, r0) = mic(0.5);
+        let (tx1, _r1) = mic(0.0);
+        link.cmds
+            .push(EngineCmd::AttachMic(0, Some(r0)))
+            .ok()
+            .unwrap();
+        let mut txs = [tx0, tx1];
+        feed(&mut txs[0], 0.5, 512);
+        shared.set_active_mic(ActiveMic::Primary);
+        run(&mut engine, &mut txs, [0.5, 0.0], 100);
+
+        shared.mic_muted.store(true, Relaxed);
+        let muted = run(&mut engine, &mut txs, [0.5, 0.0], 100);
+        assert!(muted.last().unwrap().abs() < 1e-6, "silent while muted");
+        let step = muted
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(step < 0.001, "mute must fade, step {step}");
+
+        shared.mic_muted.store(false, Relaxed);
+        let back = run(&mut engine, &mut txs, [0.5, 0.0], 100);
+        assert!((back.last().unwrap() - 0.5).abs() < 1e-3);
     }
 
     #[test]

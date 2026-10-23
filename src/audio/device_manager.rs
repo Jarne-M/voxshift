@@ -164,14 +164,24 @@ impl ManagerHandle {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
+
+    /// The live status, for other threads (the tray) to read.
+    pub fn status_handle(&self) -> Arc<Mutex<DeviceStatus>> {
+        self.status.clone()
+    }
+
+    /// Stops every stream and the manager thread. Safe to call more than once.
+    pub fn shutdown(&mut self) {
+        if let Some(t) = self.thread.take() {
+            let _ = self.tx.send(ManagerCmd::Quit);
+            let _ = t.join();
+        }
+    }
 }
 
 impl Drop for ManagerHandle {
     fn drop(&mut self) {
-        let _ = self.tx.send(ManagerCmd::Quit);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+        self.shutdown();
     }
 }
 

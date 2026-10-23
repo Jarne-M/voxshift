@@ -19,10 +19,24 @@ pub enum Tab {
     Soundboard,
 }
 
+/// What the window's close button (X / Alt+F4) does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CloseBehavior {
+    /// Show the "minimize to tray / quit / cancel" dialog.
+    #[default]
+    Ask,
+    MinimizeToTray,
+    Quit,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub tab: Tab,
+    pub close_behavior: CloseBehavior,
+    /// Start hidden in the tray (useful with "Start with Windows", which lives in the
+    /// registry, not here).
+    pub start_minimized: bool,
     pub devices: DeviceSettings,
     pub mic: MicSettings,
     pub voice_on: bool,
@@ -41,6 +55,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             tab: Tab::Effects,
+            close_behavior: CloseBehavior::Ask,
+            start_minimized: false,
             devices: DeviceSettings::default(),
             mic: MicSettings::default(),
             voice_on: true,
@@ -144,6 +160,40 @@ mod tests {
             loaded.sounds[0].hotkey.as_ref().unwrap().label,
             "Ctrl+Num 1"
         );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn close_and_startup_settings_round_trip_and_default_safely() {
+        let dir = temp_dir("config-close");
+        let path = dir.join("config.json");
+        for (behavior, minimized) in [
+            (CloseBehavior::MinimizeToTray, true),
+            (CloseBehavior::Quit, false),
+            (CloseBehavior::Ask, true),
+        ] {
+            let cfg = Config {
+                close_behavior: behavior,
+                start_minimized: minimized,
+                ..Config::default()
+            };
+            save_to(&path, &cfg).unwrap();
+            let (loaded, warning) = load_from(&path);
+            assert!(warning.is_none());
+            assert_eq!(loaded.close_behavior, behavior);
+            assert_eq!(loaded.start_minimized, minimized);
+        }
+        let json = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            json.contains("\"close_behavior\": \"Ask\""),
+            "readable in the file"
+        );
+
+        // Config files from before this feature: ask on close, start visible.
+        std::fs::write(&path, r#"{ "voice_on": true }"#).unwrap();
+        let (old, _) = load_from(&path);
+        assert_eq!(old.close_behavior, CloseBehavior::Ask);
+        assert!(!old.start_minimized);
         std::fs::remove_dir_all(dir).ok();
     }
 

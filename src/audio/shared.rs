@@ -61,6 +61,8 @@ pub struct Shared {
     pub params: ParamStore,
     /// Master toggle: false = clean passthrough.
     pub voice_on: AtomicBool,
+    /// Mutes the mic (fades out like a mic switch); the soundboard keeps playing.
+    pub mic_muted: AtomicBool,
     active_mic: AtomicU8,
     /// Per-mic level (linear peak with ~300 ms release), written by the input callbacks.
     pub mic_level: [AtomicF32; 2],
@@ -87,6 +89,7 @@ impl Default for Shared {
         Self {
             params: ParamStore::default(),
             voice_on: AtomicBool::new(true),
+            mic_muted: AtomicBool::new(false),
             active_mic: AtomicU8::new(0),
             mic_level: [AtomicF32::zero(), AtomicF32::zero()],
             mic_fill_ms: [AtomicF32::zero(), AtomicF32::zero()],

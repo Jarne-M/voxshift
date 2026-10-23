@@ -6,6 +6,7 @@
 mod audio;
 mod config;
 mod dsp;
+mod shell;
 mod soundboard;
 mod ui;
 
@@ -133,6 +134,15 @@ fn main() -> eframe::Result {
         selftest(args.get(i + 1).cloned());
         return Ok(());
     }
+    // Only one copy: two would fight over the virtual cable. A second launch brings the
+    // running one (possibly hidden in the tray) to the front instead.
+    let _instance = match shell::instance::acquire(shell::instance::MUTEX_NAME) {
+        shell::instance::Instance::First(guard) => guard,
+        shell::instance::Instance::AlreadyRunning => {
+            shell::instance::signal_existing();
+            return Ok(());
+        }
+    };
     // `--config <file>`: use another settings file (a second profile, or testing without
     // touching your real settings).
     let config_path = args
@@ -141,19 +151,32 @@ fn main() -> eframe::Result {
         .and_then(|i| args.get(i + 1))
         .map(std::path::PathBuf::from)
         .unwrap_or_else(config::config_path);
-    let app = ui::VoxApp::new(config_path);
+    let (cfg, notice) = config::load_from(&config_path);
+    let icon = egui::IconData {
+        rgba: shell::icon::render(shell::Health::Ok, 64),
+        width: 64,
+        height: 64,
+    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("VoxShift")
+        .with_icon(icon)
+        .with_inner_size(ui::WINDOW_SIZE)
+        .with_min_inner_size([920.0, 600.0]);
+    if cfg.start_minimized {
+        // eframe always shows the window once its first frame is painted; the app hides it
+        // right after. Off-screen and without focus, that moment is invisible.
+        viewport = viewport.with_position(ui::OFFSCREEN).with_active(false);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("VoxShift")
-            .with_inner_size([1240.0, 800.0])
-            .with_min_inner_size([920.0, 600.0]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
         "VoxShift",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             ui::theme::apply(&cc.egui_ctx);
+            let app = ui::VoxApp::new(config_path, cfg, notice, cc.egui_ctx.clone());
             Ok(Box::new(app))
         }),
     )
