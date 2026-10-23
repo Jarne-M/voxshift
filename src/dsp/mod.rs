@@ -13,6 +13,8 @@ pub mod gate;
 pub mod lpc;
 pub mod params;
 pub mod pitch;
+#[allow(dead_code)] // wired into the chain in the next stage
+pub mod pitch_detect;
 pub mod reverb;
 pub mod robot;
 pub mod smooth;
