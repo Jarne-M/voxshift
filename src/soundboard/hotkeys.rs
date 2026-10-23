@@ -12,6 +12,40 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
+/// Troubleshooting log for assigning hotkeys, written next to the config. It only records
+/// what happens while VoxShift is waiting for a hotkey; other key presses are never logged.
+pub mod diag {
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    static START: OnceLock<Instant> = OnceLock::new();
+    const MAX_BYTES: u64 = 64 * 1024;
+
+    pub fn set_path(path: PathBuf) {
+        let _ = START.set(Instant::now());
+        let _ = PATH.set(path);
+        log("--- VoxShift started ---");
+    }
+
+    pub fn log(msg: impl AsRef<str>) {
+        let Some(path) = PATH.get() else { return };
+        let t = START.get().map_or(0.0, |s| s.elapsed().as_secs_f64());
+        let too_big = std::fs::metadata(path).is_ok_and(|m| m.len() > MAX_BYTES);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(!too_big)
+            .write(true)
+            .truncate(too_big)
+            .open(path);
+        if let Ok(mut f) = file {
+            let _ = writeln!(f, "{t:9.3}s  {}", msg.as_ref());
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hotkey {
     /// Windows virtual-key code.
@@ -128,6 +162,7 @@ impl HotkeyService {
         let listener = win::Listener::start(raw_tx);
         #[cfg(windows)]
         let available = listener.is_some();
+        diag::log(format!("listener started: {available}"));
         #[cfg(not(windows))]
         let available = {
             drop(raw_tx);
@@ -143,11 +178,28 @@ impl HotkeyService {
                     if raw.down {
                         counter.fetch_add(1, Ordering::Relaxed);
                     }
+                    let waiting = *cap.lock().unwrap_or_else(|e| e.into_inner());
+                    if waiting {
+                        diag::log(format!(
+                            "listener: key {} vk=0x{:02X} scan=0x{:02X} ctrl={} shift={} alt={}",
+                            if raw.down { "down" } else { "up  " },
+                            raw.vk,
+                            raw.scan,
+                            raw.ctrl,
+                            raw.shift,
+                            raw.alt
+                        ));
+                    }
                     #[cfg(windows)]
                     let pressed = tracker.feed(raw, win::key_name);
                     #[cfg(not(windows))]
                     let pressed = tracker.feed(raw, |k| format!("Key {}", k.vk));
-                    let Some(key) = pressed else { continue };
+                    let Some(key) = pressed else {
+                        if waiting && raw.down {
+                            diag::log("worker: ignored (modifier on its own, or key still held)");
+                        }
+                        continue;
+                    };
                     let mut capturing = cap.lock().unwrap_or_else(|e| e.into_inner());
                     if *capturing {
                         *capturing = false;
@@ -158,7 +210,10 @@ impl HotkeyService {
                         } else {
                             Captured::Key(key)
                         };
-                        let _ = cap_tx.send(msg);
+                        let sent = cap_tx.send(msg).is_ok();
+                        diag::log(format!(
+                            "worker: capture result handed to the window (ok={sent})"
+                        ));
                         continue;
                     }
                     drop(capturing);
@@ -193,10 +248,16 @@ impl HotkeyService {
     pub fn begin_capture(&self) {
         while self.captured.try_recv().is_ok() {}
         *self.capture.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        diag::log(format!(
+            "capture started (listener running={}, key presses so far={})",
+            self.available,
+            self.presses_seen()
+        ));
     }
 
     pub fn cancel_capture(&self) {
         *self.capture.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        diag::log("capture cancelled");
     }
 
     pub fn poll_capture(&self) -> Option<Captured> {

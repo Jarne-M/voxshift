@@ -18,7 +18,7 @@ use crate::dsp::params::Snapshot;
 use crate::shell::tray::Tray;
 use crate::shell::{TrayAction, autostart};
 use crate::soundboard::decode;
-use crate::soundboard::hotkeys::{Captured, HotkeyService};
+use crate::soundboard::hotkeys::{self, Captured, HotkeyService};
 use crate::soundboard::library::{SoundEntry, Soundboard};
 use crate::soundboard::mixer::SoundId;
 use egui::{Color32, RichText, Ui, ViewportCommand};
@@ -85,6 +85,8 @@ struct CaptureWatch {
     presses_at_start: u64,
     /// When this window first saw a key press during the capture.
     window_key_at: Option<f64>,
+    /// Last "still waiting" line in the troubleshooting log.
+    last_log: f64,
 }
 
 /// How long a key press in the window may go unreported by the listener.
@@ -131,6 +133,7 @@ impl VoxApp {
         let shared = Arc::new(Shared::default());
         let manager = ManagerHandle::spawn(shared.clone(), cfg.devices.clone(), cfg.mic.clone());
         let mut app = Self::with_manager(cfg, shared, manager);
+        hotkeys::diag::set_path(config_path.with_file_name("hotkeys-debug.log"));
         app.hotkeys = Some(HotkeyService::start(app.sounds.board.clone()));
         app.config_path = Some(config_path);
         app.startup_notice = notice;
@@ -640,10 +643,12 @@ impl VoxApp {
                     self.capture_watch = Some(CaptureWatch {
                         presses_at_start: h.presses_seen(),
                         window_key_at: None,
+                        last_log: 0.0,
                     });
                 }
             }
             A::CancelHotkey => {
+                hotkeys::diag::log("window: the 'Press a key' button was clicked -> cancel");
                 if let Some(h) = &self.hotkeys {
                     h.cancel_capture();
                 }
@@ -730,7 +735,11 @@ impl VoxApp {
         };
         self.capturing = None;
         self.capture_watch = None;
-        let Captured::Key(key) = result else { return };
+        let Captured::Key(key) = result else {
+            hotkeys::diag::log("window: got 'cancelled' (Esc)");
+            return;
+        };
+        hotkeys::diag::log(format!("window: got key {} -> saving", key.label));
         let mut board = self.sounds.lock();
         let clash = board
             .hotkey_owner(&key)
@@ -821,14 +830,28 @@ impl VoxApp {
                 .iter()
                 .any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))
         });
-        if window_got_key && watch.window_key_at.is_none() {
-            watch.window_key_at = Some(now);
+        if window_got_key {
+            hotkeys::diag::log(format!(
+                "window: this window got a key press (listener presses so far {})",
+                h.presses_seen()
+            ));
+            if watch.window_key_at.is_none() {
+                watch.window_key_at = Some(now);
+            }
+        }
+        if now - watch.last_log >= 1.0 {
+            watch.last_log = now;
+            hotkeys::diag::log(format!(
+                "window: still waiting (listener presses so far {})",
+                h.presses_seen()
+            ));
         }
         let silent = h.presses_seen() == watch.presses_at_start;
         if let Some(t) = watch.window_key_at
             && silent
             && now - t > CAPTURE_GRACE_S
         {
+            hotkeys::diag::log("window: listener heard nothing -> giving up");
             h.cancel_capture();
             self.capturing = None;
             self.capture_watch = None;
