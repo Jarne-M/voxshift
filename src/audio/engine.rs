@@ -10,6 +10,8 @@ use super::block::{BLOCK, BlockSource, StereoBlock};
 use super::shared::{PeakMeter, Shared};
 use crate::dsp::chain::VoiceChain;
 use crate::dsp::cue::Cue;
+use crate::dsp::params::P;
+use crate::dsp::preview::Preview;
 use crate::dsp::smooth::Ramp;
 use crate::dsp::{Block, VoiceProcessor};
 use crate::soundboard::mixer::{SoundCmd, SoundMixer, SoundRetired};
@@ -54,6 +56,8 @@ pub struct Engine {
     /// Last Melody Voice restart / next-note requests acted on.
     melody_restart_seen: u32,
     melody_next_seen: u32,
+    preview: Preview,
+    preview_was_playing: bool,
 }
 
 /// The manager's ends of the engine queues.
@@ -85,6 +89,8 @@ impl Engine {
             sample_rate: sr,
             melody_restart_seen,
             melody_next_seen,
+            preview: Preview::new(sr),
+            preview_was_playing: false,
         };
         let link = EngineLink {
             cmds: cmd_tx,
@@ -237,6 +243,34 @@ impl BlockSource for Engine {
                 *c = self.cue.next() * vol;
             }
         }
+        // "Play melody": the tune in the headphones, also never into the virtual mic.
+        self.preview.sync(&self.shared.melody);
+        let wanted = self.shared.melody_preview.load(Relaxed);
+        if wanted && !self.preview.playing() {
+            if !self.preview_was_playing {
+                self.preview.start();
+            }
+            if !self.preview.playing() {
+                // It reached the end (or there is nothing to play): tell the window.
+                self.shared.melody_preview.store(false, Relaxed);
+            }
+        } else if !wanted && self.preview.playing() {
+            self.preview.stop();
+        }
+        self.preview_was_playing = self.preview.playing();
+        if self.preview.active() {
+            let mut tune = [0.0; BLOCK];
+            self.preview.render(
+                &mut tune,
+                params.get(P::MelodyBpm),
+                params.get(P::MelodyTranspose).round(),
+            );
+            let vol = self.shared.monitor_volume.get();
+            for (c, t) in cue.iter_mut().zip(tune) {
+                *c += t * vol;
+            }
+        }
+        self.shared.melody_preview_beat.set(self.preview.beat());
         if let Some(tx) = &mut self.monitor {
             let vol = self.shared.monitor_volume.get();
             let gv = if self.shared.monitor_voice.load(Relaxed) {
@@ -403,6 +437,54 @@ mod tests {
         assert_eq!(out_peak, 0.0, "nothing in the virtual mic");
         assert!(mon_peak > 0.05, "beep in the headphones: {mon_peak}");
         assert_eq!(shared.take_cue(), None, "request consumed");
+    }
+
+    #[test]
+    fn play_melody_goes_to_the_monitor_only_and_ends_by_itself() {
+        let shared = Arc::new(Shared::default());
+        shared.melody.publish(
+            &crate::melody::library::get("Major arpeggio (C)")
+                .unwrap()
+                .notes,
+        );
+        shared.params.set(crate::dsp::params::P::MelodyBpm, 240.0); // 9 beats: 2.25 s
+        let (mut engine, mut link) = Engine::new(shared.clone(), 48_000);
+        let (mon_tx, mut mon_rx) = RingBuffer::new(48_000 * 4);
+        link.cmds
+            .push(EngineCmd::AttachMonitor(Some(mon_tx)))
+            .ok()
+            .unwrap();
+        shared.melody_preview.store(true, Relaxed);
+        let mut out = [0.0; BLOCK * 2];
+        let (mut out_peak, mut moved) = (0.0f32, false);
+        for n in 0..(48_000 * 3 / BLOCK) {
+            engine.render(&mut out);
+            out_peak = out.iter().fold(out_peak, |m, x| m.max(x.abs()));
+            moved |= n > 100 && shared.melody_preview_beat.get() > 2.0;
+        }
+        let mut mon_peak = 0.0f32;
+        while let Ok(s) = mon_rx.pop() {
+            mon_peak = mon_peak.max(s.abs());
+        }
+        assert_eq!(out_peak, 0.0, "nothing in the virtual mic");
+        assert!(mon_peak > 0.1, "the tune in the headphones: {mon_peak}");
+        assert!(moved, "the playhead moves");
+        assert!(!shared.melody_preview.load(Relaxed), "cleared at the end");
+
+        // Stopping halfway also works, and an empty melody clears the request at once.
+        shared.melody_preview.store(true, Relaxed);
+        for _ in 0..50 {
+            engine.render(&mut out);
+        }
+        shared.melody_preview.store(false, Relaxed);
+        for _ in 0..300 {
+            engine.render(&mut out); // 0.4 s: the 30 ms release has died away
+        }
+        assert!(!engine.preview.active());
+        shared.melody.publish(&[]);
+        shared.melody_preview.store(true, Relaxed);
+        engine.render(&mut out);
+        assert!(!shared.melody_preview.load(Relaxed));
     }
 
     #[test]

@@ -131,6 +131,24 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, v: &View) -> Vec<Action> {
         if ui.small_button("+ Add preset hotkey").clicked() {
             actions.push(Action::AddPresetKey);
         }
+        ui.add_space(4.0);
+
+        ui.label(RichText::new("Melody Voice").strong());
+        let vk = &cfg.voice_keys;
+        for (target, key, label) in [
+            (KeyTarget::MelodyToggle, &vk.melody_toggle, "On / off"),
+            (
+                KeyTarget::MelodyRestart,
+                &vk.melody_restart,
+                "Restart melody",
+            ),
+            (KeyTarget::MelodyNext, &vk.melody_next, "Next note"),
+        ] {
+            ui.horizontal(|ui| {
+                ui.add_sized([100.0, 20.0], egui::Label::new(label));
+                key_button(ui, target, key.as_ref(), v, &mut actions);
+            });
+        }
 
         ui.separator();
         ui.label(RichText::new("When it switches").strong());

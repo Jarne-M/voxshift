@@ -2,12 +2,17 @@
 //! defaults; user presets live in the config file.
 
 use crate::dsp::params::{EffectSettings, P, Snapshot};
+use crate::melody::MelodySource;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Preset {
     pub name: String,
     pub effects: EffectSettings,
+    /// Melody Voice's melody. `None` keeps whatever melody is picked (built-in presets, and
+    /// presets saved without Melody Voice or before it existed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub melody: Option<MelodySource>,
 }
 
 fn make(name: &str, changes: &[(P, f32)]) -> Preset {
@@ -18,6 +23,7 @@ fn make(name: &str, changes: &[(P, f32)]) -> Preset {
     Preset {
         name: name.to_string(),
         effects: s.to_settings(),
+        melody: None,
     }
 }
 
@@ -125,6 +131,35 @@ pub fn builtin() -> Vec<Preset> {
                 (LowGain, 6.0),
             ],
         ),
+        // Talk, and every syllable is the next note of the melody you picked.
+        make(
+            "Sing the Song (per-syllable)",
+            &[
+                (MelodyOn, 1.0),
+                (MelodyMode, 0.0),
+                (MelodyRetune, 5.0),
+                (MelodyGlide, 40.0),
+                (MelodyFold, 1.0),
+                (MelodyLoop, 1.0),
+                (MelodyFormant, 1.0),
+                (ReverbOn, 1.0),
+                (ReverbSize, 0.5),
+                (ReverbMix, 0.15),
+            ],
+        ),
+        // The robotic, instant auto-tune: snaps to C major with no glide.
+        make(
+            "Hard Tune",
+            &[
+                (MelodyOn, 1.0),
+                (MelodyMode, 3.0),
+                (MelodyKey, 0.0),
+                (MelodyScale, 0.0),
+                (MelodyRetune, 0.0),
+                (MelodyGlide, 0.0),
+                (MelodyFormant, 1.0),
+            ],
+        ),
     ]
 }
 
@@ -140,9 +175,9 @@ pub fn apply(preset: &Preset, current: &Snapshot) -> Snapshot {
     s
 }
 
-/// True if `current` is exactly what applying `preset` would give.
-pub fn matches(preset: &Preset, current: &Snapshot) -> bool {
-    apply(preset, current) == *current
+/// True if `current` (and the melody picked) is exactly what applying `preset` would give.
+pub fn matches(preset: &Preset, current: &Snapshot, melody: &MelodySource) -> bool {
+    apply(preset, current) == *current && preset.melody.as_ref().is_none_or(|m| m == melody)
 }
 
 #[cfg(test)]
@@ -199,10 +234,68 @@ mod tests {
         let applied = apply(&demon, &current);
         assert_eq!(applied.get(P::InputGain), 6.0);
         assert_eq!(applied.get(P::PitchSemis), -8.0);
-        assert!(matches(&demon, &applied));
+        let any = MelodySource::default();
+        assert!(matches(&demon, &applied, &any));
         let mut tweaked = applied;
         tweaked.set(P::ReverbMix, 0.9);
-        assert!(!matches(&demon, &tweaked));
+        assert!(!matches(&demon, &tweaked, &any));
         assert!(is_builtin("deep voice"));
+    }
+
+    #[test]
+    fn melody_presets_exist_and_a_preset_melody_counts_for_modified() {
+        let all = builtin();
+        let sing = all
+            .iter()
+            .find(|p| p.name == "Sing the Song (per-syllable)")
+            .unwrap();
+        let hard = all.iter().find(|p| p.name == "Hard Tune").unwrap();
+        let s = Snapshot::from_settings(&sing.effects);
+        assert!(s.on(P::MelodyOn) && s.choice(P::MelodyMode) == 0);
+        let h = Snapshot::from_settings(&hard.effects);
+        assert!(h.on(P::MelodyOn) && h.choice(P::MelodyMode) == 3);
+        assert_eq!(h.get(P::MelodyRetune), 0.0);
+        assert!(
+            sing.melody.is_none(),
+            "built-ins keep the melody you picked"
+        );
+
+        let mine = Preset {
+            name: "Mine".into(),
+            effects: sing.effects.clone(),
+            melody: Some(MelodySource::BuiltIn("Ode to Joy".into())),
+        };
+        let fx = apply(&mine, &Snapshot::defaults());
+        assert!(matches(
+            &mine,
+            &fx,
+            &MelodySource::BuiltIn("Ode to Joy".into())
+        ));
+        assert!(
+            !matches(&mine, &fx, &MelodySource::default()),
+            "other melody"
+        );
+    }
+
+    #[test]
+    fn presets_round_trip_with_and_without_a_melody() {
+        let p = Preset {
+            name: "Song".into(),
+            effects: builtin()[0].effects.clone(),
+            melody: Some(MelodySource::File {
+                path: "C:/music/song.mid".into(),
+                part: Some(2),
+            }),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Preset>(&json).unwrap(), p);
+        // A preset saved before Melody Voice existed still loads.
+        let old: Preset = serde_json::from_str(r#"{"name":"Old","effects":{}}"#).unwrap();
+        assert_eq!(old.melody, None);
+        let plain = serde_json::to_string(&builtin()[0]).unwrap();
+        assert!(
+            !plain.contains("melody\":"),
+            "no melody field when there is none"
+        );
     }
 }

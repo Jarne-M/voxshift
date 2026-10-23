@@ -19,7 +19,7 @@ pub fn bar(ui: &mut Ui, cfg: &Config, fx: &Snapshot, new_name: &mut String) -> O
         .as_ref()
         .and_then(|n| all().find(|p| &p.name == n));
     let shown = match current {
-        Some(p) if presets::matches(p, fx) => p.name.clone(),
+        Some(p) if presets::matches(p, fx, &cfg.melody.source) => p.name.clone(),
         Some(p) => format!("{} (modified)", p.name),
         None => "(custom)".to_string(),
     };
@@ -65,7 +65,7 @@ pub fn bar(ui: &mut Ui, cfg: &Config, fx: &Snapshot, new_name: &mut String) -> O
         let hint = if presets::is_builtin(name) {
             "Built-in presets cannot be overwritten"
         } else {
-            "Save the current sliders"
+            "Save the current sliders (and, with Melody Voice on, its melody)"
         };
         if ui
             .add_enabled(valid, egui::Button::new(label))

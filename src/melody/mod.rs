@@ -101,7 +101,6 @@ pub struct Note {
 }
 
 impl Note {
-    #[cfg(test)]
     pub fn end(&self) -> f32 {
         self.start + self.len
     }
@@ -116,7 +115,6 @@ pub struct Melody {
     pub bpm: f32,
 }
 
-#[cfg(test)]
 impl Melody {
     /// Length in beats (to the end of the last note).
     pub fn beats(&self) -> f32 {

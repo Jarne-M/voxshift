@@ -62,6 +62,10 @@ pub struct VoiceHotkeys {
     pub mode: VoiceKeyMode,
     pub mute: Option<Hotkey>,
     pub presets: Vec<PresetHotkey>,
+    /// Melody Voice on/off, back to the first note, on to the next note.
+    pub melody_toggle: Option<Hotkey>,
+    pub melody_restart: Option<Hotkey>,
+    pub melody_next: Option<Hotkey>,
 }
 
 /// Which hotkey is being assigned.
@@ -71,6 +75,28 @@ pub enum KeyTarget {
     Toggle,
     Mute,
     Preset(usize),
+    MelodyToggle,
+    MelodyRestart,
+    MelodyNext,
+}
+
+impl VoiceHotkeys {
+    /// The Melody Voice keys with their targets and how they are named to the user.
+    pub fn melody_keys(&self) -> [(KeyTarget, &Option<Hotkey>, &'static str); 3] {
+        [
+            (
+                KeyTarget::MelodyToggle,
+                &self.melody_toggle,
+                "the Melody Voice toggle",
+            ),
+            (
+                KeyTarget::MelodyRestart,
+                &self.melody_restart,
+                "restart melody",
+            ),
+            (KeyTarget::MelodyNext, &self.melody_next, "next note"),
+        ]
+    }
 }
 
 /// Who else already uses `key` (anything but `target`), described for the user.
@@ -90,6 +116,11 @@ pub fn conflict<'a>(
     for (i, p) in voice.presets.iter().enumerate() {
         if target != KeyTarget::Preset(i) && same(&p.hotkey) {
             return Some(format!("the \"{}\" preset", p.preset));
+        }
+    }
+    for (t, h, name) in voice.melody_keys() {
+        if target != t && same(h) {
+            return Some(name.into());
         }
     }
     for (id, name, h) in sounds {
@@ -149,6 +180,7 @@ impl Feedback {
 #[derive(Clone, Debug, PartialEq)]
 pub enum VoiceRequest {
     Preset(String),
+    ToggleMelody,
 }
 
 type WakeFn = Box<dyn Fn() + Send + Sync>;
@@ -206,16 +238,38 @@ impl VoiceKeys {
 impl KeyHandler for VoiceKeys {
     fn pressed(&self, key: &Hotkey) -> bool {
         let is = |h: &Option<Hotkey>| h.as_ref().is_some_and(|h| h.same_keys(key));
-        let (toggle, mute, preset, mode) = {
+        let (toggle, mute, preset, mode, melody) = {
             let b = self.lock();
             let preset = b
                 .presets
                 .iter()
                 .find(|p| is(&p.hotkey))
                 .map(|p| p.preset.clone());
-            (is(&b.toggle), is(&b.mute), preset, b.mode)
+            let melody = b.melody_keys().into_iter().find(|(_, h, _)| is(h));
+            (
+                is(&b.toggle),
+                is(&b.mute),
+                preset,
+                b.mode,
+                melody.map(|(t, _, _)| t),
+            )
         };
-        if toggle {
+        let shared = self.feedback.shared();
+        if let Some(target) = melody {
+            // Restart and next act on the audio thread directly (also while hidden); the
+            // toggle changes a slider, which lives in the window.
+            match target {
+                KeyTarget::MelodyRestart => {
+                    shared.melody_restart.fetch_add(1, Relaxed);
+                }
+                KeyTarget::MelodyNext => {
+                    shared.melody_next.fetch_add(1, Relaxed);
+                }
+                _ => {
+                    let _ = self.requests.send(VoiceRequest::ToggleMelody);
+                }
+            }
+        } else if toggle {
             match mode {
                 VoiceKeyMode::Toggle => self.feedback.toggle_voice(),
                 hold => {
@@ -407,6 +461,47 @@ mod tests {
         assert_eq!(
             r.requests.try_recv().unwrap(),
             VoiceRequest::Preset("Deep Voice".into())
+        );
+    }
+
+    #[test]
+    fn melody_keys_restart_step_and_toggle() {
+        let r = rig(VoiceHotkeys {
+            melody_toggle: Some(hk(0x4D, false, "M")),
+            melody_restart: Some(hk(0x52, true, "Ctrl+R")),
+            melody_next: Some(hk(0x4E, true, "Ctrl+N")),
+            ..Default::default()
+        });
+        assert!(r.keys.pressed(&hk(0x52, true, "Ctrl+R")));
+        assert_eq!(r.shared.melody_restart.load(Relaxed), 1);
+        for _ in 0..3 {
+            assert!(r.keys.pressed(&hk(0x4E, true, "Ctrl+N")));
+        }
+        assert_eq!(r.shared.melody_next.load(Relaxed), 3);
+        assert!(r.keys.pressed(&hk(0x4D, false, "M")));
+        assert_eq!(r.requests.try_recv().unwrap(), VoiceRequest::ToggleMelody);
+        assert!(
+            r.shared.voice_on.load(Relaxed),
+            "the voice changer is untouched"
+        );
+        assert!(
+            !r.keys.pressed(&hk(0x4E, false, "N")),
+            "N without Ctrl is not ours"
+        );
+        assert!(r.wakes.load(Relaxed) >= 5);
+        // Conflicts name the Melody Voice keys too.
+        let b = r.keys.bindings();
+        assert_eq!(
+            conflict(&hk(0x4E, true, "x"), KeyTarget::Toggle, &b, []).as_deref(),
+            Some("next note")
+        );
+        assert_eq!(
+            conflict(&hk(0x4D, false, "x"), KeyTarget::MelodyRestart, &b, []).as_deref(),
+            Some("the Melody Voice toggle")
+        );
+        assert_eq!(
+            conflict(&hk(0x52, true, "x"), KeyTarget::MelodyRestart, &b, []),
+            None
         );
     }
 

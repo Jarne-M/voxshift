@@ -394,6 +394,13 @@ impl VoxApp {
             melody: self.melody.as_ref(),
             source: &self.cfg.melody.source,
             files: &self.cfg.melody.files,
+            beat: self.shared.melody_beat.get(),
+            preview: self
+                .shared
+                .melody_preview
+                .load(Relaxed)
+                .then(|| self.shared.melody_preview_beat.get()),
+            monitor_on: self.cfg.devices.monitor_enabled,
         };
         let response = melody::panel(ui, &mut self.fx, &view);
         if response.changed {
@@ -419,6 +426,9 @@ impl VoxApp {
                 }
                 melody::Action::Next => {
                     self.shared.melody_next.fetch_add(1, Relaxed);
+                }
+                melody::Action::Preview(play) => {
+                    self.shared.melody_preview.store(play, Relaxed);
                 }
             }
         }
@@ -521,7 +531,18 @@ impl VoxApp {
             Some(rx) => rx.try_iter().collect(),
             None => return,
         };
-        for VoiceRequest::Preset(name) in requests {
+        for request in requests {
+            let name = match request {
+                VoiceRequest::Preset(name) => name,
+                VoiceRequest::ToggleMelody => {
+                    let on = !self.fx.on(P::MelodyOn);
+                    self.fx.set(P::MelodyOn, if on { 1.0 } else { 0.0 });
+                    self.effects_changed();
+                    let state = if on { "ON" } else { "off" };
+                    self.notify(ctx, format!("Melody Voice {state}"));
+                    continue;
+                }
+            };
             let all = config::presets::builtin()
                 .into_iter()
                 .chain(self.cfg.user_presets.iter().cloned());
@@ -529,9 +550,7 @@ impl VoxApp {
                 self.notify(ctx, format!("Preset \"{name}\" no longer exists"));
                 continue;
             };
-            self.fx = config::presets::apply(&preset, &self.fx);
-            self.effects_changed();
-            self.cfg.preset = Some(preset.name.clone());
+            self.apply_preset(ctx, &preset);
             // Jumping to a preset means you want to hear it.
             self.feedback.set_voice(true, true);
             self.cfg.voice_on = true;
@@ -1013,6 +1032,9 @@ impl VoxApp {
             }
             KeyTarget::Toggle => vk.toggle = key,
             KeyTarget::Mute => vk.mute = key,
+            KeyTarget::MelodyToggle => vk.melody_toggle = key,
+            KeyTarget::MelodyRestart => vk.melody_restart = key,
+            KeyTarget::MelodyNext => vk.melody_next = key,
             KeyTarget::Preset(i) => {
                 if let Some(p) = vk.presets.get_mut(i) {
                     p.hotkey = key;
@@ -1061,17 +1083,33 @@ impl VoxApp {
         self.toasts.push(ctx, format!("Hotkey {label} assigned"));
     }
 
+    /// Applies a preset's sliders and, if it has one, its melody.
+    fn apply_preset(&mut self, ctx: &egui::Context, p: &config::presets::Preset) {
+        self.fx = config::presets::apply(p, &self.fx);
+        self.effects_changed();
+        self.cfg.preset = Some(p.name.clone());
+        if let Some(source) = &p.melody
+            && *source != self.cfg.melody.source
+            && let Err(e) = self.select_melody(source.clone(), false)
+        {
+            self.notify(
+                ctx,
+                format!("Preset \"{}\": melody not loaded ({e})", p.name),
+            );
+        }
+    }
+
     fn apply_preset_action(&mut self, ctx: &egui::Context, action: presets::Action) {
         match action {
-            presets::Action::Apply(p) => {
-                self.fx = config::presets::apply(&p, &self.fx);
-                self.effects_changed();
-                self.cfg.preset = Some(p.name);
-            }
+            presets::Action::Apply(p) => self.apply_preset(ctx, &p),
             presets::Action::Save(name) => {
                 let preset = config::presets::Preset {
                     name: name.clone(),
                     effects: self.fx.to_settings(),
+                    melody: self
+                        .fx
+                        .on(P::MelodyOn)
+                        .then(|| self.cfg.melody.source.clone()),
                 };
                 match self.cfg.user_presets.iter_mut().find(|p| p.name == name) {
                     Some(existing) => *existing = preset,
@@ -1517,6 +1555,77 @@ pub(crate) mod tests {
         app.shared.melody_note.store(3, Relaxed);
         app.shared.melody_finished.store(true, Relaxed);
         frame(&ctx, &mut app, (1240.0, 800.0), t, vec![]);
+        // The piano roll scrolls along a long melody, with both playheads.
+        app.fx.set(P::MelodyMode, 1.0);
+        app.shared.melody_beat.set(30.0);
+        app.shared.melody_preview.store(true, Relaxed);
+        app.shared.melody_preview_beat.set(40.0);
+        frame(&ctx, &mut app, (1240.0, 800.0), t + 0.1, vec![]);
+        app.capturing = Some(KeyTarget::MelodyNext);
+        frame(&ctx, &mut app, (920.0, 600.0), t + 0.2, vec![]);
+    }
+
+    #[test]
+    fn the_melody_hotkey_toggles_melody_voice_from_the_window_side() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        let (tx, rx) = mpsc::channel();
+        app.voice_requests = Some(rx);
+        tx.send(VoiceRequest::ToggleMelody).unwrap();
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
+        assert!(app.fx.on(P::MelodyOn));
+        assert!(
+            app.shared.params.get(P::MelodyOn) >= 0.5,
+            "reaches the audio thread"
+        );
+        assert!(app.toasts.contains("Melody Voice ON"));
+        tx.send(VoiceRequest::ToggleMelody).unwrap();
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.1, vec![]);
+        assert!(!app.fx.on(P::MelodyOn));
+        assert!(
+            app.shared.voice_on.load(Relaxed),
+            "the voice changer itself is untouched"
+        );
+    }
+
+    #[test]
+    fn presets_save_and_restore_the_melody() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        let sing = config::presets::builtin()
+            .into_iter()
+            .find(|p| p.name == "Sing the Song (per-syllable)")
+            .unwrap();
+        app.select_melody(MelodySource::BuiltIn("Greensleeves".into()), false)
+            .unwrap();
+        app.apply_preset_action(&ctx, presets::Action::Apply(sing));
+        assert!(app.fx.on(P::MelodyOn));
+        assert_eq!(
+            app.cfg.melody.source,
+            MelodySource::BuiltIn("Greensleeves".into()),
+            "a built-in preset keeps your melody"
+        );
+        app.apply_preset_action(&ctx, presets::Action::Save("Green".into()));
+        let saved = app.cfg.user_presets.last().unwrap().clone();
+        assert_eq!(
+            saved.melody,
+            Some(MelodySource::BuiltIn("Greensleeves".into()))
+        );
+        // Somewhere else, then back to the preset: the melody comes back too.
+        app.select_melody(MelodySource::BuiltIn("Ode to Joy".into()), false)
+            .unwrap();
+        app.apply_preset_action(&ctx, presets::Action::Apply(saved));
+        assert_eq!(
+            app.cfg.melody.source,
+            MelodySource::BuiltIn("Greensleeves".into())
+        );
+        let mut out = Vec::with_capacity(crate::melody::store::MAX_NOTES);
+        app.shared.melody.read_into(&mut out).unwrap();
+        assert_eq!(out[0].key, 69, "Greensleeves starts on A4");
+        // With Melody Voice off, a saved preset does not carry a melody.
+        app.fx.set(P::MelodyOn, 0.0);
+        app.apply_preset_action(&ctx, presets::Action::Save("Plain".into()));
+        assert_eq!(app.cfg.user_presets.last().unwrap().melody, None);
     }
 
     #[test]
@@ -1814,6 +1923,29 @@ pub(crate) mod tests {
             wait_for(&ctx, &mut app, |a| !a.cfg.voice_on),
             "released: clean"
         );
+    }
+
+    /// The real key listener: F24 as Melody Voice's "next note" key.
+    #[cfg(windows)]
+    #[test]
+    fn melody_next_key_works_with_the_real_listener() {
+        use crate::soundboard::hotkeys::tests::{HOOK_TESTS, VK_F24, tap_f24};
+        let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.start_hotkeys(ctx.clone());
+        app.cfg.voice_keys.melody_next = Some(hotkeys::Hotkey::new(
+            VK_F24, false, false, false, false, "F24",
+        ));
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]); // pushes the binding
+        std::thread::sleep(Duration::from_millis(100));
+        tap_f24();
+        tap_f24();
+        assert!(
+            wait_for(&ctx, &mut app, |a| a.shared.melody_next.load(Relaxed) == 2),
+            "two presses, two steps"
+        );
+        assert!(app.cfg.voice_on, "nothing else changed");
     }
 
     /// Assigning a key another action already uses is refused.

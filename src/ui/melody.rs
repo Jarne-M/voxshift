@@ -1,12 +1,12 @@
 //! The Melody Voice panel: talk, and it comes out sung.
 
 use super::effects::control;
-use super::theme::{ACCENT, WARN, card};
+use super::theme::{ACCENT, ON, WARN, card};
 use crate::dsp::conductor::{KEY_NAMES, Mode, Scale};
 use crate::dsp::params::{P, Snapshot};
 use crate::dsp::pitch_detect::note_name;
-use crate::melody::{Loaded, MelodySource, file_label, library};
-use egui::{RichText, Ui};
+use crate::melody::{Loaded, Melody, MelodySource, file_label, library};
+use egui::{Color32, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use std::path::PathBuf;
 
 /// Every parameter this panel shows (the generic effect sections skip them).
@@ -47,6 +47,12 @@ pub struct View<'a> {
     pub source: &'a MelodySource,
     /// Imported MIDI files.
     pub files: &'a [PathBuf],
+    /// Melody Voice's playhead in beats.
+    pub beat: f32,
+    /// "Play melody" playhead while it plays.
+    pub preview: Option<f32>,
+    /// The monitor (headphones) output is on, so "Play melody" can be heard.
+    pub monitor_on: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +62,8 @@ pub enum Action {
     Import,
     Restart,
     Next,
+    /// Start (true) or stop "Play melody" in the headphones.
+    Preview(bool),
 }
 
 #[derive(Default)]
@@ -149,6 +157,68 @@ fn melody_picker(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) {
                 }
             }
         });
+}
+
+/// Beats shown at once in the piano roll (shorter melodies are shown whole).
+const ROLL_BEATS: f32 = 24.0;
+
+/// The melody as a strip of note bars, the current note lit, with Melody Voice's playhead
+/// (white) and "Play melody"'s (green).
+fn piano_roll(ui: &mut Ui, m: &Melody, current: Option<usize>, head: f32, preview: Option<f32>) {
+    let total = m.beats().max(1.0);
+    let span = total.min(ROLL_BEATS);
+    let focus = preview.unwrap_or(head);
+    let start = if total <= span {
+        0.0
+    } else {
+        (focus - span * 0.25).clamp(0.0, total - span)
+    };
+    let lo = f32::from(m.lowest()) - 1.0;
+    let hi = (f32::from(m.highest()) + 1.0).max(lo + 12.0);
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, Color32::from_gray(18));
+    let row = rect.height() / (hi - lo + 1.0);
+    let x = |b: f32| rect.left() + (b - start) / span * rect.width();
+    let y = |k: f32| rect.bottom() - (k - lo + 0.5) * row;
+    // A faint line at every C, to read the octaves.
+    for c in (lo.ceil() as i32..=hi as i32).filter(|k| k % 12 == 0) {
+        let yc = y(c as f32);
+        painter.hline(rect.x_range(), yc, Stroke::new(1.0, Color32::from_gray(34)));
+    }
+    for (i, n) in m.notes.iter().enumerate() {
+        if n.end() < start || n.start > start + span {
+            continue;
+        }
+        let k = f32::from(n.key);
+        let r = Rect::from_min_max(
+            pos2(x(n.start), y(k) - row * 0.45),
+            pos2((x(n.end()) - 1.5).max(x(n.start) + 2.0), y(k) + row * 0.45),
+        )
+        .intersect(rect);
+        let fill = if current == Some(i) {
+            ACCENT
+        } else {
+            Color32::from_gray(105)
+        };
+        painter.rect_filled(r, 2.0, fill);
+    }
+    for (beat, color) in [(Some(head), Color32::WHITE), (preview, ON)] {
+        if let Some(b) = beat
+            && (start..=start + span).contains(&b)
+        {
+            painter.vline(x(b), rect.y_range(), Stroke::new(1.5, color));
+        }
+    }
+    response.on_hover_text(format!(
+        "{}: {} notes, {:.0} beats, {} to {}. White line: where Melody Voice is. Green: \"Play \
+         melody\".",
+        m.name,
+        m.notes.len(),
+        total,
+        note_name(f32::from(m.lowest())),
+        note_name(f32::from(m.highest()))
+    ));
 }
 
 /// For MIDI files with several parts: which one to sing.
@@ -293,6 +363,33 @@ pub fn panel(ui: &mut Ui, fx: &mut Snapshot, v: &View) -> Response {
             }
             if mode != Mode::ScaleSnap {
                 part_picker(ui, v, &mut r.actions);
+                if let Some(loaded) = v.melody {
+                    piano_roll(ui, &loaded.melody, v.note, v.beat, v.preview);
+                }
+                ui.horizontal(|ui| {
+                    let (text, play) = if v.preview.is_some() {
+                        ("Stop melody", false)
+                    } else {
+                        ("Play melody", true)
+                    };
+                    if ui
+                        .button(text)
+                        .on_hover_text(
+                            "Hear the tune (at the tempo slider's speed) in your headphones \
+                             only; it never goes into your mic",
+                        )
+                        .clicked()
+                    {
+                        r.actions.push(Action::Preview(play));
+                    }
+                    if !v.monitor_on {
+                        ui.label(
+                            RichText::new("Turn on the monitor (left panel) to hear it.")
+                                .small()
+                                .color(WARN),
+                        );
+                    }
+                });
             }
             if mode != Mode::ScaleSnap
                 && let Some(m) = v.melody

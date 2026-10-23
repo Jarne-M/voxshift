@@ -16,6 +16,7 @@ pub mod melody;
 pub mod params;
 pub mod pitch;
 pub mod pitch_detect;
+pub mod preview;
 pub mod reverb;
 pub mod robot;
 pub mod smooth;

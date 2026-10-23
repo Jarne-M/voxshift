@@ -204,10 +204,29 @@ mod tests {
         cfg.voice_on = false;
         cfg.effects.insert("pitch_semitones".into(), -3.0);
         cfg.preset = Some("Mine".into());
+        cfg.effects.insert("melody_on".into(), 1.0);
+        cfg.effects.insert("melody_mode".into(), 1.0);
+        cfg.effects.insert("melody_bpm".into(), 132.0);
         cfg.user_presets.push(Preset {
             name: "Mine".into(),
             effects: cfg.effects.clone(),
+            melody: Some(MelodySource::File {
+                path: "C:/music/my song.mid".into(),
+                part: Some(1),
+            }),
         });
+        cfg.melody.source = MelodySource::BuiltIn("Greensleeves".into());
+        cfg.melody.remember_file(Path::new("C:/music/b.mid"));
+        cfg.melody.remember_file(Path::new("C:/music/a.mid"));
+        cfg.melody.remember_file(Path::new("C:/music/b.mid"));
+        assert_eq!(
+            cfg.melody.files,
+            [
+                PathBuf::from("C:/music/b.mid"),
+                PathBuf::from("C:/music/a.mid")
+            ],
+            "newest first, no duplicates"
+        );
         cfg.sounds.push(SoundEntry {
             name: "airhorn".into(),
             path: "C:/sounds/airhorn.mp3".into(),
@@ -239,6 +258,9 @@ mod tests {
                     preset: "Deep Voice".into(),
                     hotkey: Some(Hotkey::new(0x61, false, false, true, false, "Alt+Num 1")),
                 }],
+                melody_toggle: Some(Hotkey::new(0x76, false, false, false, false, "F7")),
+                melody_restart: Some(Hotkey::new(0x52, true, true, false, false, "Ctrl+Shift+R")),
+                melody_next: Some(Hotkey::new(0x22, false, false, false, false, "Page Down")),
             },
             feedback: FeedbackSettings {
                 cues: false,
@@ -255,6 +277,10 @@ mod tests {
         assert_eq!(
             loaded.voice_keys.presets[0].hotkey.as_ref().unwrap().label,
             "Alt+Num 1"
+        );
+        assert_eq!(
+            loaded.voice_keys.melody_next.as_ref().unwrap().label,
+            "Page Down"
         );
 
         // Older files: toggle mode, beeps on, overlay off, remember the last state.

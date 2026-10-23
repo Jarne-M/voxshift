@@ -102,6 +102,9 @@ pub struct Shared {
     pub melody_beat: AtomicF32,
     /// Reached the end of the melody (loop off).
     pub melody_finished: AtomicBool,
+    /// "Play melody" in the headphones: set by the window, cleared by the engine at the end.
+    pub melody_preview: AtomicBool,
+    pub melody_preview_beat: AtomicF32,
 }
 
 impl Default for Shared {
@@ -134,6 +137,8 @@ impl Default for Shared {
             melody_note: AtomicI32::new(-1),
             melody_beat: AtomicF32::zero(),
             melody_finished: AtomicBool::new(false),
+            melody_preview: AtomicBool::new(false),
+            melody_preview_beat: AtomicF32::zero(),
         }
     }
 }
