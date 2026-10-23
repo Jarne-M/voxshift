@@ -159,6 +159,9 @@ impl BlockSource for Engine {
         let params = self.shared.params.snapshot();
         let voice_on = self.shared.voice_on.load(Relaxed);
         self.chain.run(&mut voice, &params, voice_on);
+        let melody = self.chain.melody().status();
+        self.shared.melody_detected.set(melody.detected);
+        self.shared.melody_target.set(melody.target);
         let latency = if voice_on {
             self.chain.latency_samples()
         } else {

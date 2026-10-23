@@ -35,6 +35,20 @@ impl Smoother {
         self.value
     }
 
+    /// Jumps straight to `v` (when there is nothing to glide from).
+    pub fn set_value(&mut self, v: f32) {
+        self.value = v;
+    }
+
+    /// Changes the time constant (0 = no smoothing at all).
+    pub fn set_time(&mut self, sample_rate: f32, time_s: f32) {
+        self.coeff = if time_s <= 0.0 {
+            1.0
+        } else {
+            coeff(sample_rate, time_s)
+        };
+    }
+
     /// True once the value has (practically) arrived.
     pub fn settled(&self, target: f32) -> bool {
         (self.value - target).abs() < 1e-4

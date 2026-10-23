@@ -4,6 +4,7 @@
 pub mod biquad;
 pub mod chain;
 pub mod chorus;
+pub mod conductor;
 pub mod cue;
 pub mod delay;
 pub mod distortion;
@@ -11,9 +12,9 @@ pub mod echo;
 pub mod eq;
 pub mod gate;
 pub mod lpc;
+pub mod melody;
 pub mod params;
 pub mod pitch;
-#[allow(dead_code)] // wired into the chain in the next stage
 pub mod pitch_detect;
 pub mod reverb;
 pub mod robot;

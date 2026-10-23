@@ -9,12 +9,19 @@
 //! The filters are lattice filters driven by reflection coefficients `k` from the
 //! Levinson-Durbin recursion. With |k| < 1 the synthesis filter is guaranteed stable, and the
 //! coefficients can be interpolated between analysis frames without breaking that.
+//!
+//! Formant *shifting* (Melody Voice): the colouring filter can come from a second analysis of
+//! the same history read `warp` times faster (or slower). A frame squeezed in time has every
+//! frequency, and so every formant, `warp` times higher. Whiten with the real envelope, colour
+//! with the squeezed one, and the formants move without any extra delay.
 
 pub const ORDER: usize = 20;
 /// Analysis window and hop, in seconds.
 const WINDOW_S: f32 = 0.025;
 const HOP_S: f32 = 0.005;
 const MAX_K: f32 = 0.995;
+/// Largest formant warp the history is sized for (+6 semitones).
+pub const MAX_WARP: f32 = 1.42;
 
 /// Autocorrelation -> reflection coefficients. Returns the prediction error energy.
 pub fn levinson(r: &[f32; ORDER + 1], k: &mut [f32; ORDER]) -> f32 {
@@ -99,6 +106,10 @@ pub struct Lpc {
     until_next: usize,
     k: [f32; ORDER],
     k_step: [f32; ORDER],
+    /// Colouring coefficients (the warped envelope; equal to `k` when `warp` is 1).
+    kc: [f32; ORDER],
+    kc_step: [f32; ORDER],
+    warp: f32,
     fs: f32,
 }
 
@@ -110,7 +121,7 @@ impl Lpc {
             .collect();
         let hop = ((HOP_S * fs) as usize).max(1);
         Self {
-            hist: vec![0.0; n],
+            hist: vec![0.0; (n as f32 * MAX_WARP).ceil() as usize + 2],
             pos: 0,
             window,
             frame: vec![0.0; n],
@@ -118,8 +129,16 @@ impl Lpc {
             until_next: hop,
             k: [0.0; ORDER],
             k_step: [0.0; ORDER],
+            kc: [0.0; ORDER],
+            kc_step: [0.0; ORDER],
+            warp: 1.0,
             fs,
         }
+    }
+
+    /// Formant shift factor for [`colour`](Self::colour) (1 = none), from the next analysis on.
+    pub fn set_warp(&mut self, warp: f32) {
+        self.warp = warp.clamp(1.0 / MAX_WARP, MAX_WARP);
     }
 
     /// Feeds one input sample; returns the coefficients to use for it.
@@ -130,6 +149,9 @@ impl Lpc {
         for (k, s) in self.k.iter_mut().zip(self.k_step.iter()) {
             *k += s;
         }
+        for (k, s) in self.kc.iter_mut().zip(self.kc_step.iter()) {
+            *k += s;
+        }
         self.until_next -= 1;
         if self.until_next == 0 {
             self.until_next = self.hop;
@@ -138,11 +160,30 @@ impl Lpc {
         &self.k
     }
 
-    fn analyze(&mut self) {
-        let n = self.hist.len();
+    /// Whitening and colouring coefficients for the sample just pushed (they differ only
+    /// while a formant warp is set).
+    #[inline]
+    pub fn coeffs(&self) -> (&[f32; ORDER], &[f32; ORDER]) {
+        (&self.k, &self.kc)
+    }
+
+    /// Fills the frame with the last window of history read `warp` times faster, windowed.
+    fn fill_frame(&mut self, warp: f32) {
+        let (n, h) = (self.frame.len(), self.hist.len());
+        let newest = self.pos + h - 1;
         for i in 0..n {
-            self.frame[i] = self.hist[(self.pos + i) % n] * self.window[i];
+            let age = (n - 1 - i) as f32 * warp;
+            let a = age as usize;
+            let frac = age - a as f32;
+            let s0 = self.hist[(newest - a) % h];
+            let s1 = self.hist[(newest - a - 1) % h];
+            self.frame[i] = (s0 + (s1 - s0) * frac) * self.window[i];
         }
+    }
+
+    /// LPC of the current frame into `target`; false on silence.
+    fn envelope(&self, target: &mut [f32; ORDER]) -> bool {
+        let n = self.frame.len();
         let mut r = [0.0f32; ORDER + 1];
         for (lag, r) in r.iter_mut().enumerate() {
             let mut acc = 0.0;
@@ -152,12 +193,7 @@ impl Lpc {
             *r = acc;
         }
         if r[0] < 1e-9 {
-            // Silence: glide toward a flat (neutral) filter.
-            let hop = self.hop as f32;
-            for (step, k) in self.k_step.iter_mut().zip(self.k) {
-                *step = -k / hop;
-            }
-            return;
+            return false;
         }
         // A white-noise floor (-25 dB) and a Gaussian lag window (~100 Hz bandwidth expansion)
         // keep the estimate well-conditioned: without them a steady tone yields razor-sharp
@@ -168,11 +204,28 @@ impl Lpc {
             let g = bw * lag as f32;
             *v *= (-0.5 * g * g).exp();
         }
-        let mut target = [0.0; ORDER];
-        levinson(&r, &mut target);
+        levinson(&r, target);
+        true
+    }
+
+    fn analyze(&mut self) {
         let hop = self.hop as f32;
-        for ((step, t), k) in self.k_step.iter_mut().zip(target).zip(self.k) {
-            *step = (t - k) / hop;
+        let glide = |steps: &mut [f32; ORDER], from: &[f32; ORDER], to: Option<&[f32; ORDER]>| {
+            for i in 0..ORDER {
+                // Silence: glide toward a flat (neutral) filter.
+                steps[i] = (to.map_or(0.0, |t| t[i]) - from[i]) / hop;
+            }
+        };
+        let mut target = [0.0; ORDER];
+        self.fill_frame(1.0);
+        let voiced = self.envelope(&mut target);
+        glide(&mut self.k_step, &self.k, voiced.then_some(&target));
+        if self.warp != 1.0 {
+            self.fill_frame(self.warp);
+            let voiced = self.envelope(&mut target);
+            glide(&mut self.kc_step, &self.kc, voiced.then_some(&target));
+        } else {
+            glide(&mut self.kc_step, &self.kc, voiced.then_some(&target));
         }
     }
 
@@ -180,6 +233,8 @@ impl Lpc {
         self.hist.fill(0.0);
         self.k = [0.0; ORDER];
         self.k_step = [0.0; ORDER];
+        self.kc = [0.0; ORDER];
+        self.kc_step = [0.0; ORDER];
     }
 }
 

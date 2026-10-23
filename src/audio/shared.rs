@@ -88,6 +88,9 @@ pub struct Shared {
     pub sounds_playing: AtomicU32,
     /// Sound id per mixer voice (0 = free), so the GUI can highlight playing sounds.
     pub playing_ids: [AtomicU64; VOICES],
+    /// Melody Voice: your pitch and the note you are tuned to (MIDI numbers, NaN = none).
+    pub melody_detected: AtomicF32,
+    pub melody_target: AtomicF32,
 }
 
 impl Default for Shared {
@@ -112,6 +115,8 @@ impl Default for Shared {
             monitor_sounds: AtomicBool::new(true),
             sounds_playing: AtomicU32::new(0),
             playing_ids: std::array::from_fn(|_| AtomicU64::new(0)),
+            melody_detected: AtomicF32::new(f32::NAN),
+            melody_target: AtomicF32::new(f32::NAN),
         }
     }
 }

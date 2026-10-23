@@ -4,6 +4,7 @@
 pub mod devices;
 pub mod effects;
 pub mod hotkey_settings;
+pub mod melody;
 pub mod meters;
 pub mod presets;
 pub mod settings;
@@ -662,6 +663,18 @@ impl VoxApp {
                         self.apply_preset_action(ui.ctx(), a);
                     }
                     ui.add_space(6.0);
+                    let status = melody::Status {
+                        detected: self.shared.melody_detected.get(),
+                        target: self.shared.melody_target.get(),
+                        latency_ms: crate::dsp::melody::latency_ms(
+                            &self.fx,
+                            self.status.output.rate,
+                        ),
+                    };
+                    if melody::panel(ui, &mut self.fx, &status) {
+                        self.effects_changed();
+                    }
+                    ui.add_space(8.0);
                     if effects::panel(ui, &mut self.fx) {
                         self.effects_changed();
                     }
@@ -1366,6 +1379,40 @@ pub(crate) mod tests {
             app.cfg.devices.output.is_empty(),
             "no CABLE: output stays unselected"
         );
+    }
+
+    #[test]
+    fn melody_panel_draws_in_every_mode_and_names_the_notes() {
+        use crate::dsp::params::P;
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        app.fx.set(P::MelodyOn, 1.0);
+        app.shared.melody_detected.set(57.2);
+        app.shared.melody_target.set(60.0);
+        let mut t = 0.0;
+        for mode in 0..4 {
+            app.fx.set(P::MelodyMode, mode as f32);
+            for size in [(920.0, 600.0), (1920.0, 1080.0)] {
+                frame(&ctx, &mut app, size, t, vec![]);
+                t += 0.1;
+            }
+        }
+        let status = melody::Status {
+            detected: 57.2,
+            target: 60.0,
+            latency_ms: 15.0,
+        };
+        assert_eq!(
+            melody::status_text(&status),
+            "You: A3  \u{2192}  Target: C4"
+        );
+        let silent = melody::Status {
+            detected: f32::NAN,
+            target: f32::NAN,
+            latency_ms: 15.0,
+        };
+        assert_eq!(melody::status_text(&silent), "You: -  \u{2192}  Target: -");
     }
 
     #[test]

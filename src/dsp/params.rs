@@ -42,9 +42,28 @@ pub enum P {
     ReverbSize,
     ReverbDamping,
     ReverbMix,
+    MelodyOn,
+    MelodyMode,
+    MelodyKey,
+    MelodyScale,
+    MelodyRetune,
+    MelodyGlide,
+    MelodyTranspose,
+    MelodyFold,
+    MelodyFormant,
+    MelodyFormantShift,
+    MelodyMix,
+    MelodyBpm,
+    MelodyLoop,
+    MelodySensitivity,
+    MelodyMinNote,
+    MelodyResetAfter,
+    MelodyWindow,
+    MelodyMinHz,
+    MelodyMaxHz,
 }
 
-pub const COUNT: usize = 33;
+pub const COUNT: usize = 52;
 
 /// How a value is shown and edited.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +73,8 @@ pub enum Kind {
     Linear,
     /// Logarithmic slider (frequencies, times).
     Log,
+    /// One of a few options, stored as its index (0, 1, 2, ...).
+    Choice,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,7 +114,7 @@ const fn toggle(id: P, key: &'static str, default: bool) -> ParamInfo {
     p(id, key, "Enabled", (0.0, 1.0, d), "", Kind::Toggle)
 }
 
-use Kind::{Linear, Log};
+use Kind::{Choice, Linear, Log};
 
 pub const PARAMS: [ParamInfo; COUNT] = [
     p(
@@ -283,6 +304,151 @@ pub const PARAMS: [ParamInfo; COUNT] = [
         "",
         Linear,
     ),
+    toggle(P::MelodyOn, "melody_on", false),
+    p(
+        P::MelodyMode,
+        "melody_mode",
+        "Mode",
+        (0.0, 3.0, 0.0),
+        "",
+        Choice,
+    ),
+    p(
+        P::MelodyKey,
+        "melody_key",
+        "Key",
+        (0.0, 11.0, 0.0),
+        "",
+        Choice,
+    ),
+    p(
+        P::MelodyScale,
+        "melody_scale",
+        "Scale",
+        (0.0, 4.0, 0.0),
+        "",
+        Choice,
+    ),
+    p(
+        P::MelodyRetune,
+        "melody_retune",
+        "Retune speed",
+        (0.0, 400.0, 15.0),
+        "ms",
+        Linear,
+    ),
+    p(
+        P::MelodyGlide,
+        "melody_glide",
+        "Glide",
+        (0.0, 300.0, 40.0),
+        "ms",
+        Linear,
+    ),
+    p(
+        P::MelodyTranspose,
+        "melody_transpose",
+        "Transpose",
+        (-24.0, 24.0, 0.0),
+        "st",
+        Linear,
+    ),
+    p(
+        P::MelodyFold,
+        "melody_fold",
+        "Octave-fold into my range",
+        (0.0, 1.0, 1.0),
+        "",
+        Kind::Toggle,
+    ),
+    p(
+        P::MelodyFormant,
+        "melody_formant",
+        "Preserve formants",
+        (0.0, 1.0, 1.0),
+        "",
+        Kind::Toggle,
+    ),
+    p(
+        P::MelodyFormantShift,
+        "melody_formant_shift",
+        "Formant shift",
+        (-6.0, 6.0, 0.0),
+        "st",
+        Linear,
+    ),
+    p(
+        P::MelodyMix,
+        "melody_mix",
+        "Dry / wet",
+        (0.0, 1.0, 1.0),
+        "",
+        Linear,
+    ),
+    p(
+        P::MelodyBpm,
+        "melody_bpm",
+        "Tempo",
+        (30.0, 240.0, 100.0),
+        "BPM",
+        Linear,
+    ),
+    p(
+        P::MelodyLoop,
+        "melody_loop",
+        "Loop",
+        (0.0, 1.0, 1.0),
+        "",
+        Kind::Toggle,
+    ),
+    p(
+        P::MelodySensitivity,
+        "melody_sensitivity",
+        "Sensitivity",
+        (0.0, 1.0, 0.5),
+        "",
+        Linear,
+    ),
+    p(
+        P::MelodyMinNote,
+        "melody_min_note",
+        "Min note length",
+        (40.0, 600.0, 150.0),
+        "ms",
+        Log,
+    ),
+    p(
+        P::MelodyResetAfter,
+        "melody_reset_after",
+        "Back to start after silence",
+        (0.0, 30.0, 0.0),
+        "s",
+        Linear,
+    ),
+    p(
+        P::MelodyWindow,
+        "melody_window",
+        "Analysis window",
+        (20.0, 60.0, 30.0),
+        "ms",
+        Linear,
+    ),
+    p(
+        P::MelodyMinHz,
+        "melody_min_hz",
+        "Lowest voice pitch",
+        (50.0, 200.0, 70.0),
+        "Hz",
+        Log,
+    ),
+    p(
+        P::MelodyMaxHz,
+        "melody_max_hz",
+        "Highest voice pitch",
+        (200.0, 1000.0, 500.0),
+        "Hz",
+        Log,
+    ),
 ];
 
 impl P {
@@ -316,6 +482,11 @@ impl Snapshot {
 
     pub fn on(&self, id: P) -> bool {
         self.get(id) >= 0.5
+    }
+
+    /// A [`Kind::Choice`] value as its index.
+    pub fn choice(&self, id: P) -> usize {
+        self.get(id).round().max(0.0) as usize
     }
 
     pub fn set(&mut self, id: P, v: f32) {

@@ -18,6 +18,10 @@ pub const WINDOW_S: f32 = 0.018;
 pub const SEARCH_S: f32 = 0.006;
 /// Length of the waveform snippets compared when splicing.
 const MATCH_S: f32 = 0.003;
+/// Heads age at least this fast (as if |ratio - 1| were this big). At a ratio of exactly 1 they
+/// would otherwise freeze at two fixed delays half a window apart: a static comb filter as
+/// soon as the voice's pitch moves. Melody Voice and auto-tune spend a lot of time near 1.
+const MIN_RATE: f32 = 0.02;
 
 #[derive(Clone, Copy, Debug)]
 struct Head {
@@ -66,6 +70,12 @@ impl PitchShifter {
     /// Delay added on average, in samples.
     pub fn latency(&self) -> usize {
         1 + self.search + (self.window / 2.0) as usize
+    }
+
+    /// [`latency`](Self::latency) of a shifter at rate `fs`, without building one.
+    pub fn latency_for(fs: f32) -> usize {
+        let window = (WINDOW_S * fs).round().max(64.0);
+        1 + (SEARCH_S * fs) as usize + (window / 2.0) as usize
     }
 
     fn max_delay(&self) -> f32 {
@@ -122,7 +132,10 @@ impl PitchShifter {
     pub fn process(&mut self, x: f32, ratio: f32) -> f32 {
         self.buf[self.write] = x;
         let rate = 1.0 - ratio; // delay change per sample
-        let age_step = rate.abs() / self.window;
+        let speed = rate.abs().max(MIN_RATE);
+        let age_step = speed / self.window;
+        // Share of the window the delay sweeps in one life: -1 (up) .. 1 (down), smaller near 1.
+        let sweep = rate / speed;
         let mut y = 0.0;
         for h in 0..2 {
             let mut head = self.heads[h];
@@ -130,12 +143,10 @@ impl PitchShifter {
             head.age += age_step;
             if head.age >= 1.0 {
                 head.age -= 1.0;
-                // Pitch up: the delay shrinks, so start at the long end; pitch down: the short end.
-                let nominal = if rate < 0.0 {
-                    1.0 + self.search as f32 + self.window
-                } else {
-                    1.0 + self.search as f32
-                };
+                // Pitch up: the delay shrinks, so start at the long end; pitch down: the short
+                // end. In between, start so that the sweep stays centred on the average delay.
+                let mid = 1.0 + self.search as f32 + self.window / 2.0;
+                let nominal = mid - sweep * self.window / 2.0;
                 head.delay = self.best_splice(nominal, self.heads[1 - h].delay);
             }
             let w = (std::f32::consts::PI * head.age).sin();
@@ -191,6 +202,29 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_ratio_of_one_keeps_splicing_instead_of_freezing() {
+        // Shift a little, then sit at exactly 1 while the input pitch glides. Heads frozen
+        // half a window apart would comb-filter the glide: deep level dips at the notches.
+        let fs = 48_000.0;
+        let mut p = PitchShifter::new(fs);
+        let mut phase = 0.0f32;
+        let out: Vec<f32> = (0..96_000)
+            .map(|i| {
+                phase = (phase + (150.0 + 75.0 * i as f32 / fs) / fs).fract();
+                let ratio = if i < 6_000 { 1.1 } else { 1.0 };
+                p.process((phase * 2.0 * PI).sin(), ratio)
+            })
+            .collect();
+        for chunk in out[12_000..].chunks(480) {
+            let r = (chunk.iter().map(|x| x * x).sum::<f32>() / chunk.len() as f32).sqrt();
+            assert!(r > 0.45, "dip: {r}");
+        }
+        // `frequency` looks at the last half: 1.5..2 s, where the glide is around 281 Hz.
+        let f = frequency(&out[48_000..], fs);
+        assert!((f - 281.0).abs() < 8.0, "unshifted glide: {f} Hz");
     }
 
     #[test]

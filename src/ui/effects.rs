@@ -41,7 +41,7 @@ const SECTIONS: [(&str, Option<P>, &[P]); 9] = [
 ];
 
 /// One slider (or checkbox for toggles). Double-click resets to the default.
-fn control(ui: &mut Ui, fx: &mut Snapshot, id: P) -> bool {
+pub fn control(ui: &mut Ui, fx: &mut Snapshot, id: P) -> bool {
     let info = id.info();
     let mut v = fx.get(id);
     let changed = if info.kind == Kind::Toggle {
@@ -138,7 +138,8 @@ mod tests {
         for info in &PARAMS {
             let shown = SECTIONS
                 .iter()
-                .any(|(_, t, c)| *t == Some(info.id) || c.contains(&info.id));
+                .any(|(_, t, c)| *t == Some(info.id) || c.contains(&info.id))
+                || super::super::melody::CONTROLS.contains(&info.id);
             assert!(shown, "{} has no control", info.key);
         }
     }

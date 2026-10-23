@@ -83,10 +83,39 @@ pub struct PitchDetector {
     last: Estimate,
 }
 
+/// Decimation factor and analysis rate for input rate `fs`.
+fn rates(fs: f32) -> (usize, f32) {
+    let decim = ((fs / ANALYSIS_RATE).round() as usize).max(1);
+    (decim, fs / decim as f32)
+}
+
+fn hop_len(fs_a: f32) -> usize {
+    ((HOP_S * fs_a).round() as usize).max(1)
+}
+
+/// Frame length, longest and shortest lag (analysis samples) for `s`.
+fn geometry(fs_a: f32, s: &DetectorSettings) -> (usize, usize, usize) {
+    let cap = (MAX_WINDOW_S * fs_a).ceil() as usize;
+    let n = ((s.window_s.clamp(0.01, MAX_WINDOW_S) * fs_a) as usize).clamp(16, cap);
+    let max_hz = s.max_hz.max(s.min_hz * 1.5);
+    // Lags up to one period of the lowest pitch, but leave at least a third of the frame to
+    // integrate over.
+    let tau_max = ((fs_a / s.min_hz.max(20.0)).ceil() as usize + 1).min(n * 2 / 3);
+    let tau_min = ((fs_a / max_hz).floor() as usize).clamp(2, tau_max - 2);
+    (n, tau_max, tau_min)
+}
+
+/// How long ago (in input samples) the audio an estimate describes was, roughly: the middle
+/// of the frame, plus half a hop for the wait until the next analysis.
+pub fn analysis_delay_for(fs: f32, s: &DetectorSettings) -> usize {
+    let (decim, fs_a) = rates(fs);
+    let (n, _, _) = geometry(fs_a, s);
+    (n / 2 + hop_len(fs_a) / 2) * decim
+}
+
 impl PitchDetector {
     pub fn new(fs: f32, settings: DetectorSettings) -> Self {
-        let decim = ((fs / ANALYSIS_RATE).round() as usize).max(1);
-        let fs_a = fs / decim as f32;
+        let (decim, fs_a) = rates(fs);
         let cap = (MAX_WINDOW_S * fs_a).ceil() as usize + 2;
         // 4th-order Butterworth low-pass at a quarter of the analysis rate (two biquads with
         // the Butterworth Qs): keeps the first harmonics, stops what would alias.
@@ -104,7 +133,7 @@ impl PitchDetector {
             pos: 0,
             frame: vec![0.0; cap],
             diff: vec![0.0; cap],
-            hop: ((HOP_S * fs_a).round() as usize).max(1),
+            hop: hop_len(fs_a),
             until: 1,
             n: 0,
             tau_max: 0,
@@ -118,13 +147,7 @@ impl PitchDetector {
 
     /// Changes range, window, threshold or level floor. Never allocates (real-time safe).
     pub fn configure(&mut self, s: DetectorSettings) {
-        let cap = self.ring.len() - 2;
-        let n = ((s.window_s.clamp(0.01, MAX_WINDOW_S) * self.fs_a) as usize).clamp(16, cap);
-        let max_hz = s.max_hz.max(s.min_hz * 1.5);
-        // Lags up to one period of the lowest pitch, but leave at least a third of the frame
-        // to integrate over.
-        let tau_max = ((self.fs_a / s.min_hz.max(20.0)).ceil() as usize + 1).min(n * 2 / 3);
-        let tau_min = ((self.fs_a / max_hz).floor() as usize).clamp(2, tau_max - 2);
+        let (n, tau_max, tau_min) = geometry(self.fs_a, &s);
         self.n = n;
         self.tau_max = tau_max;
         self.tau_min = tau_min;
@@ -132,18 +155,25 @@ impl PitchDetector {
     }
 
     /// Lowest pitch the current window can see (may be above `min_hz` for short windows).
+    #[cfg(test)]
     pub fn lowest_hz(&self) -> f32 {
         self.fs_a / (self.tau_max - 1) as f32
     }
 
-    /// The analysis looks at this much past audio: its estimate describes the signal about
-    /// half of it ago.
+    /// Time between estimates.
+    pub fn hop_s(&self) -> f32 {
+        self.hop as f32 / self.fs_a
+    }
+
+    /// The analysis looks at this much past audio.
+    #[cfg(test)]
     pub fn window_samples(&self) -> usize {
         self.n * self.decim
     }
 
-    pub fn last(&self) -> Estimate {
-        self.last
+    /// See [`analysis_delay_for`].
+    pub fn analysis_delay(&self) -> usize {
+        (self.n / 2 + self.hop / 2) * self.decim
     }
 
     /// Feeds one input sample. Returns a new estimate when an analysis ran.
@@ -181,14 +211,18 @@ impl PitchDetector {
         let w = n - tau_max;
         let x = &self.frame[..n];
 
-        // Difference function, then cumulative mean normalisation in place.
+        // Difference function, then cumulative mean normalisation in place. The newest `w`
+        // samples are compared with the ones `tau` earlier, so a high voice (small lags) is
+        // judged on recent audio rather than on the oldest part of the frame.
         let d = &mut self.diff;
+        let newest = &x[n - w..];
         d[0] = 1.0;
         let mut running = 0.0f32;
         for tau in 1..=tau_max {
+            let older = &x[n - w - tau..n - tau];
             let mut acc = 0.0f32;
-            for j in 0..w {
-                let e = x[j] - x[j + tau];
+            for (a, b) in newest.iter().zip(older) {
+                let e = a - b;
                 acc += e * e;
             }
             running += acc;
@@ -273,13 +307,6 @@ pub struct Tracked {
     pub voiced: bool,
     pub confidence: f32,
     pub level: f32,
-}
-
-impl Tracked {
-    /// Pitch as a (fractional) MIDI note number.
-    pub fn midi(&self) -> f32 {
-        hz_to_midi(self.hz)
-    }
 }
 
 pub struct PitchTracker {
@@ -369,6 +396,7 @@ impl PitchTracker {
         self.out
     }
 
+    #[cfg(test)]
     pub fn last(&self) -> Tracked {
         self.out
     }
@@ -404,6 +432,7 @@ pub fn hz_to_midi(hz: f32) -> f32 {
     69.0 + 12.0 * (hz.max(1e-3) / 440.0).log2()
 }
 
+#[cfg(test)]
 pub fn midi_to_hz(m: f32) -> f32 {
     440.0 * ((m - 69.0) / 12.0).exp2()
 }
@@ -414,7 +443,11 @@ pub fn note_name(midi: f32) -> String {
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
     ];
     let m = midi.round() as i32;
-    format!("{}{}", NAMES[m.rem_euclid(12) as usize], m.div_euclid(12) - 1)
+    format!(
+        "{}{}",
+        NAMES[m.rem_euclid(12) as usize],
+        m.div_euclid(12) - 1
+    )
 }
 
 #[cfg(test)]
@@ -473,7 +506,10 @@ pub(crate) mod tests {
                     let (hz, voiced) = summarize(&est);
                     assert!(voiced > 0.95, "{fs} {kind} {freq}: voiced only {voiced}");
                     let err = (hz - freq).abs() / freq;
-                    assert!(err < 0.01, "{fs} {kind} {freq} Hz: measured {hz} ({err:.4})");
+                    assert!(
+                        err < 0.01,
+                        "{fs} {kind} {freq} Hz: measured {hz} ({err:.4})"
+                    );
                 }
             }
         }
@@ -532,7 +568,10 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let (_, voiced) = summarize(&run(fs, narrow, 0.5, saw(100.0, fs)));
-        assert!(voiced < 0.05, "100 Hz is out of a 150-400 Hz range: {voiced}");
+        assert!(
+            voiced < 0.05,
+            "100 Hz is out of a 150-400 Hz range: {voiced}"
+        );
         let (hz, voiced) = summarize(&run(fs, narrow, 0.5, saw(300.0, fs)));
         assert!(voiced > 0.95 && (hz - 300.0).abs() < 3.0);
     }
@@ -655,6 +694,10 @@ pub(crate) mod tests {
         let load = start.elapsed().as_secs_f32() / seconds;
         println!("pitch detector CPU load: {:.2}% of one core", load * 100.0);
         assert!(voiced > 1000);
-        assert!(load < 0.05, "detector uses {:.1}% of real time", load * 100.0);
+        assert!(
+            load < 0.05,
+            "detector uses {:.1}% of real time",
+            load * 100.0
+        );
     }
 }

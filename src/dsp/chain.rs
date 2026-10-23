@@ -1,5 +1,6 @@
 //! The voice chain:
-//! input gain -> gate -> pitch -> tone -> distortion -> robot -> chorus -> echo -> reverb
+//! input gain -> gate -> melody voice -> pitch -> tone -> distortion -> robot -> chorus -> echo
+//! -> reverb
 //! -> master dry/wet -> output gain, plus the master bypass.
 //!
 //! Every section fades in and out (20 ms) instead of switching, and is skipped entirely (and
@@ -11,6 +12,7 @@ use super::echo::Echo;
 use super::eq::Tone;
 use super::gate::Gate;
 use super::lpc::{Colorer, Lpc, Whitener};
+use super::melody::MelodyVoice;
 use super::params::{P, Snapshot};
 use super::pitch::{PitchShifter, semitones_to_ratio};
 use super::reverb::Reverb;
@@ -40,6 +42,9 @@ pub struct PitchStage {
     /// Peak envelope of the plain path (safety limit for the formant path).
     env: f32,
     env_release: f32,
+    /// Gain of the formant path's peak limiter (drops instantly, recovers in ~50 ms).
+    limit_gain: f32,
+    limit_rise: f32,
     pre_x: f32,
     de_y: f32,
 }
@@ -68,6 +73,8 @@ impl PitchStage {
             gain_rise: 1.0 - (-1.0 / (0.03 * fs)).exp(),
             env: 0.0,
             env_release: (-1.0 / (0.05 * fs)).exp(),
+            limit_gain: 1.0,
+            limit_rise: 1.0 - (-1.0 / (0.05 * fs)).exp(),
             pre_x: 0.0,
             de_y: 0.0,
         }
@@ -76,15 +83,27 @@ impl PitchStage {
     pub fn process(&mut self, block: &mut Block, p: &Snapshot) {
         let ratio = semitones_to_ratio(self.semis.next_n(p.get(P::PitchSemis), BLOCK));
         let formant = if p.on(P::PitchFormant) { 1.0 } else { 0.0 };
-        for s in block.iter_mut() {
+        self.run(block, &[ratio; BLOCK], formant);
+    }
+
+    /// Moves the formants by `warp` (1 = untouched; only in formant-preserving mode).
+    pub fn set_formant_warp(&mut self, warp: f32) {
+        self.lpc.set_warp(warp);
+    }
+
+    /// Shifts by a per-sample `ratio`. `formant`: 1 = formant-preserving, 0 = plain; changes
+    /// are crossfaded.
+    pub fn run(&mut self, block: &mut Block, ratio: &[f32; BLOCK], formant: f32) {
+        for (s, &ratio) in block.iter_mut().zip(ratio.iter()) {
             let x = *s;
             let a = self.plain.process(x, ratio);
 
             let xp = x - PRE_EMPHASIS * self.pre_x;
             self.pre_x = x;
-            let k = self.lpc.push(xp);
+            self.lpc.push(xp);
+            let (k, kc) = self.lpc.coeffs();
             let e = self.whiten.process(xp, k);
-            let yp = self.color.process(self.residual.process(e, ratio), k);
+            let yp = self.color.process(self.residual.process(e, ratio), kc);
             let b = yp + PRE_EMPHASIS * self.de_y;
             self.de_y = b;
 
@@ -100,13 +119,24 @@ impl PitchStage {
             } else {
                 self.match_gain + (wanted - self.match_gain) * self.gain_rise
             };
-            // ...and never let a transient peak above twice the plain path's envelope.
+            // ...and never let a transient peak above twice the plain path's envelope. A
+            // limiter, not a clipper: the gain drops exactly enough at the peak and recovers
+            // slowly, so a resonance (a hummed, near-pure tone) gets quieter instead of being
+            // squared off into a buzz.
             self.env = a.abs().max(self.env * self.env_release);
-            let mut b = b * self.match_gain;
+            let b = b * self.match_gain;
             let limit = PEAK_LIMIT * self.env + 1e-6;
-            if b.abs() > limit {
-                b = limit.copysign(b);
-            }
+            let needed = if b.abs() > limit {
+                limit / b.abs()
+            } else {
+                1.0
+            };
+            self.limit_gain = if needed < self.limit_gain {
+                needed
+            } else {
+                self.limit_gain + (1.0 - self.limit_gain) * self.limit_rise
+            };
+            let b = b * self.limit_gain;
             *s = a + (b - a) * self.formant.next(formant);
         }
     }
@@ -124,6 +154,7 @@ impl PitchStage {
         self.power = [0.0; 2];
         self.match_gain = 1.0;
         self.env = 0.0;
+        self.limit_gain = 1.0;
         self.pre_x = 0.0;
         self.de_y = 0.0;
     }
@@ -132,6 +163,7 @@ impl PitchStage {
 #[derive(Clone, Copy)]
 enum Section {
     Gate,
+    Melody,
     Pitch,
     Tone,
     Dist,
@@ -141,7 +173,7 @@ enum Section {
     Reverb,
 }
 
-const SECTIONS: usize = 8;
+const SECTIONS: usize = 9;
 
 pub struct VoiceChain {
     input_gain: Smoother,
@@ -158,6 +190,7 @@ pub struct VoiceChain {
     faders: [Smoother; SECTIONS],
     idle: [bool; SECTIONS],
     gate: Gate,
+    melody: MelodyVoice,
     pitch: PitchStage,
     tone: Tone,
     dist: Distortion,
@@ -207,6 +240,7 @@ impl VoiceChain {
             faders: [Smoother::new(fs, FADE_S, 0.0); SECTIONS],
             idle: [true; SECTIONS],
             gate: Gate::new(fs),
+            melody: MelodyVoice::new(fs),
             pitch: PitchStage::new(fs),
             tone: Tone::new(fs),
             dist: Distortion::new(fs),
@@ -275,6 +309,7 @@ impl VoiceChain {
     /// Clears every effect's memory (used when the chain goes to rest).
     fn reset_effects(&mut self) {
         self.gate.reset();
+        self.melody.reset();
         self.pitch.reset();
         self.tone.reset();
         self.dist.reset();
@@ -299,6 +334,7 @@ impl VoiceProcessor for VoiceChain {
             *s *= self.input_gain.next(gin);
         }
         section!(self, Section::Gate, p.on(P::GateOn), block, p, gate);
+        section!(self, Section::Melody, p.on(P::MelodyOn), block, p, melody);
 
         let dry = *block;
         let pitch_on = p.on(P::PitchOn) && p.get(P::PitchSemis).abs() > 0.05;
@@ -319,11 +355,21 @@ impl VoiceProcessor for VoiceChain {
     }
 
     fn latency_samples(&self) -> usize {
-        if self.idle[Section::Pitch as usize] {
-            0
-        } else {
-            self.pitch.latency()
+        let mut total = 0;
+        if !self.idle[Section::Melody as usize] {
+            total += self.melody.latency();
         }
+        if !self.idle[Section::Pitch as usize] {
+            total += self.pitch.latency();
+        }
+        total
+    }
+}
+
+impl VoiceChain {
+    /// Melody Voice, for the engine to feed it the melody and read its status.
+    pub fn melody(&mut self) -> &mut MelodyVoice {
+        &mut self.melody
     }
 }
 
@@ -374,6 +420,7 @@ mod tests {
         // must stay in that league (pitch/robot change the waveform, so allow some headroom).
         let toggles = [
             P::GateOn,
+            P::MelodyOn,
             P::PitchOn,
             P::EqOn,
             P::DistOn,
@@ -506,6 +553,7 @@ mod tests {
         let out = run(4000, |_, p| {
             for id in [
                 P::GateOn,
+                P::MelodyOn,
                 P::PitchOn,
                 P::PitchFormant,
                 P::EqOn,
@@ -518,6 +566,9 @@ mod tests {
                 p.set(id, 1.0);
             }
             p.set(P::PitchSemis, -12.0);
+            p.set(P::MelodyMode, 3.0); // scale snap: retunes without a melody
+            p.set(P::MelodyTranspose, 24.0);
+            p.set(P::MelodyFormantShift, 6.0);
             p.set(P::GateThreshold, -80.0);
             p.set(P::LowGain, 15.0);
             p.set(P::MidGain, 15.0);
@@ -540,6 +591,7 @@ mod tests {
         run(blocks, |_, p| {
             for id in [
                 P::GateOn,
+                P::MelodyOn,
                 P::PitchOn,
                 P::PitchFormant,
                 P::EqOn,
@@ -552,6 +604,8 @@ mod tests {
                 p.set(id, 1.0);
             }
             p.set(P::PitchSemis, -7.0);
+            p.set(P::MelodyMode, 3.0);
+            p.set(P::MelodyFormantShift, 3.0);
         });
         let load = start.elapsed().as_secs_f32() / seconds;
         println!("full chain CPU load: {:.1}% of one core", load * 100.0);
