@@ -1,12 +1,15 @@
 //! Global hotkeys that work while another app (a game) has focus.
 //!
-//! A low-level keyboard hook (WH_KEYBOARD_LL) sees every key press system-wide. It always
-//! passes the key on (CallNextHookEx), so the game still receives it too. The hook procedure
-//! only forwards the key to a worker thread; Windows silently removes hooks that take too long.
+//! Key presses arrive through Windows' Raw Input API on a hidden window registered with
+//! RIDEV_INPUTSINK, so they are seen even while another app is focused, and the focused app
+//! still gets every key (we only listen). An earlier version used a low-level keyboard hook,
+//! which Windows silently removes if it ever answers too slowly; raw input has no such limit.
+//! A worker thread turns the raw events into "combination pressed" and plays matching sounds.
 
 use super::library::Board;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -106,33 +109,40 @@ pub struct HotkeyService {
     capture: Arc<Mutex<bool>>,
     captured: mpsc::Receiver<Captured>,
     #[cfg(windows)]
-    hook: Option<win::HookThread>,
+    listener: Option<win::Listener>,
     worker: Option<std::thread::JoinHandle<()>>,
     available: bool,
+    /// Key presses received so far (for noticing a listener that hears nothing).
+    presses: Arc<AtomicU64>,
 }
 
 impl HotkeyService {
-    /// Installs the hook. Key presses play matching sounds of `board` directly from the worker
-    /// thread, so hotkeys work even while the window is minimised and not repainting.
+    /// Starts listening. Key presses play matching sounds of `board` directly from the worker
+    /// thread, so hotkeys work even while the window is hidden and not repainting.
     pub fn start(board: Arc<Mutex<Board>>) -> Self {
         let (raw_tx, raw_rx) = mpsc::channel::<RawKey>();
         let (cap_tx, cap_rx) = mpsc::channel();
         let capture = Arc::new(Mutex::new(false));
+        let presses = Arc::new(AtomicU64::new(0));
         #[cfg(windows)]
-        let hook = win::HookThread::start(raw_tx);
+        let listener = win::Listener::start(raw_tx);
         #[cfg(windows)]
-        let available = hook.is_some();
+        let available = listener.is_some();
         #[cfg(not(windows))]
         let available = {
             drop(raw_tx);
             false
         };
         let cap = capture.clone();
+        let counter = presses.clone();
         let worker = std::thread::Builder::new()
             .name("hotkeys".into())
             .spawn(move || {
                 let mut tracker = KeyTracker::default();
                 while let Ok(raw) = raw_rx.recv() {
+                    if raw.down {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
                     #[cfg(windows)]
                     let pressed = tracker.feed(raw, win::key_name);
                     #[cfg(not(windows))]
@@ -163,14 +173,20 @@ impl HotkeyService {
             capture,
             captured: cap_rx,
             #[cfg(windows)]
-            hook,
+            listener,
             worker,
             available,
+            presses,
         }
     }
 
     pub fn available(&self) -> bool {
         self.available
+    }
+
+    /// Number of key presses the listener has delivered since it started.
+    pub fn presses_seen(&self) -> u64 {
+        self.presses.load(Ordering::Relaxed)
     }
 
     /// The next key combination pressed (anywhere) is reported instead of triggering sounds.
@@ -191,7 +207,7 @@ impl HotkeyService {
 impl Drop for HotkeyService {
     fn drop(&mut self) {
         #[cfg(windows)]
-        drop(self.hook.take()); // unhooks and drops the raw sender, ending the worker
+        drop(self.listener.take()); // closes the window and drops the sender, ending the worker
         if let Some(w) = self.worker.take() {
             let _ = w.join();
         }
@@ -201,49 +217,112 @@ impl Drop for HotkeyService {
 #[cfg(windows)]
 mod win {
     use super::RawKey;
-    use std::sync::{Mutex, mpsc};
-    use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use std::sync::mpsc;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyNameTextW};
+    use windows_sys::Win32::UI::Input::{
+        GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RID_INPUT,
+        RIDEV_INPUTSINK, RIDEV_REMOVE, RIM_TYPEKEYBOARD, RegisterRawInputDevices,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, PM_NOREMOVE,
-        PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
-        WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN, WM_USER,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
+        GetMessageW, GetWindowLongPtrW, HWND_MESSAGE, MSG, PostMessageW, PostQuitMessage,
+        RegisterClassExW, SetWindowLongPtrW, WM_CLOSE, WM_DESTROY, WM_INPUT, WNDCLASSEXW,
     };
 
-    /// The hook procedure has no user data pointer, so its sender lives in a static.
-    static SENDER: Mutex<Option<mpsc::Sender<RawKey>>> = Mutex::new(None);
+    const CLASS: &str = "VoxShift.KeyListener";
+    /// RAWKEYBOARD flags.
+    const RI_KEY_BREAK: u16 = 1;
+    const RI_KEY_E0: u16 = 2;
+    /// Generic desktop page, keyboard usage.
+    const USAGE_PAGE_GENERIC: u16 = 0x01;
+    const USAGE_KEYBOARD: u16 = 0x06;
 
     fn held(vk: i32) -> bool {
         // High bit set = key is down.
         (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0
     }
 
-    unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-        if code >= 0 {
-            // SAFETY: for WH_KEYBOARD_LL, lparam points to a KBDLLHOOKSTRUCT.
-            let kb = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-            let msg = wparam as u32;
-            let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-            let key = RawKey {
-                vk: kb.vkCode,
-                scan: kb.scanCode,
-                extended: kb.flags & LLKHF_EXTENDED != 0,
-                down,
-                ctrl: held(0x11),
-                shift: held(0x10),
-                alt: held(0x12),
-                win: held(0x5B) || held(0x5C),
-            };
-            if let Ok(guard) = SENDER.try_lock()
-                && let Some(tx) = guard.as_ref()
-            {
-                let _ = tx.send(key);
-            }
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// Reads one WM_INPUT message; returns the key event if it was a real keyboard key.
+    fn read_key(lparam: LPARAM) -> Option<RawKey> {
+        // SAFETY: plain data; GetRawInputData fills at most `size` bytes.
+        let mut raw: RAWINPUT = unsafe { std::mem::zeroed() };
+        let mut size = std::mem::size_of::<RAWINPUT>() as u32;
+        let got = unsafe {
+            GetRawInputData(
+                lparam as HRAWINPUT,
+                RID_INPUT,
+                (&mut raw as *mut RAWINPUT).cast(),
+                &mut size,
+                std::mem::size_of::<RAWINPUTHEADER>() as u32,
+            )
+        };
+        if got == u32::MAX || raw.header.dwType != RIM_TYPEKEYBOARD {
+            return None;
         }
-        // Always pass the key on: the focused app (game) still gets it.
-        unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+        // SAFETY: dwType says the union holds keyboard data.
+        let kb = unsafe { raw.data.keyboard };
+        let extended = kb.Flags & RI_KEY_E0 != 0;
+        // 0xFF = no real key; scan 0x2A with E0 = the "fake shift" Windows adds around some
+        // navigation keys. Neither is something the user pressed.
+        if kb.VKey == 0xFF || (kb.MakeCode == 0x2A && extended) {
+            return None;
+        }
+        Some(RawKey {
+            vk: u32::from(kb.VKey),
+            scan: u32::from(kb.MakeCode),
+            extended,
+            down: kb.Flags & RI_KEY_BREAK == 0,
+            ctrl: held(0x11),
+            shift: held(0x10),
+            alt: held(0x12),
+            win: held(0x5B) || held(0x5C),
+        })
+    }
+
+    unsafe extern "system" fn wndproc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match msg {
+            WM_INPUT => {
+                let tx = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) }
+                    as *const mpsc::Sender<RawKey>;
+                if !tx.is_null()
+                    && let Some(key) = read_key(lparam)
+                {
+                    // SAFETY: set after creation, freed only after the message loop ended.
+                    let _ = unsafe { &*tx }.send(key);
+                }
+                // Windows must still clean up the input: always pass WM_INPUT on.
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+            }
+            WM_CLOSE => {
+                let rid = RAWINPUTDEVICE {
+                    usUsagePage: USAGE_PAGE_GENERIC,
+                    usUsage: USAGE_KEYBOARD,
+                    dwFlags: RIDEV_REMOVE,
+                    hwndTarget: std::ptr::null_mut(),
+                };
+                unsafe {
+                    RegisterRawInputDevices(&rid, 1, std::mem::size_of::<RAWINPUTDEVICE>() as u32);
+                    DestroyWindow(hwnd);
+                }
+                0
+            }
+            WM_DESTROY => {
+                unsafe { PostQuitMessage(0) };
+                0
+            }
+            _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        }
     }
 
     pub fn key_name(k: &RawKey) -> String {
@@ -257,68 +336,97 @@ mod win {
         }
     }
 
-    pub struct HookThread {
-        thread_id: u32,
+    /// A hidden message-only window registered for raw keyboard input with RIDEV_INPUTSINK:
+    /// Windows sends it every key press, even while another app is focused. Unlike a
+    /// low-level hook it cannot be silently removed by a timeout, adds no delay to anyone's
+    /// typing, and cannot block keys (the game always gets them).
+    pub struct Listener {
+        hwnd: isize,
         handle: Option<std::thread::JoinHandle<()>>,
     }
 
-    impl HookThread {
+    impl Listener {
         pub fn start(tx: mpsc::Sender<RawKey>) -> Option<Self> {
-            *SENDER.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
-            let (id_tx, id_rx) = mpsc::channel();
+            let (ready_tx, ready_rx) = mpsc::channel::<Option<isize>>();
             let handle = std::thread::Builder::new()
-                .name("keyboard-hook".into())
+                .name("key-listener".into())
                 .spawn(move || unsafe {
                     let module = GetModuleHandleW(std::ptr::null());
-                    let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), module, 0);
-                    if hook.is_null() {
-                        let _ = id_tx.send(None);
+                    let class = wide(CLASS);
+                    // SAFETY: plain data, zero-initialised then filled in.
+                    let mut wc: WNDCLASSEXW = std::mem::zeroed();
+                    wc.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
+                    wc.lpfnWndProc = Some(wndproc);
+                    wc.hInstance = module;
+                    wc.lpszClassName = class.as_ptr();
+                    RegisterClassExW(&wc); // fails harmlessly if already registered
+                    let hwnd = CreateWindowExW(
+                        0,
+                        class.as_ptr(),
+                        std::ptr::null(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        HWND_MESSAGE,
+                        std::ptr::null_mut(),
+                        module,
+                        std::ptr::null(),
+                    );
+                    if hwnd.is_null() {
+                        let _ = ready_tx.send(None);
                         return;
                     }
-                    // Make sure this thread has a message queue before anyone posts to it.
+                    let sender = Box::into_raw(Box::new(tx));
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, sender as isize);
+                    let rid = RAWINPUTDEVICE {
+                        usUsagePage: USAGE_PAGE_GENERIC,
+                        usUsage: USAGE_KEYBOARD,
+                        dwFlags: RIDEV_INPUTSINK,
+                        hwndTarget: hwnd,
+                    };
+                    let size = std::mem::size_of::<RAWINPUTDEVICE>() as u32;
+                    if RegisterRawInputDevices(&rid, 1, size) == 0 {
+                        DestroyWindow(hwnd);
+                        drop(Box::from_raw(sender));
+                        let _ = ready_tx.send(None);
+                        return;
+                    }
+                    let _ = ready_tx.send(Some(hwnd as isize));
                     let mut msg: MSG = std::mem::zeroed();
-                    PeekMessageW(
-                        &mut msg,
-                        std::ptr::null_mut(),
-                        WM_USER,
-                        WM_USER,
-                        PM_NOREMOVE,
-                    );
-                    let _ = id_tx.send(Some(GetCurrentThreadId()));
-                    // The hook procedure runs inside this message loop.
-                    while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
-                    UnhookWindowsHookEx(hook);
+                    while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                        DispatchMessageW(&msg);
+                    }
+                    // The window is gone: nothing can reach the sender any more.
+                    drop(Box::from_raw(sender));
                 })
                 .ok()?;
-            match id_rx.recv() {
-                Ok(Some(thread_id)) => Some(Self {
-                    thread_id,
+            match ready_rx.recv() {
+                Ok(Some(hwnd)) => Some(Self {
+                    hwnd,
                     handle: Some(handle),
                 }),
                 _ => {
                     let _ = handle.join();
-                    *SENDER.lock().unwrap_or_else(|e| e.into_inner()) = None;
                     None
                 }
             }
         }
     }
 
-    impl Drop for HookThread {
+    impl Drop for Listener {
         fn drop(&mut self) {
-            unsafe {
-                PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0);
-            }
+            unsafe { PostMessageW(self.hwnd as HWND, WM_CLOSE, 0, 0) };
             if let Some(h) = self.handle.take() {
                 let _ = h.join();
             }
-            *SENDER.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn key(vk: u32, down: bool, ctrl: bool) -> RawKey {
@@ -350,17 +458,97 @@ mod tests {
         );
     }
 
+    /// Presses and releases F24 system-wide. No keyboard has F24 and no app reacts to it, so
+    /// this is harmless wherever the focus is; the raw input listener still sees it.
+    #[cfg(windows)]
+    pub(crate) fn tap_f24() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
+        };
+        let key = |flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: 0x87, // VK_F24
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let inputs = [key(0), key(KEYEVENTF_KEYUP)];
+        unsafe { SendInput(2, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+    }
+
     #[cfg(windows)]
     #[test]
-    fn the_global_hook_installs_and_shuts_down() {
+    fn listener_captures_a_key_press() {
+        use crate::audio::device_manager::EnginePort;
+        use crate::soundboard::library::Soundboard;
+        let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let sb = Soundboard::new(Arc::new(EnginePort::default()), vec![]);
+        let service = HotkeyService::start(sb.board.clone());
+        assert!(service.available());
+        service.begin_capture();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        tap_f24();
+        let start = std::time::Instant::now();
+        let got = loop {
+            if let Some(c) = service.poll_capture() {
+                break Some(c);
+            }
+            if start.elapsed().as_secs() >= 2 {
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        match got {
+            Some(Captured::Key(k)) => {
+                assert_eq!(k.vk, 0x87);
+                println!("captured label: {}", k.label);
+            }
+            Some(Captured::Cancelled) => panic!("capture was cancelled"),
+            None => panic!("the listener never reported the key"),
+        }
+    }
+
+    /// Raw input goes to one window per process, so listener tests must not overlap.
+    #[cfg(windows)]
+    pub(crate) static HOOK_TESTS: Mutex<()> = Mutex::new(());
+
+    #[cfg(windows)]
+    #[test]
+    fn listener_starts_restarts_and_shuts_down() {
+        let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         use crate::audio::device_manager::EnginePort;
         use crate::soundboard::library::Soundboard;
         let sb = Soundboard::new(Arc::new(EnginePort::default()), vec![]);
+        for _ in 0..2 {
+            let service = HotkeyService::start(sb.board.clone());
+            assert!(service.available(), "raw input registration failed");
+            service.begin_capture();
+            assert!(service.poll_capture().is_none());
+            drop(service); // must not hang
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn presses_are_counted_even_when_not_capturing() {
+        use crate::audio::device_manager::EnginePort;
+        use crate::soundboard::library::Soundboard;
+        let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let sb = Soundboard::new(Arc::new(EnginePort::default()), vec![]);
         let service = HotkeyService::start(sb.board.clone());
-        assert!(service.available(), "SetWindowsHookExW failed");
-        service.begin_capture();
-        assert!(service.poll_capture().is_none());
-        drop(service); // must not hang
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let before = service.presses_seen();
+        tap_f24();
+        let start = std::time::Instant::now();
+        while service.presses_seen() == before && start.elapsed().as_secs() < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(service.presses_seen() > before);
     }
 
     #[test]

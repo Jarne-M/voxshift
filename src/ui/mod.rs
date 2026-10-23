@@ -50,6 +50,7 @@ pub struct VoxApp {
     hotkeys: Option<HotkeyService>,
     /// Sound waiting for its hotkey to be pressed.
     capturing: Option<SoundId>,
+    capture_watch: Option<CaptureWatch>,
     preset_name: String,
     /// Where settings are saved (None in tests).
     config_path: Option<PathBuf>,
@@ -78,6 +79,16 @@ pub struct VoxApp {
     autostart: bool,
     autostart_elsewhere: bool,
 }
+
+/// Watches a hotkey capture for key presses that never reach the global listener.
+struct CaptureWatch {
+    presses_at_start: u64,
+    /// When this window first saw a key press during the capture.
+    window_key_at: Option<f64>,
+}
+
+/// How long a key press in the window may go unreported by the listener.
+const CAPTURE_GRACE_S: f64 = 0.75;
 
 struct CloseDialog {
     remember: bool,
@@ -212,6 +223,7 @@ impl VoxApp {
             sounds,
             hotkeys: None,
             capturing: None,
+            capture_watch: None,
             preset_name: String::new(),
             config_path: None,
             saved: cfg.clone(),
@@ -625,6 +637,10 @@ impl VoxApp {
                 if let Some(h) = &self.hotkeys {
                     h.begin_capture();
                     self.capturing = Some(id);
+                    self.capture_watch = Some(CaptureWatch {
+                        presses_at_start: h.presses_seen(),
+                        window_key_at: None,
+                    });
                 }
             }
             A::CancelHotkey => {
@@ -632,6 +648,7 @@ impl VoxApp {
                     h.cancel_capture();
                 }
                 self.capturing = None;
+                self.capture_watch = None;
             }
             A::ClearHotkey(id) => {
                 if let Some(s) = self.sounds.lock().get_mut(id) {
@@ -704,12 +721,15 @@ impl VoxApp {
 
     fn poll_hotkey_capture(&mut self, ctx: &egui::Context) {
         let (Some(h), Some(id)) = (&self.hotkeys, self.capturing) else {
+            self.capture_watch = None;
             return;
         };
         let Some(result) = h.poll_capture() else {
+            self.check_capture_watch(ctx);
             return;
         };
         self.capturing = None;
+        self.capture_watch = None;
         let Captured::Key(key) = result else { return };
         let mut board = self.sounds.lock();
         let clash = board
@@ -786,6 +806,38 @@ impl VoxApp {
         }
         self.saved = self.cfg.clone();
         self.changed_at = None;
+    }
+
+    /// While waiting for a hotkey: if this window itself received a key press but the global
+    /// listener reported nothing, global keys are not reaching VoxShift. Say so instead of
+    /// waiting forever.
+    fn check_capture_watch(&mut self, ctx: &egui::Context) {
+        let (Some(h), Some(watch)) = (&self.hotkeys, &mut self.capture_watch) else {
+            return;
+        };
+        let now = self.clock.elapsed().as_secs_f64();
+        let window_got_key = ctx.input(|i| {
+            i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))
+        });
+        if window_got_key && watch.window_key_at.is_none() {
+            watch.window_key_at = Some(now);
+        }
+        let silent = h.presses_seen() == watch.presses_at_start;
+        if let Some(t) = watch.window_key_at
+            && silent
+            && now - t > CAPTURE_GRACE_S
+        {
+            h.cancel_capture();
+            self.capturing = None;
+            self.capture_watch = None;
+            self.toasts.push(
+                ctx,
+                "VoxShift did not receive that key press, so hotkeys can't be set right now. \
+                 Restart VoxShift and try again.",
+            );
+        }
     }
 
     fn effects_changed(&mut self) {
@@ -1157,6 +1209,72 @@ pub(crate) mod tests {
         assert!(app.cfg.user_presets.is_empty() && app.cfg.preset.is_none());
         frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The whole assign-a-hotkey flow with the real keyboard hook: click "Set key" (as the
+    /// UI action), press a key (F24, injected, harmless), and the window must save it.
+    #[cfg(windows)]
+    #[test]
+    fn assigning_a_hotkey_end_to_end() {
+        use crate::soundboard::hotkeys::tests::{HOOK_TESTS, tap_f24};
+        let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut app = test_app();
+        app.hotkeys = Some(HotkeyService::start(app.sounds.board.clone()));
+        let ctx = egui::Context::default();
+        app.add_sounds(&ctx, vec!["C:/nope/airhorn.wav".into()]);
+        let id = app.sounds.lock().sounds[0].id;
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
+
+        app.apply_sound_action(&ctx, soundboard::Action::BeginHotkey(id));
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.1, vec![]);
+        assert_eq!(app.capturing, Some(id), "waiting for a key");
+        std::thread::sleep(Duration::from_millis(100));
+        tap_f24();
+        let mut t = 0.2;
+        for _ in 0..100 {
+            frame(&ctx, &mut app, (1240.0, 800.0), t, vec![]);
+            t += 0.033;
+            if app.capturing.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(app.capturing, None, "capture finished");
+        let saved = app.cfg.sounds[0]
+            .hotkey
+            .clone()
+            .expect("hotkey saved in the config");
+        assert_eq!(saved.vk, 0x87);
+    }
+
+    /// If the window gets a key press but the global listener reports nothing, the capture
+    /// must end with an explanation instead of waiting forever.
+    #[cfg(windows)]
+    #[test]
+    fn capture_gives_up_with_a_message_when_the_listener_hears_nothing() {
+        use crate::soundboard::hotkeys::tests::HOOK_TESTS;
+        let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut app = test_app();
+        app.hotkeys = Some(HotkeyService::start(app.sounds.board.clone()));
+        let ctx = egui::Context::default();
+        app.add_sounds(&ctx, vec!["C:/nope/airhorn.wav".into()]);
+        let id = app.sounds.lock().sounds[0].id;
+        app.apply_sound_action(&ctx, soundboard::Action::BeginHotkey(id));
+        // Only egui sees this key (nothing is injected), like a listener that went deaf.
+        let key = vec![egui::Event::Key {
+            key: egui::Key::G,
+            physical_key: Some(egui::Key::G),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }];
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, key);
+        assert_eq!(app.capturing, Some(id), "a short delay is allowed");
+        std::thread::sleep(Duration::from_millis(900));
+        frame(&ctx, &mut app, (1240.0, 800.0), 1.0, vec![]);
+        assert_eq!(app.capturing, None, "gave up");
+        assert!(app.cfg.sounds[0].hotkey.is_none());
+        assert!(app.toasts.contains("did not receive that key press"));
     }
 
     #[test]

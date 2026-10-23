@@ -113,8 +113,11 @@ turn off the driver's noise suppression, raise the seconds, or turn silence dete
   Ctrl+Numpad 1 avoids accidental in-game actions. If two sounds share a key, both play.
 - **Also play in my headphones** routes sounds to the monitor. The monitor must be on.
 
-Hotkeys use a standard Windows low-level keyboard hook (the same mechanism as Discord's
-push-to-talk). The hook only reads key presses and never blocks or changes them.
+Hotkeys use Windows' Raw Input API: VoxShift is told about every key press, even in the
+background, but only listens. It can't block or change keys and adds no delay to your typing.
+(An earlier version used a low-level keyboard hook, which Windows can silently switch off;
+raw input doesn't have that problem.) If you press a key while VoxShift waits for a hotkey and
+it hears nothing, it tells you instead of waiting forever.
 
 ## 5b. Closing, the tray icon and startup
 
@@ -293,4 +296,4 @@ because a model can't promise to finish within one audio block.
 - **My own voice is doubled or echoes.** You're monitoring through speakers, or another app also
   records your real mic.
 - **Hotkeys do nothing in one specific game.** Some games running as administrator block input
-  hooks from non-admin apps. Run VoxShift as administrator in that case.
+  key input from non-admin apps. Run VoxShift as administrator in that case.

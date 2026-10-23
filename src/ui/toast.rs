@@ -18,6 +18,11 @@ impl Toasts {
         }
     }
 
+    #[cfg(test)]
+    pub fn contains(&self, needle: &str) -> bool {
+        self.items.iter().any(|(t, _)| t.contains(needle))
+    }
+
     pub fn show(&mut self, ctx: &Context) {
         let now = ctx.input(|i| i.time);
         self.items.retain(|(_, until)| *until > now);
