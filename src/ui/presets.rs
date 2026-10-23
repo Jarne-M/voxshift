@@ -9,6 +9,10 @@ pub enum Action {
     Apply(Preset),
     Save(String),
     Delete(String),
+    /// Write your presets and MIDI files to a .voxpack to send to someone.
+    Export,
+    /// Add the presets and MIDI files from a .voxpack.
+    Import,
 }
 
 pub fn bar(ui: &mut Ui, cfg: &Config, fx: &Snapshot, new_name: &mut String) -> Option<Action> {
@@ -81,6 +85,26 @@ pub fn bar(ui: &mut Ui, cfg: &Config, fx: &Snapshot, new_name: &mut String) -> O
                 .clicked()
         {
             action = Some(Action::Delete(p.name.clone()));
+        }
+        ui.separator();
+        if ui
+            .button("Share\u{2026}")
+            .on_hover_text(
+                "Save your presets and your Melody Voice MIDI files in one .voxpack file to \
+                 send to a friend",
+            )
+            .clicked()
+        {
+            action = Some(Action::Export);
+        }
+        if ui
+            .button("Import\u{2026}")
+            .on_hover_text(
+                "Add presets and melodies from a .voxpack file (or drop it on the window)",
+            )
+            .clicked()
+        {
+            action = Some(Action::Import);
         }
     });
     action

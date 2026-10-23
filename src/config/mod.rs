@@ -1,6 +1,7 @@
 //! Everything the app remembers between runs, stored as JSON in
 //! `%APPDATA%\VoxShift\config.json`.
 
+pub mod pack;
 pub mod presets;
 
 use crate::audio::device_manager::DeviceSettings;

@@ -969,7 +969,13 @@ impl VoxApp {
                 .filter(|p| !p.as_os_str().is_empty())
                 .collect()
         });
-        // MIDI files are melodies for Melody Voice; everything else goes to the soundboard.
+        // Preset packs are imported, MIDI files are melodies for Melody Voice; everything else
+        // goes to the soundboard.
+        let (packs, dropped): (Vec<_>, Vec<_>) =
+            dropped.into_iter().partition(|p| config::pack::is_pack(p));
+        for p in &packs {
+            self.import_pack(ctx, p);
+        }
         let (midi, sounds): (Vec<_>, Vec<_>) =
             dropped.into_iter().partition(|p| crate::melody::is_midi(p));
         if let Some(path) = midi.into_iter().next() {
@@ -988,7 +994,7 @@ impl VoxApp {
             painter.text(
                 screen.center(),
                 egui::Align2::CENTER_CENTER,
-                "Drop sounds for the soundboard, or a MIDI file for Melody Voice",
+                "Drop sounds for the soundboard, a MIDI file for Melody Voice, or a .voxpack",
                 egui::FontId::proportional(28.0),
                 Color32::WHITE,
             );
@@ -1099,9 +1105,93 @@ impl VoxApp {
         }
     }
 
+    /// Where imported MIDI files are kept: a "melodies" folder next to the settings file.
+    fn melody_dir(&self) -> PathBuf {
+        self.config_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(PathBuf::from)
+            .unwrap_or_else(config::config_dir)
+            .join("melodies")
+    }
+
+    /// Writes your presets and MIDI files to `path`.
+    pub fn export_pack(&mut self, ctx: &egui::Context, path: &std::path::Path) {
+        let (pack, skipped) = config::pack::export(&self.cfg.user_presets, &self.cfg.melody.files);
+        if pack.presets.is_empty() && pack.melodies.is_empty() {
+            self.toasts.push(
+                ctx,
+                "Nothing to share yet: save a preset of your own or import a MIDI file first.",
+            );
+            return;
+        }
+        match config::pack::save(path, &pack) {
+            Ok(()) => {
+                let mut msg = format!(
+                    "Saved {} preset(s) and {} melody file(s) to {}",
+                    pack.presets.len(),
+                    pack.melodies.len(),
+                    path.display()
+                );
+                if !skipped.is_empty() {
+                    msg += &format!(". Left out: {}", skipped.join(", "));
+                }
+                self.toasts.push(ctx, msg);
+            }
+            Err(e) => self.toasts.push(ctx, format!("Could not share: {e}")),
+        }
+    }
+
+    /// Adds the presets and MIDI files of a .voxpack.
+    pub fn import_pack(&mut self, ctx: &egui::Context, path: &std::path::Path) {
+        let result = config::pack::load(path).and_then(|pack| {
+            config::pack::import(&pack, &self.cfg.user_presets, &self.melody_dir())
+        });
+        match result {
+            Ok(got) => {
+                for f in got.files.iter().rev() {
+                    self.cfg.melody.remember_file(f);
+                }
+                let names: Vec<String> = got.presets.iter().map(|p| p.name.clone()).collect();
+                self.cfg.user_presets.extend(got.presets);
+                let mut msg = format!(
+                    "Imported {} preset(s) and {} melody file(s)",
+                    names.len(),
+                    got.files.len()
+                );
+                if !names.is_empty() {
+                    msg += &format!(": {} (pick them under Preset)", names.join(", "));
+                }
+                if got.already_had > 0 {
+                    msg += &format!("; {} you already had", got.already_had);
+                }
+                self.toasts.push(ctx, msg);
+                self.cfg.tab = Tab::Effects;
+            }
+            Err(e) => self.toasts.push(ctx, format!("Could not import: {e}")),
+        }
+    }
+
     fn apply_preset_action(&mut self, ctx: &egui::Context, action: presets::Action) {
         match action {
             presets::Action::Apply(p) => self.apply_preset(ctx, &p),
+            presets::Action::Export => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("VoxShift preset pack", &[config::pack::EXTENSION])
+                    .set_file_name(format!("VoxShift presets.{}", config::pack::EXTENSION))
+                    .save_file()
+                {
+                    self.export_pack(ctx, &path);
+                }
+            }
+            presets::Action::Import => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("VoxShift preset pack", &[config::pack::EXTENSION])
+                    .pick_file()
+                {
+                    self.import_pack(ctx, &path);
+                }
+            }
             presets::Action::Save(name) => {
                 let preset = config::presets::Preset {
                     name: name.clone(),
@@ -1729,6 +1819,62 @@ pub(crate) mod tests {
             MelodySource::File { part: Some(0), .. }
         ));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn sharing_presets_and_melodies_with_a_friend_end_to_end() {
+        use crate::melody::midi::tests::{TestNote, build};
+        // Me: a MIDI file and a preset that sings it.
+        let mine = crate::soundboard::decode::tests::temp_dir("share-me");
+        let song = mine.join("song.mid");
+        let tune: Vec<TestNote> = (0..10).map(|i| (0, 72, i * 480, i * 480 + 400)).collect();
+        std::fs::write(&song, build(midly::Format::Parallel, &[("Tune", &tune)])).unwrap();
+        let mut me = test_app();
+        me.config_path = Some(mine.join("config.json"));
+        let ctx = egui::Context::default();
+        me.import_midi(&ctx, song.clone());
+        me.fx.set(P::MelodyOn, 1.0);
+        me.effects_changed();
+        me.apply_preset_action(&ctx, presets::Action::Save("Our song".into()));
+        let pack = mine.join("for you.voxpack");
+        me.export_pack(&ctx, &pack);
+        assert!(me.toasts.contains("Saved 1 preset(s) and 1 melody file(s)"));
+
+        // My friend: a fresh VoxShift with their own settings folder.
+        let theirs = crate::soundboard::decode::tests::temp_dir("share-friend");
+        let mut friend = test_app();
+        friend.config_path = Some(theirs.join("config.json"));
+        friend.import_pack(&ctx, &pack);
+        assert!(
+            friend
+                .toasts
+                .contains("Imported 1 preset(s) and 1 melody file(s)")
+        );
+        let copy = theirs.join("melodies").join("song.mid");
+        assert_eq!(friend.cfg.melody.files, vec![copy.clone()]);
+        let preset = friend.cfg.user_presets[0].clone();
+        assert_eq!(preset.name, "Our song");
+        friend.apply_preset_action(&ctx, presets::Action::Apply(preset));
+        assert!(friend.fx.on(P::MelodyOn));
+        assert!(
+            matches!(&friend.cfg.melody.source, MelodySource::File { path, .. } if *path == copy)
+        );
+        let mut out = Vec::with_capacity(crate::melody::store::MAX_NOTES);
+        friend.shared.melody.read_into(&mut out).unwrap();
+        assert!(
+            out.len() == 10 && out.iter().all(|n| n.key == 72),
+            "the song plays"
+        );
+        // Importing twice does not double anything.
+        friend.import_pack(&ctx, &pack);
+        assert_eq!(friend.cfg.user_presets.len(), 1);
+        assert!(friend.toasts.contains("1 you already had"));
+        // Nothing of your own yet: nothing to share.
+        let mut empty = test_app();
+        empty.export_pack(&ctx, &mine.join("empty.voxpack"));
+        assert!(empty.toasts.contains("Nothing to share yet"));
+        std::fs::remove_dir_all(mine).ok();
+        std::fs::remove_dir_all(theirs).ok();
     }
 
     #[test]

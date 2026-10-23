@@ -14,7 +14,7 @@ its own is installed.
   missing or silent. It switches back automatically (optional), with a 50 ms crossfade, and the
   output stream never restarts. Devices are matched by name, so changing USB ports, reboots or
   moving between houses don't break the setup.
-- **Effects.** Pitch (±12 semitones, optional formant preservation), noise gate, tone (low and
+- **Effects.** Pitch (Â±12 semitones, optional formant preservation), noise gate, tone (low and
   high cut plus a 3-band EQ), distortion, robot (ring modulator), chorus, echo, reverb, input and
   output gain, and master dry/wet. Every change is click-free.
 - **Melody Voice.** Talk, and it comes out sung: your voice is retuned note by note to a
@@ -45,7 +45,7 @@ If VoxShift can't find CABLE Input, it shows a yellow banner with a download lin
 still pick any output device by hand, for example your speakers for a quick test.
 
 **Recommended:** in `mmsys.cpl`, set both CABLE Input (Playback tab) and CABLE Output
-(Recording tab) to **48000 Hz** (Properties → Advanced). Don't make CABLE Input your default
+(Recording tab) to **48000 Hz** (Properties â†’ Advanced). Don't make CABLE Input your default
 playback device, or every Windows sound would end up in your mic.
 
 ## 2. Build and run
@@ -70,10 +70,10 @@ Select **CABLE Output (VB-Audio Virtual Cable)** as the microphone:
 
 | App | Where |
 |---|---|
-| **Discord** | User Settings → Voice & Video → *Input Device* → **CABLE Output**. Also turn **off** Noise Suppression (Krisp), Echo Cancellation and Automatic Gain Control, otherwise Discord "cleans up" your effects and filters out soundboard music. Set Input Sensitivity manually if needed. |
-| **OBS** | Settings → Audio → *Mic/Auxiliary Audio* → **CABLE Output**, or add an *Audio Input Capture* source with CABLE Output. Remove or mute any source that captures your real mic directly, or you'll be heard twice. |
-| **Games** | In-game voice settings → input device → **CABLE Output**. If the game has no setting, it uses the Windows default: Settings → System → Sound → Input → choose **CABLE Output** (or `mmsys.cpl` → Recording → CABLE Output → *Set Default*). |
-| **Check it** | `mmsys.cpl` → Recording → CABLE Output: the level bar moves when you talk. Or record yourself in Windows *Sound Recorder* with CABLE Output selected. |
+| **Discord** | User Settings â†’ Voice & Video â†’ *Input Device* â†’ **CABLE Output**. Also turn **off** Noise Suppression (Krisp), Echo Cancellation and Automatic Gain Control, otherwise Discord "cleans up" your effects and filters out soundboard music. Set Input Sensitivity manually if needed. |
+| **OBS** | Settings â†’ Audio â†’ *Mic/Auxiliary Audio* â†’ **CABLE Output**, or add an *Audio Input Capture* source with CABLE Output. Remove or mute any source that captures your real mic directly, or you'll be heard twice. |
+| **Games** | In-game voice settings â†’ input device â†’ **CABLE Output**. If the game has no setting, it uses the Windows default: Settings â†’ System â†’ Sound â†’ Input â†’ choose **CABLE Output** (or `mmsys.cpl` â†’ Recording â†’ CABLE Output â†’ *Set Default*). |
+| **Check it** | `mmsys.cpl` â†’ Recording â†’ CABLE Output: the level bar moves when you talk. Or record yourself in Windows *Sound Recorder* with CABLE Output selected. |
 
 ## 4. Two mics, two houses
 
@@ -88,7 +88,7 @@ With **Auto** mode:
 |---|---|
 | Primary present | uses the primary |
 | Primary unplugged, missing or erroring | crossfades to the fallback within about 1.5 s and shows a notification |
-| Primary listed but silent (headset boom mic pulled out) | after *N* seconds below the threshold (default 5 s, −85 dB), uses the fallback |
+| Primary listed but silent (headset boom mic pulled out) | after *N* seconds below the threshold (default 5 s, âˆ’85 dB), uses the fallback |
 | Primary back (or loud again) | switches back, if *Switch back automatically* is on |
 | Neither available | sends silence, shows a red warning and keeps retrying |
 
@@ -96,8 +96,8 @@ You can also force a mic with *Force primary* or *Force fallback*. The top bar a
 active mic and why, for example *"Active: Fallback mic (primary mic is silent)"*.
 
 **Calibrating silence detection.** Each mic shows its level in dB. With the primary plugged
-in and the room quiet, note the value (typically −60 to −75 dB). Pull the boom mic and note it
-again (usually −100 dB or lower). Put the threshold in between; the default of −85 dB works for
+in and the room quiet, note the value (typically âˆ’60 to âˆ’75 dB). Pull the boom mic and note it
+again (usually âˆ’100 dB or lower). Put the threshold in between; the default of âˆ’85 dB works for
 most mics.
 
 Some mics and drivers apply their own noise gate or noise suppression (NGenuity, Realtek or
@@ -108,7 +108,7 @@ turn off the driver's noise suppression, raise the seconds, or turn silence dete
 
 ## 5. Soundboard and hotkeys
 
-- **Add sounds…** or drag files onto the window. Files are decoded in the background and
+- **Add soundsâ€¦** or drag files onto the window. Files are decoded in the background and
   resampled to the output rate. Clips longer than 3 minutes are cut.
 - **Click** plays a sound and clicking again restarts it. **Right-click** stops it, and
   **Stop all** stops everything.
@@ -206,36 +206,43 @@ pass through untouched, so you stay understandable.
 - **Retune speed:** 0 ms is the instant, robotic "hard tune". 150 ms and up keeps your own
   vibrato and slides (natural). Default 5 ms.
 - **Glide:** how fast it slides from note to note while you keep sounding.
-- **Transpose:** ±24 semitones. **Octave-fold** moves the whole melody by octaves so it sits
+- **Transpose:** Â±24 semitones. **Octave-fold** moves the whole melody by octaves so it sits
   around your voice, so a deep voice doesn't have to squeak out a song written for a high
   one. It only changes octave between notes, never in the middle of one.
 - **Preserve formants** (on by default) keeps your voice's character when the melody goes high
-  or low (no chipmunk). **Formant shift** (±6 st) moves the character on purpose: down is
+  or low (no chipmunk). **Formant shift** (Â±6 st) moves the character on purpose: down is
   darker or bigger, up is brighter or smaller.
 - **Loop**, **Restart**, **Next note**, and **Back to start after silence** (seconds; 0 = never).
-- **Analysis window** (20–60 ms) trades latency for steadiness and how low a voice it can
-  hear. **Lowest / highest voice pitch** (default 70–500 Hz) covers a low male to a high
+- **Analysis window** (20â€“60 ms) trades latency for steadiness and how low a voice it can
+  hear. **Lowest / highest voice pitch** (default 70â€“500 Hz) covers a low male to a high
   female voice; narrow it to yours if it ever jumps an octave.
-- The line **"You: A3 » Target: C4"** shows what it hears and where it is taking you. The
+- The line **"You: A3 Â» Target: C4"** shows what it hears and where it is taking you. The
   piano roll shows the melody, the current note (lit) and where it is (white line).
 - **Play melody** plays the tune as a soft synth tone at the tempo slider's speed, **in your
   headphones only** (the monitor must be on). It never goes into your mic.
 
 **Melodies**
 - Built in, all public domain and typed in by hand (no audio or song files are bundled): Ode
-  to Joy, Twinkle Twinkle Little Star, Happy Birthday, Greensleeves, Für Elise (opening), Frère
+  to Joy, Twinkle Twinkle Little Star, Happy Birthday, Greensleeves, FÃ¼r Elise (opening), FrÃ¨re
   Jacques, plus a major and a minor scale, a pentatonic run and a major arpeggio.
-- **Your own songs:** *Import MIDI…* or drop a `.mid` file on the window. VoxShift lists the
+- **Your own songs:** *Import MIDIâ€¦* or drop a `.mid` file on the window. VoxShift lists the
   file's parts (each track and channel; drums are skipped) and picks the one most likely to
-  be the tune: the highest part that plays one note at a time (marked ★ under **Part**). If it
+  be the tune: the highest part that plays one note at a time (marked â˜… under **Part**). If it
   guessed wrong, pick another part. Chords are reduced to their top note. The file's tempo
   sets the tempo slider; later tempo changes in the file are ignored. Imported files are
   remembered in the melody list. Bring your own MIDI files; VoxShift doesn't download songs.
 
 **Presets and hotkeys.** A preset you save with Melody Voice on remembers its melody too. The
 built-in *Sing the Song (per-syllable)* and *Hard Tune* presets keep whatever melody you picked.
-Under **Voice changer hotkeys → Melody Voice** you can set global keys for **on/off**,
+Under **Voice changer hotkeys â†’ Melody Voice** you can set global keys for **on/off**,
 **restart melody** and **next note**. They work in games and while VoxShift is in the tray.
+
+**Sharing with friends.** **Shareâ€¦** (next to the preset list) saves all your own presets plus
+your imported MIDI files in one `.voxpack` file. Your friend clicks **Importâ€¦** or drops the
+file on the VoxShift window: the presets appear in their preset list, and the MIDI files go to
+`%APPDATA%\VoxShift\melodies` and into their melody list, with the presets pointing at them.
+Their own presets are kept. A name they already use gets "(2)", and importing the same pack
+twice adds nothing. Soundboard sounds aren't included; send those files separately.
 
 **Soundboard clips are never retuned:** they're mixed in after the voice effects.
 
@@ -250,7 +257,7 @@ adds:
 | 45 ms | 23.8 ms |
 | 60 ms | 31.2 ms |
 
-That comes on top of the ~38–40 ms base latency (section 6), and on top of the Pitch effect's
+That comes on top of the ~38â€“40 ms base latency (section 6), and on top of the Pitch effect's
 ~15 ms if you use both. It's measured by an automated test that times a sound through the
 effect.
 
@@ -271,7 +278,7 @@ The estimate in the UI is the sum of:
 
 It doesn't include VB-CABLE's own buffer or the receiving app.
 
-Measured on the development PC (Windows shared mode, 10 ms device buffers): **about 38–40 ms**
+Measured on the development PC (Windows shared mode, 10 ms device buffers): **about 38â€“40 ms**
 without pitch. That's above the 30 ms goal, and most of it is fixed by Windows: the mic and the
 cable each run 10 ms buffers, and the ring buffer must absorb one of them. The *Buffer* setting
 requests smaller device buffers, but most Windows shared-mode drivers ignore requests below
@@ -289,7 +296,7 @@ second profile, or trying things without touching your normal settings.
 
 ## 8. Testing on your hardware
 
-These were checked automatically: `cargo test` (186 tests; they briefly show a tray icon) and the self-tests below on the
+These were checked automatically: `cargo test` (190 tests; they briefly show a tray icon) and the self-tests below on the
 development PC (USB PnP mic, webcam mic, HyperX Cloud II Wireless). The rest needs your setup.
 
 Melody Voice's tests feed synthetic voices through the real effect chain offline: a low and a
@@ -311,7 +318,7 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
 
 **Manual checklist (needs VB-CABLE, the headset and the desk mic):**
 
-1. **Passthrough.** Start VoxShift with Voice changer OFF. In `mmsys.cpl` → Recording, CABLE
+1. **Passthrough.** Start VoxShift with Voice changer OFF. In `mmsys.cpl` â†’ Recording, CABLE
    Output's level bar moves when you talk. Record a few seconds in Sound Recorder with CABLE
    Output: your clean voice.
 2. **Monitor.** Pick your headphones, turn the monitor on and talk: you hear yourself slightly
@@ -330,7 +337,7 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
 6. **Neither mic.** Unplug both: a red warning and silence on CABLE Output; the app stays
    responsive. Plug one in: it is picked up within about 2 s.
 7. **Second house.** On the other PC, or with renamed devices, the same names are found again
-   (e.g. *Microphone (2- HyperX …)* still matches *Microphone (HyperX …)*).
+   (e.g. *Microphone (2- HyperX â€¦)* still matches *Microphone (HyperX â€¦)*).
 8. **Soundboard.** Drop an mp3 on the window, click it: Discord hears it mixed with your voice.
    Assign Ctrl+Numpad1, focus a game or another window, press it: it plays, and the game still
    gets the key.
@@ -349,7 +356,7 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
 14. **Remember my choice.** Tick it and choose *Quit completely*: the next X quits right away.
     Set it back to *Ask every time* under *Window & startup*.
 15. **Start with Windows.** Tick it and *Start minimized to tray*, sign out and back in:
-    VoxShift is only in the tray, and the mic works. In Task Manager → Startup apps, VoxShift
+    VoxShift is only in the tray, and the mic works. In Task Manager â†’ Startup apps, VoxShift
     is listed. Untick it: the entry is gone.
 16. **Voice hotkey while talking.** Set a toggle key (e.g. F8) and talk while monitoring. Press
     it a few times: you hear the beeps, and the switch between effects and clean has no pop.
@@ -368,7 +375,7 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
 21. **Talk the song.** Apply *Sing the Song (per-syllable)*. Say slowly, one syllable at a time
     with a tiny gap: "twin - kle - twin - kle - lit - tle - star". You should hear yourself
     *sing* C C G G A A G (the first line of the tune), and the lit note in the piano roll
-    moves one step per syllable. The top line reads like "You: A2 » Target: C3".
+    moves one step per syllable. The top line reads like "You: A2 Â» Target: C3".
     Say "sss" or whisper: it passes through unchanged. Stop talking: nothing moves.
 22. **Glitches.** Say one long "heeeeelloooo" with no gap: one or two notes, not a run of
     them. If syllables get skipped or doubled, raise or lower *Sensitivity* and *Min note
@@ -377,7 +384,7 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
     near your own), a high voice in a higher one. Toggle *Octave-fold* off to hear the tune
     as written (it may then sound strained or chipmunk-like far from your voice).
 24. **Formants.** With *Preserve formants* off, high notes sound chipmunk-like; with it on, still
-    you. Move *Formant shift* to −6 and +6: darker or bigger, then brighter or smaller, same notes.
+    you. Move *Formant shift* to âˆ’6 and +6: darker or bigger, then brighter or smaller, same notes.
 25. **Tempo-synced.** Switch mode, set the tempo to ~90, and hold one long "aaaah": it walks
     through the tune in time. Stop for a few notes and start again: it carries on further
     along, not where you stopped.
@@ -386,7 +393,7 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
     *on/off* keys and try them with VoxShift in the tray.
 27. **Hard Tune.** Apply the *Hard Tune* preset and slide your voice up and down slowly: it
     jumps from note to note (the robotic auto-tune sound) instead of sliding.
-28. **Your MIDI file.** Drop a `.mid` on the window: a message names the part it picked (★ in
+28. **Your MIDI file.** Drop a `.mid` on the window: a message names the part it picked (â˜… in
     *Part*); the piano roll should look like the tune. If it is the bass or chords, pick
     another part.
 29. **Soundboard stays clean.** With Melody Voice on, play a soundboard clip with singing or
@@ -396,12 +403,12 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
 ## 9. How it works
 
 ```
- mic callback(s) ──ring──▶ ┌─────────────── output callback (CABLE Input) ───────────────┐
-  (downmix, level)         │ adaptive resample ─▶ mic crossfade ─▶ voice chain ─▶ + sounds │──▶ CABLE Input
-                           │  (drift control)       (50 ms)          (effects)     (voices) │
- device manager thread ─cmd─▶ (attach/detach mics, monitor; play sounds)                    │──ring──▶ monitor
-  (scan 1.5 s, errors,     └────────────────────────────────────────────────────────────┘
-   stall watchdog, mic choice)          ◀──garbage── (old buffers freed off the audio thread)
+ mic callback(s) â”€â”€ringâ”€â”€â–¶ â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ output callback (CABLE Input) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+  (downmix, level)         â”‚ adaptive resample â”€â–¶ mic crossfade â”€â–¶ voice chain â”€â–¶ + sounds â”‚â”€â”€â–¶ CABLE Input
+                           â”‚  (drift control)       (50 ms)          (effects)     (voices) â”‚
+ device manager thread â”€cmdâ”€â–¶ (attach/detach mics, monitor; play sounds)                    â”‚â”€â”€ringâ”€â”€â–¶ monitor
+  (scan 1.5 s, errors,     â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+   stall watchdog, mic choice)          â—€â”€â”€garbageâ”€â”€ (old buffers freed off the audio thread)
 ```
 
 - **Real-time safety.** The audio callbacks never lock, allocate, log or do I/O. Parameters are
@@ -409,7 +416,7 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
   sound buffers arrive through a lock-free `rtrb` queue. Anything the audio thread lets go of is
   sent back through a second queue and freed on the device manager thread.
 - **Clock drift and sample rates.** Each mic has its own clock. `audio::adaptive` resamples with
-  rubato's async resampler and nudges the ratio (±1 %, a proportional controller) so the ring
+  rubato's async resampler and nudges the ratio (Â±1 %, a proportional controller) so the ring
   buffer stays at its target fill. That also covers 44.1 kHz mics on a 48 kHz cable.
 - **Hot-plug.** Only the device manager thread talks to cpal. Mics and the monitor attach to the
   running engine, so the virtual-mic stream keeps running when they come and go. It restarts
@@ -437,7 +444,7 @@ YIN pitch detection, Freeverb, etc. Each file explains its idea at the top.
 
 **Melody Voice in short:** a YIN detector runs on a 12 kHz copy of the mic every 2.5 ms; a
 tracker smooths it (median, octave-jump guard, voiced/unvoiced hysteresis); the conductor
-turns syllables, the clock or key presses into a target note; the shift (target − you) drives
+turns syllables, the clock or key presses into a target note; the shift (target âˆ’ you) drives
 the formant-preserving pitch stage; unvoiced sounds take a dry path delayed by the same amount.
 The melody reaches the audio thread through a seqlock over fixed atomic arrays (no locks, no
 allocation, and it survives the engine being rebuilt).
