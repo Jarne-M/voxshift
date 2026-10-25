@@ -25,7 +25,7 @@ use crate::soundboard::decode;
 use crate::soundboard::hotkeys::{self, Captured, HotkeyService, KeyHandler};
 use crate::soundboard::library::{SoundEntry, Soundboard};
 use crate::soundboard::mixer::SoundId;
-use crate::soundboard::organize;
+use crate::soundboard::{organize, playmode};
 use crate::voice_keys::{self, Feedback, KeyTarget, VoiceKeys, VoiceRequest};
 use egui::{Color32, RichText, Ui, ViewportCommand};
 use std::path::PathBuf;
@@ -322,6 +322,7 @@ impl VoxApp {
             // Clips from older versions get their permanent ids here (saved right after).
             let mut board = sounds.lock();
             board.recent = cfg.soundboard.recent.clone();
+            board.shared = Some(shared.clone()); // toggle mode asks what is playing
             cfg.sounds = board.entries();
         }
         let tray_poster: Arc<OnceLock<TrayPoster>> = Arc::new(OnceLock::new());
@@ -1012,11 +1013,18 @@ impl VoxApp {
                     .unwrap_or_default();
                 self.add_sounds(ctx, files);
             }
-            A::Play(id) => {
-                if !self.sounds.lock().play(id) {
+            A::Play(id) | A::HoldDown(id) => {
+                // Per its play mode: Normal plays, Toggle starts or stops, Hold plays until
+                // the mouse button goes up.
+                if !self.sounds.lock().press(id, playmode::MOUSE) {
                     self.toasts
                         .push(ctx, "Cannot play: no virtual mic output is running");
                 }
+            }
+            A::MouseUp => self.sounds.lock().release(playmode::MOUSE),
+            A::PlayMode(id, mode) => {
+                self.sounds.lock().set_play_mode(id, mode);
+                self.sounds_changed();
             }
             A::Stop(id) => self.sounds.lock().stop(id),
             A::StopAll => self.sounds.lock().stop_all(),
@@ -2768,7 +2776,15 @@ pub(crate) mod tests {
         app.apply_sound_action(&ctx, A::ToggleFavorite(ids[2]));
         app.apply_sound_action(&ctx, A::Color(ids[0], Some(4)));
         app.apply_sound_action(&ctx, A::Sort(organize::SortMode::Name));
-        draw(&mut app, 0.1);
+        app.apply_sound_action(&ctx, A::PlayMode(ids[2], playmode::PlayMode::LoopWhileHeld));
+        assert_eq!(
+            app.cfg.sounds[2].play_mode,
+            playmode::PlayMode::LoopWhileHeld,
+            "saved with the clip"
+        );
+        app.apply_sound_action(&ctx, A::HoldDown(ids[2])); // no engine: nothing plays
+        app.apply_sound_action(&ctx, A::MouseUp);
+        draw(&mut app, 0.1); // with the LOOP badge
         let e = &app.cfg.sounds;
         assert_eq!(e[1].folder, Some(memes));
         assert!(e[2].favorite && e[0].color == Some(4));

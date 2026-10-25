@@ -5,3 +5,4 @@ pub mod hotkeys;
 pub mod library;
 pub mod mixer;
 pub mod organize;
+pub mod playmode;

@@ -7,6 +7,7 @@ use crate::soundboard::hotkeys::Hotkey;
 use crate::soundboard::library::{Board, LoadState, SoundEntry};
 use crate::soundboard::mixer::SoundId;
 use crate::soundboard::organize::{self, BoardSettings, BoardTab, SortMode};
+use crate::soundboard::playmode::PlayMode;
 use crate::voice_keys::KeyTarget;
 use egui::{Color32, Id, Key, RichText, Ui, vec2};
 
@@ -40,6 +41,11 @@ pub enum Action {
     DeleteFolder(u32),
     MoveFolder(u32, isize),
     ClearRecent,
+    PlayMode(SoundId, PlayMode),
+    /// Mouse button pressed on a hold / loop clip (it plays until the button goes up).
+    HoldDown(SoundId),
+    /// No mouse button is down (any clip held by the mouse stops).
+    MouseUp,
 }
 
 const CELL: f32 = 190.0;
@@ -370,6 +376,11 @@ fn search_row(ui: &mut Ui, v: &View, search: &mut String, actions: &mut Vec<Acti
 
 pub fn panel(ui: &mut Ui, v: &View, search: &mut String) -> Vec<Action> {
     let mut actions = Vec::new();
+    // A clip held with the mouse stops as soon as no button is down, wherever it was let go
+    // (or if the window lost the release).
+    if !ui.input(|i| i.pointer.any_down()) {
+        actions.push(Action::MouseUp);
+    }
     top_row(ui, v, &mut actions);
     ui.label(
         RichText::new(if v.hotkeys_available {
@@ -502,6 +513,19 @@ fn clip_menu(
             );
         }
     });
+    ui.menu_button("Play mode", |ui| {
+        for m in PlayMode::ALL {
+            if ui.selectable_label(e.play_mode == m, m.label()).clicked() {
+                actions.push(Action::PlayMode(id, m));
+                ui.close();
+            }
+        }
+        ui.label(
+            RichText::new("Hold and loop work with the hotkey and with the mouse button.")
+                .small()
+                .weak(),
+        );
+    });
     ui.menu_button("Colour", |ui| {
         if ui.selectable_label(e.color.is_none(), "None").clicked() {
             actions.push(Action::Color(id, None));
@@ -581,7 +605,12 @@ fn cell(
     } else {
         r.on_disabled_hover_text(tip)
     };
-    if r.clicked() {
+    if e.play_mode.is_held() {
+        // Plays while the mouse button is held on it (like the hotkey).
+        if enabled && r.hovered() && ui.input(|i| i.pointer.primary_pressed()) {
+            actions.push(Action::HoldDown(id));
+        }
+    } else if r.clicked() {
         actions.push(Action::Play(id));
     }
     // Right-click opens the menu, also on a greyed-out (missing) clip, whose disabled button
@@ -625,6 +654,14 @@ fn cell(
             .clicked()
         {
             actions.push(Action::ToggleFavorite(id));
+        }
+        let badge = e.play_mode.badge();
+        if !badge.is_empty() {
+            ui.label(RichText::new(badge).small().strong().color(ACCENT))
+                .on_hover_text(format!(
+                    "Play mode: {}. Right-click to change.",
+                    e.play_mode.label()
+                ));
         }
         if v.capturing_sound() == Some(id) {
             if ui

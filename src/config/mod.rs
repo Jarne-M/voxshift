@@ -243,6 +243,7 @@ mod tests {
             favorite: true,
             color: Some(3),
             plays: 12,
+            play_mode: crate::soundboard::playmode::PlayMode::LoopWhileHeld,
         });
         cfg.soundboard.recent = vec![7];
         cfg.soundboard.tab = crate::soundboard::organize::BoardTab::Folder(folder);

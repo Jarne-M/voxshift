@@ -3,9 +3,11 @@
 
 use super::hotkeys::Hotkey;
 use super::mixer::{SoundCmd, SoundData, SoundId};
+use super::playmode::{Cmd, PlayMode, Triggers};
 use super::{decode, organize};
 use crate::audio::device_manager::EnginePort;
 use crate::audio::engine::EngineCmd;
+use crate::audio::shared::Shared;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
@@ -28,6 +30,8 @@ pub struct SoundEntry {
     pub color: Option<u8>,
     /// How often it was played (button or hotkey).
     pub plays: u32,
+    /// Normal, hold, toggle or loop while held (see `soundboard::playmode`).
+    pub play_mode: PlayMode,
 }
 
 impl Default for SoundEntry {
@@ -42,6 +46,7 @@ impl Default for SoundEntry {
             favorite: false,
             color: None,
             plays: 0,
+            play_mode: PlayMode::Normal,
         }
     }
 }
@@ -90,6 +95,10 @@ pub struct Board {
     /// Bumped whenever something the config saves changes here (play counts, recents), so
     /// the window knows to copy it; plays also happen on the hotkey thread.
     pub revision: u64,
+    /// Clips playing because their key or the mouse is held.
+    triggers: Triggers,
+    /// What is playing (for toggle mode); set by the app.
+    pub shared: Option<Arc<Shared>>,
 }
 
 impl Board {
@@ -118,6 +127,7 @@ impl Board {
 
     pub fn remove(&mut self, id: SoundId) {
         self.port.send(EngineCmd::Sound(SoundCmd::Stop(id)));
+        self.triggers.forget(id);
         if let Some(uid) = self.get_mut(id).map(|s| s.entry.uid) {
             self.recent.retain(|&u| u != uid);
         }
@@ -142,6 +152,7 @@ impl Board {
     }
 
     /// Starts (or restarts) a sound. False if it is not loaded or no engine is running.
+    #[cfg(test)]
     pub fn play(&mut self, id: SoundId) -> bool {
         self.start(id, false)
     }
@@ -180,8 +191,71 @@ impl Board {
         self.port.send(EngineCmd::Sound(SoundCmd::Stop(id)));
     }
 
-    pub fn stop_all(&self) {
+    /// Stops every clip, held ones included.
+    pub fn stop_all(&mut self) {
+        self.triggers.release_all();
         self.port.send(EngineCmd::Sound(SoundCmd::StopAll));
+    }
+
+    pub fn is_playing(&self, id: SoundId) -> bool {
+        self.shared.as_ref().is_some_and(|s| s.is_playing(id))
+    }
+
+    fn apply(&mut self, cmd: Cmd) -> bool {
+        match cmd {
+            Cmd::Start { id, looped } => self.start(id, looped),
+            Cmd::Stop(id) => {
+                self.stop(id);
+                true
+            }
+        }
+    }
+
+    /// A press on clip `id` by key `vk` (or the mouse, `playmode::MOUSE`), per its play mode.
+    pub fn press(&mut self, id: SoundId, vk: u32) -> bool {
+        let Some(mode) = self
+            .sounds
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.entry.play_mode)
+        else {
+            return false;
+        };
+        let playing = self.is_playing(id);
+        match self.triggers.press(id, mode, vk, playing) {
+            Some(cmd) => self.apply(cmd),
+            None => true, // held already: nothing to do
+        }
+    }
+
+    /// Key `vk` (or the mouse) went up: clips held by it stop.
+    pub fn release(&mut self, vk: u32) {
+        for id in self.triggers.release(vk) {
+            self.stop(id);
+        }
+    }
+
+    /// Stops every held clip (all keys up, or a missed key-up).
+    pub fn release_all(&mut self) {
+        for id in self.triggers.release_all() {
+            self.stop(id);
+        }
+    }
+
+    /// Keys currently holding clips (the listener checks them against the keyboard).
+    pub fn held_keys(&self) -> Vec<u32> {
+        self.triggers.held_keys()
+    }
+
+    /// A clip's mode changed: if it was held, it stops (the old mode's rules no longer apply).
+    pub fn set_play_mode(&mut self, id: SoundId, mode: PlayMode) {
+        if self.triggers.is_held(id) {
+            self.triggers.forget(id);
+            self.stop(id);
+        }
+        if let Some(s) = self.get_mut(id) {
+            s.entry.play_mode = mode;
+        }
     }
 
     pub fn set_volume(&mut self, id: SoundId, volume: f32) {
@@ -192,7 +266,8 @@ impl Board {
             .send(EngineCmd::Sound(SoundCmd::SetVolume(id, volume)));
     }
 
-    /// Plays every sound bound to this key combination; returns how many.
+    /// Triggers every sound bound to this key combination (per its play mode); returns how
+    /// many.
     pub fn hotkey_pressed(&mut self, key: &Hotkey) -> usize {
         let ids: Vec<SoundId> = self
             .sounds
@@ -200,7 +275,7 @@ impl Board {
             .filter(|s| s.entry.hotkey.as_ref().is_some_and(|h| h.same_keys(key)))
             .map(|s| s.id)
             .collect();
-        ids.iter().filter(|&&id| self.play(id)).count()
+        ids.iter().filter(|&&id| self.press(id, key.vk)).count()
     }
 
     /// The sound that already uses this key combination, if any.
@@ -251,6 +326,8 @@ impl Soundboard {
             jobs: tx,
             recent: Vec::new(),
             revision: 0,
+            triggers: Triggers::default(),
+            shared: None,
         }));
         let b = board.clone();
         std::thread::Builder::new()
@@ -296,6 +373,7 @@ impl Soundboard {
 mod tests {
     use super::*;
     use crate::soundboard::decode::tests::{temp_dir, write_wav};
+    use crate::soundboard::playmode;
     use std::time::{Duration, Instant};
 
     fn wait_loaded(sb: &Soundboard, n: usize) {
@@ -434,6 +512,151 @@ mod tests {
         assert_eq!(s.entry.name, "moved away");
         assert!(s.entry.favorite && s.entry.color == Some(2) && s.entry.folder == Some(3));
         drop(board);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A board wired to a real engine, with one loaded clip (`seconds` long, a steady 0.5) in
+    /// `mode` on F1. Returns the board, the engine, the shared state and the clip's id.
+    fn rig(
+        name: &str,
+        seconds: f32,
+        mode: PlayMode,
+    ) -> (
+        Soundboard,
+        crate::audio::engine::Engine,
+        Arc<Shared>,
+        SoundId,
+        PathBuf,
+    ) {
+        use crate::audio::engine::Engine;
+        let dir = temp_dir(name);
+        let path = dir.join("clip.wav");
+        write_wav(
+            &path,
+            48_000,
+            1,
+            &vec![16384; (seconds * 48_000.0) as usize],
+        );
+        let shared = Arc::new(Shared::default());
+        let (engine, link) = Engine::new(shared.clone(), 48_000);
+        let port = Arc::new(EnginePort::default());
+        port.set(Some(link.cmds));
+        let f1 = Hotkey::new(0x70, false, false, false, false, "F1");
+        let sb = Soundboard::new(
+            port,
+            vec![SoundEntry {
+                hotkey: Some(f1),
+                play_mode: mode,
+                volume: 1.0,
+                ..SoundEntry::from_path(path)
+            }],
+        );
+        wait_loaded(&sb, 1);
+        sb.lock().shared = Some(shared.clone());
+        let id = sb.lock().sounds[0].id;
+        (sb, engine, shared, id, dir)
+    }
+
+    /// Renders `ms` of output; returns the left channel.
+    fn render(engine: &mut crate::audio::engine::Engine, ms: f32) -> Vec<f32> {
+        use crate::audio::block::{BLOCK, BlockSource};
+        let mut out = [0.0; BLOCK * 2];
+        let mut left = Vec::new();
+        for _ in 0..((ms * 48.0) as usize).div_ceil(BLOCK) {
+            engine.render(&mut out);
+            left.extend(out.as_chunks::<2>().0.iter().map(|f| f[0]));
+        }
+        left
+    }
+
+    fn f1() -> Hotkey {
+        Hotkey::new(0x70, false, false, false, false, "F1")
+    }
+
+    #[test]
+    fn hold_plays_while_the_key_is_down_and_fades_out_on_release() {
+        let (sb, mut engine, shared, id, dir) = rig("mode-hold", 3.0, PlayMode::Hold);
+        assert_eq!(sb.lock().hotkey_pressed(&f1()), 1);
+        let held = render(&mut engine, 200.0);
+        assert!(shared.is_playing(id));
+        // Key repeat while held: never restarts (a restart would fade in again from 0).
+        for _ in 0..10 {
+            sb.lock().hotkey_pressed(&f1());
+            let more = render(&mut engine, 20.0);
+            assert!(more.iter().all(|x| (x - 0.5).abs() < 0.01), "uninterrupted");
+        }
+        assert!((held.last().unwrap() - 0.5).abs() < 0.01);
+        sb.lock().release(0x70); // key-up
+        let after = render(&mut engine, 40.0);
+        let gone = after.iter().position(|x| x.abs() < 1e-6).unwrap() as f32 / 48.0;
+        assert!(gone > 5.0 && gone < 22.0, "fades out in {gone} ms");
+        let step = after
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(step < 0.003, "no click: {step}");
+        assert!(!shared.is_playing(id));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_missed_key_up_cannot_leave_a_clip_playing() {
+        let (sb, mut engine, shared, id, dir) = rig("mode-missed", 3.0, PlayMode::LoopWhileHeld);
+        sb.lock().hotkey_pressed(&f1());
+        render(&mut engine, 50.0);
+        assert!(shared.is_playing(id));
+        assert_eq!(sb.lock().held_keys(), [0x70], "the listener watches F1");
+        // The key-up never arrives; the listener notices every key is up (or the keyboard
+        // check finds F1 up) and lets go of everything.
+        sb.lock().release_all();
+        render(&mut engine, 40.0);
+        assert!(!shared.is_playing(id));
+        assert!(sb.lock().held_keys().is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn loop_while_held_plays_past_its_end_until_released() {
+        let (sb, mut engine, shared, id, dir) = rig("mode-loop", 0.1, PlayMode::LoopWhileHeld);
+        sb.lock().hotkey_pressed(&f1());
+        let out = render(&mut engine, 500.0); // five times the clip's length
+        assert!(shared.is_playing(id), "still going");
+        assert!(
+            out[(0.45 * 48_000.0) as usize].abs() > 0.4,
+            "sound at 450 ms"
+        );
+        sb.lock().release(0x70);
+        render(&mut engine, 40.0);
+        assert!(!shared.is_playing(id));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn toggle_starts_and_stops_and_normal_ignores_the_release() {
+        let (sb, mut engine, shared, id, dir) = rig("mode-toggle", 3.0, PlayMode::Toggle);
+        sb.lock().hotkey_pressed(&f1());
+        render(&mut engine, 50.0);
+        assert!(shared.is_playing(id));
+        sb.lock().release(0x70);
+        render(&mut engine, 50.0);
+        assert!(
+            shared.is_playing(id),
+            "a toggle keeps playing after the key-up"
+        );
+        sb.lock().hotkey_pressed(&f1());
+        render(&mut engine, 40.0);
+        assert!(!shared.is_playing(id), "second press stops it");
+        // The same clip in Normal mode: plays on, release or not; the mouse works the same.
+        sb.lock().set_play_mode(id, PlayMode::Normal);
+        assert!(sb.lock().press(id, playmode::MOUSE));
+        sb.lock().release(playmode::MOUSE);
+        render(&mut engine, 50.0);
+        assert!(shared.is_playing(id));
+        assert_eq!(
+            sb.lock().sounds[0].entry.plays,
+            2,
+            "two starts (the stop is not a play)"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 

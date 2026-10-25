@@ -154,6 +154,16 @@ impl KeyTracker {
             k.vk, k.ctrl, k.shift, k.alt, k.win, &label,
         )))
     }
+
+    /// Forgets that `vk` is down (its key-up was missed), so its next press counts.
+    pub fn forget(&mut self, vk: u32) {
+        self.held.remove(&vk);
+    }
+
+    /// True when no (non-modifier) key is down.
+    pub fn none_held(&self) -> bool {
+        self.held.is_empty()
+    }
 }
 
 /// Something besides the soundboard that reacts to hotkeys (the voice changer controls).
@@ -168,6 +178,29 @@ pub trait KeyHandler: Send + Sync {
 pub enum Captured {
     Key(Hotkey),
     Cancelled,
+}
+
+/// How often keys holding a clip are checked against the real keyboard.
+const HELD_CHECK: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Stops held clips whose key the keyboard says is up (its key-up was missed).
+fn check_held(board: &Mutex<Board>, tracker: &mut KeyTracker) {
+    let keys = board.lock().unwrap_or_else(|e| e.into_inner()).held_keys();
+    if keys.is_empty() {
+        return;
+    }
+    #[cfg(windows)]
+    let missed = super::playmode::missed_releases(&keys, win::key_down);
+    #[cfg(not(windows))]
+    let missed: Vec<u32> = Vec::new();
+    if missed.is_empty() {
+        return;
+    }
+    let mut b = board.lock().unwrap_or_else(|e| e.into_inner());
+    for vk in missed {
+        tracker.forget(vk); // so its next press counts as a press again
+        b.release(vk);
+    }
 }
 
 pub struct HotkeyService {
@@ -210,7 +243,20 @@ impl HotkeyService {
             .name("hotkeys".into())
             .spawn(move || {
                 let mut tracker = KeyTracker::default();
-                while let Ok(raw) = raw_rx.recv() {
+                let mut last_check = std::time::Instant::now();
+                loop {
+                    // Clips held by a key must never get stuck: every ~50 ms the keys holding
+                    // them are checked against the real keyboard, in case a key-up got lost
+                    // (Alt+Tab while holding, a focus change).
+                    if last_check.elapsed() >= HELD_CHECK {
+                        last_check = std::time::Instant::now();
+                        check_held(&board, &mut tracker);
+                    }
+                    let raw = match raw_rx.recv_timeout(HELD_CHECK) {
+                        Ok(raw) => raw,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
                     if raw.down {
                         counter.fetch_add(1, Ordering::Relaxed);
                     }
@@ -235,6 +281,13 @@ impl HotkeyService {
                         Some(KeyEvent::Released(vk)) => {
                             if !waiting && let Some(h) = &handler {
                                 h.released(vk);
+                            }
+                            // Hold / loop clips stop with their key; once every key is up,
+                            // nothing may stay held at all.
+                            let mut b = board.lock().unwrap_or_else(|e| e.into_inner());
+                            b.release(vk);
+                            if tracker.none_held() {
+                                b.release_all();
                             }
                             continue;
                         }
@@ -367,6 +420,11 @@ mod win {
     fn held(vk: i32) -> bool {
         // High bit set = key is down.
         (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0
+    }
+
+    /// Whether the keyboard says this key is down right now.
+    pub fn key_down(vk: u32) -> bool {
+        i32::try_from(vk).is_ok_and(held)
     }
 
     fn wide(s: &str) -> Vec<u16> {
@@ -682,6 +740,31 @@ pub(crate) mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(service.presses_seen() > before);
+    }
+
+    #[test]
+    fn tracker_knows_when_all_keys_are_up_and_can_forget_a_lost_key_up() {
+        let mut t = KeyTracker::default();
+        let name = |_: &RawKey| "F1".to_string();
+        assert!(t.none_held());
+        assert!(t.feed(key(0x70, true, false), name).is_some());
+        assert!(!t.none_held());
+        assert!(
+            t.feed(key(0x11, true, true), name).is_none(),
+            "Ctrl does not count"
+        );
+        // F1's key-up got lost: forgetting it makes the next press count again.
+        t.forget(0x70);
+        assert!(t.none_held());
+        assert!(
+            t.feed(key(0x70, true, false), name).is_some(),
+            "not taken for a repeat"
+        );
+        assert_eq!(
+            t.feed_event(key(0x70, false, false), name),
+            Some(KeyEvent::Released(0x70))
+        );
+        assert!(t.none_held());
     }
 
     #[test]
