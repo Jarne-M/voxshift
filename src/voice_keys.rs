@@ -1,10 +1,12 @@
-//! Voice changer hotkeys: toggle (or hold for) effects, mute the mic, jump to a preset; plus
-//! the feedback when the voice changer switches (beep in the headphones, overlay).
+//! Voice changer hotkeys: toggle (or hold for) effects, mute the mic, jump to a preset, Melody
+//! Voice, the monitor ("hear myself") and "stop all sounds"; plus the feedback when the voice
+//! changer or the monitor switches (beep in the headphones, overlay).
 //!
 //! The keys come from the soundboard's global key listener ([`KeyHandler`]), so they work in
 //! the background, in the tray and while a game has focus, and the game still gets the key.
 
 use crate::audio::shared::Shared;
+use crate::dsp::cue::CueKind;
 use crate::soundboard::hotkeys::{Hotkey, KeyHandler};
 use crate::soundboard::mixer::SoundId;
 use serde::{Deserialize, Serialize};
@@ -66,6 +68,10 @@ pub struct VoiceHotkeys {
     pub melody_toggle: Option<Hotkey>,
     pub melody_restart: Option<Hotkey>,
     pub melody_next: Option<Hotkey>,
+    /// "Hear myself" (the monitor's "my voice") on/off.
+    pub monitor_toggle: Option<Hotkey>,
+    /// Stops every soundboard clip, like the Stop all button.
+    pub stop_sounds: Option<Hotkey>,
 }
 
 /// Which hotkey is being assigned.
@@ -78,11 +84,14 @@ pub enum KeyTarget {
     MelodyToggle,
     MelodyRestart,
     MelodyNext,
+    MonitorToggle,
+    StopSounds,
 }
 
 impl VoiceHotkeys {
-    /// The Melody Voice keys with their targets and how they are named to the user.
-    pub fn melody_keys(&self) -> [(KeyTarget, &Option<Hotkey>, &'static str); 3] {
+    /// The one-shot action keys (Melody Voice, monitor, stop all) with their targets and how
+    /// they are named to the user.
+    pub fn action_keys(&self) -> [(KeyTarget, &Option<Hotkey>, &'static str); 5] {
         [
             (
                 KeyTarget::MelodyToggle,
@@ -95,6 +104,12 @@ impl VoiceHotkeys {
                 "restart melody",
             ),
             (KeyTarget::MelodyNext, &self.melody_next, "next note"),
+            (
+                KeyTarget::MonitorToggle,
+                &self.monitor_toggle,
+                "the monitor (hear myself) toggle",
+            ),
+            (KeyTarget::StopSounds, &self.stop_sounds, "stop all sounds"),
         ]
     }
 }
@@ -118,7 +133,7 @@ pub fn conflict<'a>(
             return Some(format!("the \"{}\" preset", p.preset));
         }
     }
-    for (t, h, name) in voice.melody_keys() {
+    for (t, h, name) in voice.action_keys() {
         if target != t && same(h) {
             return Some(name.into());
         }
@@ -158,7 +173,11 @@ impl Feedback {
         let was = self.shared.voice_on.swap(on, Relaxed);
         if announce && was != on {
             if self.shared.cue_enabled.load(Relaxed) {
-                self.shared.request_cue(on);
+                self.shared.request_cue(if on {
+                    CueKind::VoiceOn
+                } else {
+                    CueKind::VoiceOff
+                });
             }
             if self.shared.overlay_enabled.load(Relaxed) {
                 (self.overlay)(on);
@@ -173,6 +192,25 @@ impl Feedback {
 
     pub fn toggle_mute(&self) {
         self.shared.mic_muted.fetch_xor(true, Relaxed);
+    }
+
+    /// Flips "hear myself" on the monitor (only the headphones; the virtual mic and the
+    /// effects are untouched) and beeps the new state if beeps are on. Returns the new state.
+    pub fn toggle_monitor(&self) -> bool {
+        let on = !self.shared.monitor_voice.fetch_xor(true, Relaxed);
+        if self.shared.cue_enabled.load(Relaxed) {
+            self.shared.request_cue(if on {
+                CueKind::MonitorOn
+            } else {
+                CueKind::MonitorOff
+            });
+        }
+        on
+    }
+
+    /// Stops every soundboard clip (they fade out over a few ms).
+    pub fn stop_all_sounds(&self) {
+        self.shared.stop_sounds.fetch_add(1, Relaxed);
     }
 }
 
@@ -238,26 +276,26 @@ impl VoiceKeys {
 impl KeyHandler for VoiceKeys {
     fn pressed(&self, key: &Hotkey) -> bool {
         let is = |h: &Option<Hotkey>| h.as_ref().is_some_and(|h| h.same_keys(key));
-        let (toggle, mute, preset, mode, melody) = {
+        let (toggle, mute, preset, mode, action) = {
             let b = self.lock();
             let preset = b
                 .presets
                 .iter()
                 .find(|p| is(&p.hotkey))
                 .map(|p| p.preset.clone());
-            let melody = b.melody_keys().into_iter().find(|(_, h, _)| is(h));
+            let action = b.action_keys().into_iter().find(|(_, h, _)| is(h));
             (
                 is(&b.toggle),
                 is(&b.mute),
                 preset,
                 b.mode,
-                melody.map(|(t, _, _)| t),
+                action.map(|(t, _, _)| t),
             )
         };
         let shared = self.feedback.shared();
-        if let Some(target) = melody {
-            // Restart and next act on the audio thread directly (also while hidden); the
-            // toggle changes a slider, which lives in the window.
+        if let Some(target) = action {
+            // These act on the shared state / audio thread directly (also while hidden); only
+            // the Melody Voice toggle changes a slider, which lives in the window.
             match target {
                 KeyTarget::MelodyRestart => {
                     shared.melody_restart.fetch_add(1, Relaxed);
@@ -265,6 +303,10 @@ impl KeyHandler for VoiceKeys {
                 KeyTarget::MelodyNext => {
                     shared.melody_next.fetch_add(1, Relaxed);
                 }
+                KeyTarget::MonitorToggle => {
+                    self.feedback.toggle_monitor();
+                }
+                KeyTarget::StopSounds => self.feedback.stop_all_sounds(),
                 _ => {
                     let _ = self.requests.send(VoiceRequest::ToggleMelody);
                 }
@@ -368,10 +410,18 @@ mod tests {
         let before = r.shared.params.snapshot();
         assert!(r.keys.pressed(&hk(0x77, false, "F8")));
         assert!(!r.shared.voice_on.load(Relaxed));
-        assert_eq!(r.shared.take_cue(), Some(false), "OFF beep requested");
+        assert_eq!(
+            r.shared.take_cue(),
+            Some(CueKind::VoiceOff),
+            "OFF beep requested"
+        );
         assert!(r.keys.pressed(&hk(0x77, false, "F8")));
         assert!(r.shared.voice_on.load(Relaxed));
-        assert_eq!(r.shared.take_cue(), Some(true), "ON beep requested");
+        assert_eq!(
+            r.shared.take_cue(),
+            Some(CueKind::VoiceOn),
+            "ON beep requested"
+        );
         assert_eq!(r.overlays.load(Relaxed), 2);
         assert!(r.wakes.load(Relaxed) >= 2);
         assert_eq!(r.shared.params.snapshot(), before, "no slider changed");
@@ -501,6 +551,142 @@ mod tests {
         );
         assert_eq!(
             conflict(&hk(0x52, true, "x"), KeyTarget::MelodyRestart, &b, []),
+            None
+        );
+    }
+
+    #[test]
+    fn monitor_key_toggles_hear_myself_with_its_own_beeps_and_nothing_else() {
+        let r = rig(VoiceHotkeys {
+            monitor_toggle: Some(hk(0x48, false, "H")),
+            ..Default::default()
+        });
+        r.shared.cue_enabled.store(true, Relaxed);
+        let params = r.shared.params.snapshot();
+        assert!(
+            r.shared.monitor_voice.load(Relaxed),
+            "starts on (the default)"
+        );
+        assert!(r.keys.pressed(&hk(0x48, false, "H")));
+        assert!(!r.shared.monitor_voice.load(Relaxed));
+        assert_eq!(r.shared.take_cue(), Some(CueKind::MonitorOff), "low beep");
+        assert!(r.keys.pressed(&hk(0x48, false, "H")));
+        assert!(r.shared.monitor_voice.load(Relaxed));
+        assert_eq!(r.shared.take_cue(), Some(CueKind::MonitorOn), "high beep");
+        // Only the monitor: the voice changer, the mute, the soundboard, the sliders and the
+        // overlay are untouched.
+        assert!(r.shared.voice_on.load(Relaxed) && !r.shared.mic_muted.load(Relaxed));
+        assert_eq!(r.shared.stop_sounds.load(Relaxed), 0);
+        assert_eq!(r.shared.params.snapshot(), params);
+        assert_eq!(r.overlays.load(Relaxed), 0);
+        assert!(r.wakes.load(Relaxed) >= 2, "the window and tray are told");
+        // Beeps off: it still toggles, silently.
+        r.shared.cue_enabled.store(false, Relaxed);
+        r.keys.pressed(&hk(0x48, false, "H"));
+        assert!(!r.shared.monitor_voice.load(Relaxed));
+        assert_eq!(r.shared.take_cue(), None);
+        // Ctrl+H is a different combination.
+        assert!(!r.keys.pressed(&hk(0x48, true, "Ctrl+H")));
+    }
+
+    #[test]
+    fn holding_the_monitor_key_toggles_once_and_stop_all_asks_the_engine() {
+        let r = rig(VoiceHotkeys {
+            monitor_toggle: Some(hk(0x77, false, "F8")),
+            stop_sounds: Some(hk(0x7B, true, "Ctrl+F12")),
+            ..Default::default()
+        });
+        let mut tracker = KeyTracker::default();
+        let raw = |vk, ctrl, down| RawKey {
+            vk,
+            scan: 0,
+            extended: false,
+            down,
+            ctrl,
+            shift: false,
+            alt: false,
+            win: false,
+        };
+        // F8 held with auto-repeat (five downs), then released: one toggle.
+        for down in [true, true, true, true, true, false] {
+            if let Some(KeyEvent::Pressed(k)) =
+                tracker.feed_event(raw(0x77, false, down), |_| "F8".into())
+            {
+                r.keys.pressed(&k);
+            }
+        }
+        assert!(
+            !r.shared.monitor_voice.load(Relaxed),
+            "one press = one toggle"
+        );
+        // Ctrl+F12 twice: two stop requests, nothing else changes.
+        for _ in 0..2 {
+            for down in [true, true, false] {
+                if let Some(KeyEvent::Pressed(k)) =
+                    tracker.feed_event(raw(0x7B, true, down), |_| "F12".into())
+                {
+                    assert!(r.keys.pressed(&k));
+                }
+            }
+        }
+        assert_eq!(r.shared.stop_sounds.load(Relaxed), 2);
+        assert!(!r.shared.monitor_voice.load(Relaxed));
+        assert!(r.shared.voice_on.load(Relaxed));
+        assert_eq!(
+            r.shared.take_cue(),
+            Some(CueKind::MonitorOff),
+            "only the monitor beeped"
+        );
+    }
+
+    #[test]
+    fn new_keys_start_unassigned_and_take_part_in_conflict_checks() {
+        let none = VoiceHotkeys::default();
+        assert!(none.monitor_toggle.is_none() && none.stop_sounds.is_none());
+        let voice = VoiceHotkeys {
+            toggle: Some(hk(0x77, false, "F8")),
+            monitor_toggle: Some(hk(0x48, false, "H")),
+            stop_sounds: Some(hk(0x7B, true, "Ctrl+F12")),
+            ..Default::default()
+        };
+        let num1 = hk(0x61, false, "Num 1");
+        let sounds = || [(7u64, "airhorn", Some(&num1))];
+        let h = hk(0x48, false, "H");
+        let ctrl_f12 = hk(0x7B, true, "Ctrl+F12");
+        assert_eq!(
+            conflict(&h, KeyTarget::MonitorToggle, &voice, sounds()),
+            None
+        );
+        assert_eq!(
+            conflict(&h, KeyTarget::Sound(7), &voice, sounds()).as_deref(),
+            Some("the monitor (hear myself) toggle")
+        );
+        assert_eq!(
+            conflict(&ctrl_f12, KeyTarget::MonitorToggle, &voice, sounds()).as_deref(),
+            Some("stop all sounds")
+        );
+        assert_eq!(
+            conflict(
+                &hk(0x77, false, "F8"),
+                KeyTarget::StopSounds,
+                &voice,
+                sounds()
+            )
+            .as_deref(),
+            Some("the voice changer toggle")
+        );
+        assert_eq!(
+            conflict(&num1, KeyTarget::StopSounds, &voice, sounds()).as_deref(),
+            Some("the sound \"airhorn\"")
+        );
+        // F12 without Ctrl is free.
+        assert_eq!(
+            conflict(
+                &hk(0x7B, false, "F12"),
+                KeyTarget::MonitorToggle,
+                &voice,
+                sounds()
+            ),
             None
         );
     }

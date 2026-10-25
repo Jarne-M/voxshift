@@ -133,21 +133,47 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, v: &View) -> Vec<Action> {
         }
         ui.add_space(4.0);
 
-        ui.label(RichText::new("Melody Voice").strong());
         let vk = &cfg.voice_keys;
-        for (target, key, label) in [
-            (KeyTarget::MelodyToggle, &vk.melody_toggle, "On / off"),
+        let melody = [
+            (KeyTarget::MelodyToggle, &vk.melody_toggle, "On / off", ""),
             (
                 KeyTarget::MelodyRestart,
                 &vk.melody_restart,
                 "Restart melody",
+                "",
             ),
-            (KeyTarget::MelodyNext, &vk.melody_next, "Next note"),
+            (KeyTarget::MelodyNext, &vk.melody_next, "Next note", ""),
+        ];
+        let monitor = [
+            (
+                KeyTarget::MonitorToggle,
+                &vk.monitor_toggle,
+                "Hear myself",
+                "Turns \"my voice\" on the monitor on or off (your headphones only, never the \
+                 virtual mic), with a beep: high = on, low = off",
+            ),
+            (
+                KeyTarget::StopSounds,
+                &vk.stop_sounds,
+                "Stop all sounds",
+                "Stops every playing soundboard clip, like the Stop all button",
+            ),
+        ];
+        for (title, rows) in [
+            ("Melody Voice", &melody[..]),
+            ("Monitor and soundboard", &monitor[..]),
         ] {
-            ui.horizontal(|ui| {
-                ui.add_sized([100.0, 20.0], egui::Label::new(label));
-                key_button(ui, target, key.as_ref(), v, &mut actions);
-            });
+            ui.label(RichText::new(title).strong());
+            for &(target, key, label, hover) in rows {
+                ui.horizontal(|ui| {
+                    let r = ui.add_sized([100.0, 20.0], egui::Label::new(label));
+                    if !hover.is_empty() {
+                        r.on_hover_text(hover);
+                    }
+                    key_button(ui, target, key.as_ref(), v, &mut actions);
+                });
+            }
+            ui.add_space(4.0);
         }
 
         ui.separator();
@@ -156,6 +182,9 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, v: &View) -> Vec<Action> {
         ui.checkbox(
             &mut f.cues,
             "Beep in my headphones (ON: rising, OFF: falling)",
+        )
+        .on_hover_text(
+            "The \"Hear myself\" hotkey beeps too: one high beep for on, one low for off",
         );
         ui.add_enabled_ui(f.cues, |ui| {
             ui.add(egui::Slider::new(&mut f.cue_volume, 0.05..=1.0).text("beep volume"));

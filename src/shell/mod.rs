@@ -22,6 +22,8 @@ pub struct TrayStatus {
     pub health: Health,
     pub voice_on: bool,
     pub muted: bool,
+    /// "Hear myself" on the monitor.
+    pub monitor: bool,
     /// Read-only menu line, e.g. "Active: Fallback mic".
     pub active: String,
     pub tooltip: String,
@@ -33,6 +35,7 @@ pub enum TrayAction {
     Show,
     ToggleVoice,
     ToggleMute,
+    ToggleMonitor,
     StopAllSounds,
     Quit,
     /// Windows is shutting down or logging off: save now, the process is about to end.

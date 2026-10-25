@@ -1,6 +1,7 @@
 //! State shared between the GUI, the device manager and the audio callbacks.
 //! Everything here is a plain atomic, so the audio threads never wait for a lock.
 
+use crate::dsp::cue::CueKind;
 use crate::dsp::params::ParamStore;
 use crate::melody::store::MelodyStore;
 use crate::soundboard::mixer::VOICES;
@@ -64,10 +65,10 @@ pub struct Shared {
     pub voice_on: AtomicBool,
     /// Mutes the mic (fades out like a mic switch); the soundboard keeps playing.
     pub mic_muted: AtomicBool,
-    /// Beep in the headphones (monitor only) when the voice changer is switched.
+    /// Beep in the headphones (monitor only) when the voice changer or the monitor switches.
     pub cue_enabled: AtomicBool,
     pub cue_volume: AtomicF32,
-    /// 0 = nothing, 1 = play the ON beep, 2 = the OFF beep. Taken by the engine.
+    /// The beep to play ([`CueKind::code`], 0 = nothing). Taken by the engine.
     cue_request: AtomicU8,
     pub overlay_enabled: AtomicBool,
     active_mic: AtomicU8,
@@ -83,8 +84,12 @@ pub struct Shared {
     /// Extra latency added by the voice chain right now (pitch shifter), in ms.
     pub chain_latency_ms: AtomicF32,
     pub monitor_volume: AtomicF32,
+    /// "Hear myself": your voice on the monitor output. The checkbox, the tray menu and the
+    /// hotkey all flip this one value.
     pub monitor_voice: AtomicBool,
     pub monitor_sounds: AtomicBool,
+    /// Bumped to stop every soundboard clip (they fade out); acted on by the engine.
+    pub stop_sounds: AtomicU32,
     /// Number of soundboard voices playing.
     pub sounds_playing: AtomicU32,
     /// Sound id per mixer voice (0 = free), so the GUI can highlight playing sounds.
@@ -127,6 +132,7 @@ impl Default for Shared {
             monitor_volume: AtomicF32::new(0.8),
             monitor_voice: AtomicBool::new(true),
             monitor_sounds: AtomicBool::new(true),
+            stop_sounds: AtomicU32::new(0),
             sounds_playing: AtomicU32::new(0),
             playing_ids: std::array::from_fn(|_| AtomicU64::new(0)),
             melody_detected: AtomicF32::new(f32::NAN),
@@ -144,18 +150,14 @@ impl Default for Shared {
 }
 
 impl Shared {
-    /// Asks the engine to play the ON or OFF beep on the monitor output.
-    pub fn request_cue(&self, on: bool) {
-        self.cue_request.store(if on { 1 } else { 2 }, Relaxed);
+    /// Asks the engine to play a beep on the monitor output.
+    pub fn request_cue(&self, kind: CueKind) {
+        self.cue_request.store(kind.code(), Relaxed);
     }
 
     /// Takes a pending beep request (engine side).
-    pub fn take_cue(&self) -> Option<bool> {
-        match self.cue_request.swap(0, Relaxed) {
-            1 => Some(true),
-            2 => Some(false),
-            _ => None,
-        }
+    pub fn take_cue(&self) -> Option<CueKind> {
+        CueKind::from_code(self.cue_request.swap(0, Relaxed))
     }
 
     pub fn is_playing(&self, id: u64) -> bool {

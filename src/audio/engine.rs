@@ -17,6 +17,7 @@ use crate::dsp::{Block, VoiceProcessor};
 use crate::soundboard::mixer::{SoundCmd, SoundMixer, SoundRetired};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 
 /// Mic crossfade time.
@@ -58,7 +59,14 @@ pub struct Engine {
     melody_next_seen: u32,
     preview: Preview,
     preview_was_playing: bool,
+    /// Last "stop all sounds" request acted on.
+    stop_sounds_seen: u32,
+    /// Monitor gains for your voice and the soundboard (0..1, ramped).
+    monitor_gain: [Ramp; 2],
 }
+
+/// How long the monitor takes to fade your voice (or the soundboard) in or out.
+pub const MONITOR_RAMP_S: f32 = 0.02;
 
 /// The manager's ends of the engine queues.
 pub struct EngineLink {
@@ -73,6 +81,10 @@ impl Engine {
         let sr = sample_rate as f32;
         let melody_restart_seen = shared.melody_restart.load(Relaxed);
         let melody_next_seen = shared.melody_next.load(Relaxed);
+        let stop_sounds_seen = shared.stop_sounds.load(Relaxed);
+        let gain =
+            |b: &AtomicBool| Ramp::new(sr, MONITOR_RAMP_S, if b.load(Relaxed) { 1.0 } else { 0.0 });
+        let monitor_gain = [gain(&shared.monitor_voice), gain(&shared.monitor_sounds)];
         let engine = Self {
             cmds: cmd_rx,
             garbage: garbage_tx,
@@ -91,6 +103,8 @@ impl Engine {
             melody_next_seen,
             preview: Preview::new(sr),
             preview_was_playing: false,
+            stop_sounds_seen,
+            monitor_gain,
         };
         let link = EngineLink {
             cmds: cmd_tx,
@@ -202,6 +216,14 @@ impl BlockSource for Engine {
             .chain_latency_ms
             .set(latency as f32 * 1000.0 / self.sample_rate);
 
+        // "Stop all sounds" from the hotkey: the same fading StopAll as the button.
+        let stop = self.shared.stop_sounds.load(Relaxed);
+        if stop != self.stop_sounds_seen {
+            self.stop_sounds_seen = stop;
+            if let Some(done) = self.sounds.apply(SoundCmd::StopAll) {
+                self.retire(Garbage::Sound(done));
+            }
+        }
         let mut sfx = [0.0; BLOCK * 2];
         for done in self.sounds.mix(&mut sfx).into_iter().flatten() {
             self.retire(Garbage::Sound(done));
@@ -231,10 +253,10 @@ impl BlockSource for Engine {
             .set(self.out_meter.update(out_peak, BLOCK));
 
         // Switch beeps go to the monitor (headphones) only, never into the virtual mic.
-        if let Some(on) = self.shared.take_cue()
+        if let Some(kind) = self.shared.take_cue()
             && self.monitor.is_some()
         {
-            self.cue.start(on);
+            self.cue.start(kind);
         }
         let mut cue = [0.0; BLOCK];
         if self.cue.active() {
@@ -271,23 +293,29 @@ impl BlockSource for Engine {
             }
         }
         self.shared.melody_preview_beat.set(self.preview.beat());
-        if let Some(tx) = &mut self.monitor {
-            let vol = self.shared.monitor_volume.get();
-            let gv = if self.shared.monitor_voice.load(Relaxed) {
-                vol
-            } else {
-                0.0
-            };
-            let gs = if self.shared.monitor_sounds.load(Relaxed) {
-                vol
-            } else {
-                0.0
-            };
-            if let Ok(chunk) = tx.write_chunk_uninit(BLOCK * 2) {
-                let it = (0..BLOCK * 2)
-                    .map(|j| (voice[j / 2] * gv + sfx[j] * gs + cue[j / 2]).clamp(-1.0, 1.0));
-                chunk.fill_from_iter(it);
-            }
+        // "Hear myself" and "hear the soundboard" ramp over 20 ms instead of switching, so
+        // turning the monitor on never blasts in at full level (and off never clicks). The
+        // ramps run even without a monitor device, so they are always where they should be.
+        let on = |b: bool| if b { 1.0 } else { 0.0 };
+        let (tv, ts) = (
+            on(self.shared.monitor_voice.load(Relaxed)),
+            on(self.shared.monitor_sounds.load(Relaxed)),
+        );
+        let vol = self.shared.monitor_volume.get();
+        let mut gv = [0.0; BLOCK];
+        let mut gs = [0.0; BLOCK];
+        for (v, s) in gv.iter_mut().zip(gs.iter_mut()) {
+            *v = self.monitor_gain[0].next(tv) * vol;
+            *s = self.monitor_gain[1].next(ts) * vol;
+        }
+        if let Some(tx) = &mut self.monitor
+            && let Ok(chunk) = tx.write_chunk_uninit(BLOCK * 2)
+        {
+            let it = (0..BLOCK * 2).map(|j| {
+                let i = j / 2;
+                (voice[i] * gv[i] + sfx[j] * gs[i] + cue[i]).clamp(-1.0, 1.0)
+            });
+            chunk.fill_from_iter(it);
         }
     }
 }
@@ -311,6 +339,7 @@ impl BlockSource for MonitorSource {
 mod tests {
     use super::*;
     use crate::audio::shared::ActiveMic;
+    use crate::dsp::cue::CueKind;
 
     fn mic(level: f32) -> (Producer<f32>, Box<AdaptiveReader>) {
         let (tx, rx) = RingBuffer::new(48_000);
@@ -423,7 +452,7 @@ mod tests {
             .push(EngineCmd::AttachMonitor(Some(mon_tx)))
             .ok()
             .unwrap();
-        shared.request_cue(true);
+        shared.request_cue(crate::dsp::cue::CueKind::VoiceOn);
         let mut out = [0.0; BLOCK * 2];
         let mut out_peak = 0.0f32;
         for _ in 0..150 {
@@ -485,6 +514,153 @@ mod tests {
         shared.melody_preview.store(true, Relaxed);
         engine.render(&mut out);
         assert!(!shared.melody_preview.load(Relaxed));
+    }
+
+    /// An engine with a mic on slot 0 (primary active) and a monitor ring.
+    fn rig() -> (Arc<Shared>, Engine, Producer<f32>, rtrb::Consumer<f32>) {
+        let shared = Arc::new(Shared::default());
+        shared.set_active_mic(ActiveMic::Primary);
+        let (mut engine, mut link) = Engine::new(shared.clone(), 48_000);
+        let (mut tx, reader) = mic(0.0);
+        link.cmds
+            .push(EngineCmd::AttachMic(0, Some(reader)))
+            .ok()
+            .unwrap();
+        let (mon_tx, mon_rx) = RingBuffer::new(48_000 * 4);
+        link.cmds
+            .push(EngineCmd::AttachMonitor(Some(mon_tx)))
+            .ok()
+            .unwrap();
+        feed(&mut tx, 0.0, 512);
+        let mut out = [0.0; BLOCK * 2];
+        engine.render(&mut out); // take the commands
+        (shared, engine, tx, mon_rx)
+    }
+
+    /// Renders `blocks` blocks with `voice(sample index)` on the mic; returns (virtual mic
+    /// left channel, monitor left channel).
+    fn talk(
+        engine: &mut Engine,
+        tx: &mut Producer<f32>,
+        mon: &mut rtrb::Consumer<f32>,
+        start: usize,
+        blocks: usize,
+        voice: impl Fn(usize) -> f32,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let (mut out_l, mut mon_l) = (Vec::new(), Vec::new());
+        let mut out = [0.0; BLOCK * 2];
+        for b in 0..blocks {
+            for i in 0..BLOCK {
+                let _ = tx.push(voice(start + b * BLOCK + i));
+            }
+            engine.render(&mut out);
+            out_l.extend(out.as_chunks::<2>().0.iter().map(|f| f[0]));
+            while let Ok(l) = mon.pop() {
+                mon_l.push(l);
+                let _ = mon.pop(); // right
+            }
+        }
+        (out_l, mon_l)
+    }
+
+    fn sine(i: usize) -> f32 {
+        0.3 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 48_000.0).sin()
+    }
+
+    #[test]
+    fn stop_all_sounds_fades_the_clips_out_and_leaves_the_voice_alone() {
+        use crate::soundboard::mixer::{SoundCmd, SoundData};
+        // Two identical engines hear the same voice; one also plays a long clip (a steady
+        // 0.4) and gets "stop all sounds" halfway. Their difference is exactly the clip.
+        let (shared_a, mut a, mut tx_a, mut mon_a) = rig();
+        let (_shared_b, mut b, mut tx_b, mut mon_b) = rig();
+        let clip = Arc::new(SoundData {
+            frames: vec![0.4; 48_000 * 10 * 2],
+            sample_rate: 48_000,
+        });
+        a.apply(EngineCmd::Sound(SoundCmd::Play {
+            id: 5,
+            data: clip,
+            volume: 1.0,
+        }));
+        let (va1, _) = talk(&mut a, &mut tx_a, &mut mon_a, 0, 200, sine);
+        let (vb1, _) = talk(&mut b, &mut tx_b, &mut mon_b, 0, 200, sine);
+        assert!(shared_a.is_playing(5));
+        let before = va1.last().unwrap() - vb1.last().unwrap();
+        assert!((before - 0.4).abs() < 1e-4, "the clip plays: {before}");
+
+        shared_a.stop_sounds.fetch_add(1, Relaxed); // what the hotkey does
+        let (va2, _) = talk(&mut a, &mut tx_a, &mut mon_a, 200 * BLOCK, 100, sine);
+        let (vb2, _) = talk(&mut b, &mut tx_b, &mut mon_b, 200 * BLOCK, 100, sine);
+        let clip_part: Vec<f32> = va2.iter().zip(&vb2).map(|(x, y)| x - y).collect();
+        // Fades: no jump bigger than a 12 ms ramp of 0.4 allows...
+        let step = clip_part
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(step < 0.002, "a fade, not a cut: step {step}");
+        // ...is gone within 20 ms (one block of slack for when the request is seen)...
+        let gone = clip_part.iter().position(|d| d.abs() < 1e-6).unwrap();
+        let ms = gone as f32 / 48.0;
+        assert!(
+            ms > 5.0 && ms <= 20.0 + BLOCK as f32 / 48.0,
+            "faded out in {ms} ms"
+        );
+        // ...and after it the output is exactly the voice, as if no clip had ever played.
+        assert!(
+            clip_part[gone..].iter().all(|d| *d == 0.0),
+            "voice untouched"
+        );
+        assert!(!shared_a.is_playing(5) && shared_a.sounds_playing.load(Relaxed) == 0);
+        assert!(shared_a.voice_on.load(Relaxed) && shared_a.monitor_voice.load(Relaxed));
+    }
+
+    #[test]
+    fn hear_myself_ramps_on_the_monitor_only_and_never_touches_the_virtual_mic() {
+        let (shared, mut e, mut tx, mut mon) = rig();
+        let vol = shared.monitor_volume.get();
+        let dc = |_| 0.5;
+        let (out, m) = talk(&mut e, &mut tx, &mut mon, 0, 150, dc);
+        assert!((out.last().unwrap() - 0.5).abs() < 1e-4);
+        assert!(
+            (m.last().unwrap() - 0.5 * vol).abs() < 1e-4,
+            "hearing myself"
+        );
+
+        let ramp = 0.02 * 48_000.0;
+        let full = 0.5 * vol;
+        let max_step = |v: &[f32]| {
+            v.windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .fold(0.0, f32::max)
+        };
+        for (on, name) in [(false, "off"), (true, "on")] {
+            shared.monitor_voice.store(on, Relaxed); // what the hotkey/checkbox/tray do
+            let (out, m) = talk(&mut e, &mut tx, &mut mon, 0, 40, dc);
+            assert!(
+                out.iter().all(|x| (x - 0.5).abs() < 1e-4),
+                "{name}: virtual mic untouched"
+            );
+            // A 20 ms ramp, not a jump (a full-level step would be 0.4).
+            assert!(
+                max_step(&m) < full / ramp * 1.5,
+                "{name}: step {}",
+                max_step(&m)
+            );
+            let end = if on { full } else { 0.0 };
+            let at = m.iter().position(|x| (x - end).abs() < 1e-6).unwrap() as f32 / 48.0;
+            assert!(at > 15.0 && at < 25.0, "{name}: ramp took {at} ms");
+        }
+
+        // The monitor beeps land on the monitor only.
+        shared.request_cue(CueKind::MonitorOn);
+        let (out, m) = talk(&mut e, &mut tx, &mut mon, 0, 100, dc);
+        assert!(
+            out.iter().all(|x| (x - 0.5).abs() < 1e-4),
+            "no beep in the virtual mic"
+        );
+        let beep = m.iter().map(|x| (x - full).abs()).fold(0.0f32, f32::max);
+        assert!(beep > 0.05, "beep in the headphones: {beep}");
     }
 
     #[test]

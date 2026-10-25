@@ -171,8 +171,15 @@ Under **Voice changer hotkeys** in the left panel:
 - **Mute / unmute mic** has its own hotkey.
 - **Jump to a preset:** add a row, pick a preset, give it a key. Pressing it loads that preset
   and turns effects on.
-- **Duplicates are refused:** a key already used by a clip, the toggle, mute or a preset key
-  shows a message instead.
+- **Hear myself (monitor) and Stop all sounds:** two more keys, under *Monitor and
+  soundboard*. *Hear myself* flips the monitor's "my voice" checkbox. It's the same setting as
+  that checkbox and the tray menu item, and it only changes your headphones, never the virtual
+  mic or your effects. Your voice fades in or out over 20 ms instead of switching. With beeps
+  on, you hear one high beep for on and one low beep for off (different from the voice
+  changer's two-tone beeps). *Stop all sounds* does what the Stop all button does: every clip
+  fades out within about 12 ms. Both are unassigned until you set them.
+- **Duplicates are refused:** a key already used by a clip, the toggle, mute, a preset key or
+  any other action shows a message instead.
 - **Switching never changes your sliders or preset.** Switching back gives exactly what was
   active before. The switch is a 25 ms crossfade, and an echo or reverb that's still sounding
   rings out naturally instead of being cut off. Clean mode keeps your input gain (mic
@@ -200,6 +207,7 @@ Your virtual mic only exists while VoxShift runs, so closing the window never qu
   - Show VoxShift
   - Voice changer ON/OFF
   - Mute mic
+  - Hear myself (monitor)
   - the active mic (read-only)
   - Stop all sounds
   - Quit VoxShift (always quits, no question)
@@ -331,7 +339,7 @@ second profile, or trying things without touching your normal settings.
 
 ## 8. Testing on your hardware
 
-These were checked automatically: `cargo test` (190 tests; they briefly show a tray icon) and the self-tests below on the
+These were checked automatically: `cargo test` (200 tests; they briefly show a tray icon) and the self-tests below on the
 development PC (USB PnP mic, webcam mic, HyperX Cloud II Wireless). The rest needs your setup.
 
 Melody Voice's tests feed synthetic voices through the real effect chain offline: a low and a
@@ -401,6 +409,19 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
     change, and the game still reacts to the key normally. Try *Hold for effects* too.
 19. **Duplicates.** Try giving the toggle the same key as a soundboard clip: you get a
     message, and nothing changes.
+
+**Monitor and stop keys (headphones on, monitor device on):**
+
+- **Hear myself while talking.** Give *Hear myself* a key (e.g. F9) and keep talking while you
+  press it a few times. Off: a low beep and your voice fades out of the headphones. On: a high
+  beep and it fades back in smoothly, with no loud jump. The *my voice* checkbox and the tray
+  menu's *Hear myself* tick follow every press. Discord (CABLE Output) must hear you the whole
+  time, unchanged.
+- **Stop a long clip.** Play a long soundboard clip and press the *Stop all sounds* key
+  halfway: it stops at once, with no pop, and the clip's highlight disappears. Your voice in
+  Discord keeps going, and *my voice* on the monitor doesn't change.
+- **In a game.** Focus a game and press both keys: they work and the game still gets the
+  keys. Hold one key down: it acts once, not repeatedly.
 
 **Melody Voice (needs your mic and headphones; turn the monitor on):**
 

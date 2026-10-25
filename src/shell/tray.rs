@@ -50,6 +50,7 @@ const CMD_VOICE: usize = 2;
 const CMD_MUTE: usize = 3;
 const CMD_STOP: usize = 4;
 const CMD_QUIT: usize = 5;
+const CMD_MONITOR: usize = 6;
 
 type StatusFn = Box<dyn Fn() -> TrayStatus + Send>;
 type ActionFn = Box<dyn Fn(TrayAction) + Send>;
@@ -139,6 +140,7 @@ impl Ctx {
                 "Voice changer: OFF"
             });
             let mute = item("Mute mic");
+            let monitor = item("Hear myself (monitor)");
             let active = item(&s.active);
             let stop = item("Stop all sounds");
             let quit = item("Quit VoxShift");
@@ -152,6 +154,12 @@ impl Ctx {
                 voice.as_ptr(),
             );
             AppendMenuW(menu, MF_STRING | checked(s.muted), CMD_MUTE, mute.as_ptr());
+            AppendMenuW(
+                menu,
+                MF_STRING | checked(s.monitor),
+                CMD_MONITOR,
+                monitor.as_ptr(),
+            );
             AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, active.as_ptr());
             AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
             AppendMenuW(menu, MF_STRING, CMD_STOP, stop.as_ptr());
@@ -178,6 +186,7 @@ impl Ctx {
                 CMD_SHOW => Some(TrayAction::Show),
                 CMD_VOICE => Some(TrayAction::ToggleVoice),
                 CMD_MUTE => Some(TrayAction::ToggleMute),
+                CMD_MONITOR => Some(TrayAction::ToggleMonitor),
                 CMD_STOP => Some(TrayAction::StopAllSounds),
                 CMD_QUIT => Some(TrayAction::Quit),
                 _ => None,
@@ -476,6 +485,7 @@ mod tests {
                 health: Health::Ok,
                 voice_on: true,
                 muted: false,
+                monitor: true,
                 active: String::new(),
                 tooltip: "VoxShift overlay test".into(),
             },
@@ -513,6 +523,7 @@ mod tests {
                     health: Health::Ok,
                     voice_on: true,
                     muted: false,
+                    monitor: true,
                     active: "Active: Primary mic".into(),
                     tooltip: "VoxShift test".into(),
                 }

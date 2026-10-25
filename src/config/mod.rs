@@ -262,6 +262,8 @@ mod tests {
                 melody_toggle: Some(Hotkey::new(0x76, false, false, false, false, "F7")),
                 melody_restart: Some(Hotkey::new(0x52, true, true, false, false, "Ctrl+Shift+R")),
                 melody_next: Some(Hotkey::new(0x22, false, false, false, false, "Page Down")),
+                monitor_toggle: Some(Hotkey::new(0x48, false, false, true, false, "Alt+H")),
+                stop_sounds: Some(Hotkey::new(0x6E, false, false, false, false, "Num Del")),
             },
             feedback: FeedbackSettings {
                 cues: false,
@@ -283,6 +285,26 @@ mod tests {
             loaded.voice_keys.melody_next.as_ref().unwrap().label,
             "Page Down"
         );
+        assert_eq!(
+            loaded.voice_keys.monitor_toggle.as_ref().unwrap().label,
+            "Alt+H"
+        );
+        assert_eq!(loaded.voice_keys.stop_sounds.as_ref().unwrap().vk, 0x6E);
+
+        // A config from before the monitor / stop keys: everything else is kept, the new keys
+        // load unassigned.
+        std::fs::write(
+            &path,
+            r#"{ "voice_keys": { "toggle": { "vk": 119, "ctrl": false, "shift": false,
+                 "alt": false, "win": false, "label": "F8" }, "mode": "Toggle", "mute": null,
+                 "presets": [], "melody_toggle": null } }"#,
+        )
+        .unwrap();
+        let (before, warning) = load_from(&path);
+        assert!(warning.is_none(), "{warning:?}");
+        assert_eq!(before.voice_keys.toggle.as_ref().unwrap().label, "F8");
+        assert!(before.voice_keys.monitor_toggle.is_none());
+        assert!(before.voice_keys.stop_sounds.is_none());
 
         // Older files: toggle mode, beeps on, overlay off, remember the last state.
         std::fs::write(&path, r#"{ "voice_on": false }"#).unwrap();

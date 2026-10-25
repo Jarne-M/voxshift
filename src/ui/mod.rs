@@ -217,6 +217,7 @@ impl VoxApp {
                     &dev,
                     shared_s.voice_on.load(Relaxed),
                     shared_s.mic_muted.load(Relaxed),
+                    shared_s.monitor_voice.load(Relaxed),
                 )
             },
             move |action| match action {
@@ -230,6 +231,10 @@ impl VoxApp {
                 }
                 TrayAction::ToggleMute => {
                     feedback.toggle_mute();
+                    ctx.request_repaint();
+                }
+                TrayAction::ToggleMonitor => {
+                    feedback.toggle_monitor();
                     ctx.request_repaint();
                 }
                 TrayAction::StopAllSounds => {
@@ -468,10 +473,14 @@ impl VoxApp {
         self.status = self.manager.status();
         self.first_run_defaults();
         self.sounds.lock().set_output_rate(self.status.output.rate);
-        // The tray may have toggled the voice changer.
+        // The tray or a hotkey may have toggled the voice changer or "hear myself".
         let voice_on = self.shared.voice_on.load(Relaxed);
         if voice_on != self.cfg.voice_on {
             self.cfg.voice_on = voice_on;
+        }
+        let monitor_voice = self.shared.monitor_voice.load(Relaxed);
+        if monitor_voice != self.cfg.monitor_voice {
+            self.cfg.monitor_voice = monitor_voice;
         }
         self.handle_manager_events(ctx);
         self.handle_shell_requests(ctx);
@@ -1041,6 +1050,8 @@ impl VoxApp {
             KeyTarget::MelodyToggle => vk.melody_toggle = key,
             KeyTarget::MelodyRestart => vk.melody_restart = key,
             KeyTarget::MelodyNext => vk.melody_next = key,
+            KeyTarget::MonitorToggle => vk.monitor_toggle = key,
+            KeyTarget::StopSounds => vk.stop_sounds = key,
             KeyTarget::Preset(i) => {
                 if let Some(p) = vk.presets.get_mut(i) {
                     p.hotkey = key;
@@ -2048,7 +2059,11 @@ pub(crate) mod tests {
             wait_for(&ctx, &mut app, |a| !a.cfg.voice_on),
             "first press: clean"
         );
-        assert_eq!(app.shared.take_cue(), Some(false), "OFF beep");
+        assert_eq!(
+            app.shared.take_cue(),
+            Some(crate::dsp::cue::CueKind::VoiceOff),
+            "OFF beep"
+        );
         tap_f24();
         assert!(
             wait_for(&ctx, &mut app, |a| a.cfg.voice_on),
@@ -2093,6 +2108,102 @@ pub(crate) mod tests {
                 "press {presses}: one step each"
             );
         }
+        assert!(app.cfg.voice_on, "nothing else changed");
+        // Let the last key-up arrive here, not in the next listener test.
+        std::thread::sleep(Duration::from_millis(200));
+        frame(&ctx, &mut app, (1240.0, 800.0), 5.0, vec![]);
+    }
+
+    #[test]
+    fn hear_myself_has_one_shared_state_for_hotkey_tray_and_checkbox() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.cfg.devices.monitor_enabled = true;
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
+        assert!(app.cfg.monitor_voice);
+        // The hotkey and the tray both go through Feedback::toggle_monitor.
+        assert!(!app.feedback.toggle_monitor());
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.1, vec![]);
+        assert!(!app.cfg.monitor_voice, "the checkbox follows");
+        assert!(!app.mirror.lock().unwrap().monitor_voice, "and it is saved");
+        let dev = app.status.clone();
+        let tray = tray_status::compute(
+            &dev,
+            app.shared.voice_on.load(Relaxed),
+            app.shared.mic_muted.load(Relaxed),
+            app.shared.monitor_voice.load(Relaxed),
+        );
+        assert!(!tray.monitor, "the tray menu shows it unticked");
+        // The checkbox path (devices panel) writes the same atomic back.
+        app.cfg.monitor_voice = true;
+        apply_to_shared(&app.cfg, &app.shared);
+        assert!(app.shared.monitor_voice.load(Relaxed));
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.2, vec![]);
+        assert!(app.cfg.monitor_voice);
+        // Toggling never touches the voice changer, the effects or the soundboard monitor.
+        let fx = app.fx;
+        app.feedback.toggle_monitor();
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.3, vec![]);
+        assert_eq!(app.fx, fx);
+        assert!(app.cfg.voice_on && app.cfg.monitor_sounds);
+    }
+
+    #[test]
+    fn monitor_and_stop_keys_are_assigned_cleared_and_refused_when_taken() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        let h = hotkeys::Hotkey::new(0x48, false, false, true, false, "Alt+H");
+        app.set_hotkey(KeyTarget::MonitorToggle, Some(h.clone()));
+        app.set_hotkey(
+            KeyTarget::StopSounds,
+            Some(hotkeys::Hotkey::new(
+                0x7B, false, false, false, false, "F12",
+            )),
+        );
+        assert_eq!(
+            app.cfg.voice_keys.monitor_toggle.as_ref().unwrap().label,
+            "Alt+H"
+        );
+        assert_eq!(app.cfg.voice_keys.stop_sounds.as_ref().unwrap().vk, 0x7B);
+        assert_eq!(
+            app.hotkey_conflict(&h, KeyTarget::StopSounds).as_deref(),
+            Some("the monitor (hear myself) toggle")
+        );
+        app.add_sounds(&ctx, vec!["C:/nope/airhorn.wav".into()]);
+        let id = app.sounds.lock().sounds[0].id;
+        assert_eq!(
+            app.hotkey_conflict(&h, KeyTarget::Sound(id)).as_deref(),
+            Some("the monitor (hear myself) toggle"),
+            "a clip cannot take it either"
+        );
+        // The settings panel draws while one of them waits for a key.
+        app.capturing = Some(KeyTarget::StopSounds);
+        frame(&ctx, &mut app, (920.0, 600.0), 0.0, vec![]);
+        app.clear_hotkey(KeyTarget::MonitorToggle);
+        assert!(app.cfg.voice_keys.monitor_toggle.is_none());
+    }
+
+    /// The real key listener: F24 (a key no keyboard has) as the "hear myself" key.
+    #[cfg(windows)]
+    #[test]
+    fn monitor_key_works_with_the_real_listener() {
+        use crate::soundboard::hotkeys::tests::{HOOK_TESTS, VK_F24, tap_f24};
+        let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.start_hotkeys(ctx.clone());
+        app.cfg.voice_keys.monitor_toggle = Some(hotkeys::Hotkey::new(
+            VK_F24, false, false, false, false, "F24",
+        ));
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]); // pushes the binding
+        std::thread::sleep(Duration::from_millis(100));
+        tap_f24();
+        assert!(wait_for(&ctx, &mut app, |a| !a.cfg.monitor_voice), "off");
+        tap_f24();
+        assert!(
+            wait_for(&ctx, &mut app, |a| a.cfg.monitor_voice),
+            "on again"
+        );
         assert!(app.cfg.voice_on, "nothing else changed");
         // Let the last key-up arrive here, not in the next listener test.
         std::thread::sleep(Duration::from_millis(200));
