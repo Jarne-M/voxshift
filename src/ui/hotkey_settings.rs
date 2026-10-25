@@ -71,6 +71,28 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, v: &View) -> Vec<Action> {
         );
         ui.add_space(4.0);
 
+        ui.label(RichText::new("Panic (safe mode)").strong())
+            .on_hover_text(
+                "Stops all sounds and sends only your clean mic: voice changer, effects and \
+                 Melody Voice off, nothing in your settings changed. Press again to restore. \
+                 Beats every other hotkey.",
+            );
+        ui.horizontal(|ui| {
+            key_button(
+                ui,
+                KeyTarget::Panic,
+                cfg.voice_keys.panic.as_ref(),
+                v,
+                &mut actions,
+            )
+        });
+        ui.checkbox(
+            &mut cfg.feedback.panic_mutes_monitor,
+            "Panic also mutes my headphones",
+        )
+        .on_hover_text("\"Hear myself\" and \"hear soundboard\" go quiet until you restore");
+        ui.add_space(4.0);
+
         ui.label(RichText::new("Effects on/off").strong());
         ui.horizontal(|ui| {
             key_button(

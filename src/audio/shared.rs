@@ -90,6 +90,11 @@ pub struct Shared {
     pub monitor_sounds: AtomicBool,
     /// Bumped to stop every soundboard clip (they fade out); acted on by the engine.
     pub stop_sounds: AtomicU32,
+    /// Panic / safe mode: the engine sends the clean mic (no effects, no Melody Voice), plays
+    /// no clips and, if `safe_mutes_monitor`, mutes the monitor. Nothing else is changed, so
+    /// clearing it restores exactly what was before. Never saved: VoxShift starts normal.
+    pub safe_mode: AtomicBool,
+    pub safe_mutes_monitor: AtomicBool,
     /// Number of soundboard voices playing.
     pub sounds_playing: AtomicU32,
     /// Sound id per mixer voice (0 = free), so the GUI can highlight playing sounds.
@@ -133,6 +138,8 @@ impl Default for Shared {
             monitor_voice: AtomicBool::new(true),
             monitor_sounds: AtomicBool::new(true),
             stop_sounds: AtomicU32::new(0),
+            safe_mode: AtomicBool::new(false),
+            safe_mutes_monitor: AtomicBool::new(false),
             sounds_playing: AtomicU32::new(0),
             playing_ids: std::array::from_fn(|_| AtomicU64::new(0)),
             melody_detected: AtomicF32::new(f32::NAN),

@@ -14,6 +14,8 @@ pub enum Health {
     Muted,
     NoMic,
     NoOutput,
+    /// Panic / safe mode is on (shown above everything else).
+    Safe,
 }
 
 /// Everything the tray shows.
@@ -24,6 +26,8 @@ pub struct TrayStatus {
     pub muted: bool,
     /// "Hear myself" on the monitor.
     pub monitor: bool,
+    /// Panic / safe mode.
+    pub safe: bool,
     /// Read-only menu line, e.g. "Active: Fallback mic".
     pub active: String,
     pub tooltip: String,
@@ -37,6 +41,8 @@ pub enum TrayAction {
     ToggleMute,
     ToggleMonitor,
     StopAllSounds,
+    /// Panic (safe mode) on, or restore.
+    TogglePanic,
     Quit,
     /// Windows is shutting down or logging off: save now, the process is about to end.
     SessionEnd,

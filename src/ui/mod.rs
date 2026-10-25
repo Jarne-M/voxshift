@@ -33,7 +33,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
-use theme::{ACCENT, BAD, OFF, ON, WARN};
+use theme::{ACCENT, BAD, OFF, ON, PANIC, WARN};
 use toast::Toasts;
 
 /// How long the clip lamp stays lit after a clip.
@@ -181,6 +181,9 @@ fn apply_feedback(cfg: &Config, shared: &Shared) {
     shared.cue_enabled.store(cfg.feedback.cues, Relaxed);
     shared.cue_volume.set(cfg.feedback.cue_volume);
     shared.overlay_enabled.store(cfg.feedback.overlay, Relaxed);
+    shared
+        .safe_mutes_monitor
+        .store(cfg.feedback.panic_mutes_monitor, Relaxed);
 }
 
 /// Effects on or off at start, per "Start with effects".
@@ -261,6 +264,7 @@ impl VoxApp {
                     shared_s.voice_on.load(Relaxed),
                     shared_s.mic_muted.load(Relaxed),
                     shared_s.monitor_voice.load(Relaxed),
+                    shared_s.safe_mode.load(Relaxed),
                 )
             },
             move |action| match action {
@@ -282,6 +286,10 @@ impl VoxApp {
                 }
                 TrayAction::StopAllSounds => {
                     board.lock().unwrap_or_else(|e| e.into_inner()).stop_all();
+                }
+                TrayAction::TogglePanic => {
+                    feedback.toggle_safe();
+                    ctx.request_repaint();
                 }
                 TrayAction::SessionEnd => {
                     // The process may be ended right after this returns: save synchronously.
@@ -1620,7 +1628,13 @@ impl VoxApp {
                 ),
                 None => "Off = your clean voice passes straight through".to_string(),
             };
-            if ui.add(button).on_hover_text(tip).clicked() {
+            // In safe mode the switch keeps the state Restore goes back to: leave it alone.
+            let safe = self.feedback.safe_mode();
+            let r = ui
+                .add_enabled(!safe, button)
+                .on_hover_text(tip)
+                .on_disabled_hover_text("Safe mode: the clean mic is sent. Restore first.");
+            if r.clicked() {
                 self.feedback.toggle_voice();
                 self.cfg.voice_on = !on;
                 self.refresh_tray();
@@ -1647,8 +1661,90 @@ impl VoxApp {
                 self.active_mic_label(ui);
                 self.meter_row(ui);
             });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.panic_button(ui);
+            });
         });
+        if self.feedback.safe_mode() {
+            self.safe_banner(ui);
+        }
         ui.add_space(6.0);
+    }
+
+    /// The panic button: one click (or its hotkey, or the tray) and only your clean voice goes
+    /// out. Clicking it again is Restore.
+    fn panic_button(&mut self, ui: &mut Ui) {
+        let safe = self.feedback.safe_mode();
+        let (text, fill) = if safe {
+            ("Restore", ON)
+        } else {
+            ("PANIC", PANIC)
+        };
+        let button = egui::Button::new(
+            RichText::new(text)
+                .size(20.0)
+                .strong()
+                .color(Color32::WHITE),
+        )
+        .fill(fill)
+        .min_size(egui::vec2(130.0, 44.0));
+        let key = match &self.cfg.voice_keys.panic {
+            Some(k) => format!(" Hotkey: {}.", k.label),
+            None => String::new(),
+        };
+        let tip = if safe {
+            format!("Turn everything back on exactly as it was.{key}")
+        } else {
+            format!(
+                "Safe mode: stops all sounds and sends only your clean mic (voice changer, \
+                 effects and Melody Voice off). Your settings are not changed; press again to \
+                 restore.{key}"
+            )
+        };
+        if ui.add(button).on_hover_text(tip).clicked() {
+            self.feedback.toggle_safe();
+            self.refresh_tray();
+        }
+    }
+
+    fn safe_banner(&mut self, ui: &mut Ui) {
+        egui::Frame::new()
+            .fill(PANIC)
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("SAFE MODE")
+                            .size(18.0)
+                            .strong()
+                            .color(Color32::WHITE),
+                    );
+                    let monitor = if self.cfg.feedback.panic_mutes_monitor {
+                        ", headphones muted"
+                    } else {
+                        ""
+                    };
+                    ui.label(
+                        RichText::new(format!(
+                            "Only your clean mic is sent: no effects, no Melody Voice, no \
+                             sounds{monitor}. Nothing was changed."
+                        ))
+                        .color(Color32::WHITE),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let restore = egui::Button::new(
+                            RichText::new("Restore").strong().color(Color32::BLACK),
+                        )
+                        .fill(Color32::WHITE);
+                        if ui.add(restore).clicked() {
+                            self.feedback.set_safe(false);
+                            self.refresh_tray();
+                        }
+                    });
+                });
+            });
     }
 
     fn active_mic_label(&self, ui: &mut Ui) {
@@ -2405,6 +2501,63 @@ pub(crate) mod tests {
         frame(&ctx, &mut app, (1240.0, 800.0), 5.0, vec![]);
     }
 
+    /// A left click at `pos`: move there, press, release, one frame each (egui hit-tests
+    /// against the previous frame's layout).
+    fn click(ctx: &egui::Context, app: &mut VoxApp, pos: egui::Pos2, t: f64) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let size = (1240.0, 800.0);
+        frame(ctx, app, size, t, vec![egui::Event::PointerMoved(pos)]);
+        frame(ctx, app, size, t + 0.05, vec![button(true)]);
+        frame(ctx, app, size, t + 0.1, vec![button(false)]);
+        frame(ctx, app, size, t + 0.15, vec![]);
+    }
+
+    #[test]
+    fn the_panic_button_turns_safe_mode_on_and_restore_puts_everything_back() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.shared.cue_enabled.store(true, Relaxed);
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
+        let (cfg, fx) = (app.cfg.clone(), app.fx);
+        // The panic button sits at the right end of the top bar (130 x 44).
+        let panic = egui::pos2(1240.0 - 8.0 - 65.0, 6.0 + 22.0 + 2.0);
+        click(&ctx, &mut app, panic, 1.0);
+        assert!(app.shared.safe_mode.load(Relaxed), "PANIC clicked");
+        assert_eq!(
+            app.shared.take_cue(),
+            Some(crate::dsp::cue::CueKind::SafeOn)
+        );
+        assert_eq!(app.shared.stop_sounds.load(Relaxed), 1);
+        let dev = app.status.clone();
+        let tray = tray_status::compute(&dev, true, false, true, true);
+        assert_eq!(tray.health, crate::shell::Health::Safe);
+
+        // The voice changer switch is locked while safe (it holds what Restore goes back to).
+        click(&ctx, &mut app, egui::pos2(8.0 + 115.0, 30.0), 2.0);
+        assert!(app.shared.voice_on.load(Relaxed) && app.cfg.voice_on);
+        // A hotkey or tray press while safe and a frame or two later: still safe.
+        frame(&ctx, &mut app, (1240.0, 800.0), 3.0, vec![]);
+        assert!(
+            app.shared.safe_mode.load(Relaxed),
+            "never restores by itself"
+        );
+
+        // The same button now says Restore.
+        click(&ctx, &mut app, panic, 4.0);
+        assert!(!app.shared.safe_mode.load(Relaxed), "restored");
+        assert_eq!(
+            app.shared.take_cue(),
+            Some(crate::dsp::cue::CueKind::SafeOff)
+        );
+        assert_eq!(app.fx, fx, "no slider changed");
+        assert_eq!(app.cfg, cfg, "no setting changed, nothing to save");
+    }
+
     #[test]
     fn hear_myself_has_one_shared_state_for_hotkey_tray_and_checkbox() {
         let mut app = test_app();
@@ -2423,6 +2576,7 @@ pub(crate) mod tests {
             app.shared.voice_on.load(Relaxed),
             app.shared.mic_muted.load(Relaxed),
             app.shared.monitor_voice.load(Relaxed),
+            false,
         );
         assert!(!tray.monitor, "the tray menu shows it unticked");
         // The checkbox path (devices panel) writes the same atomic back.

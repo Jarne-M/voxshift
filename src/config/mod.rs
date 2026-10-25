@@ -52,6 +52,8 @@ pub struct FeedbackSettings {
     pub cue_volume: f32,
     /// Small always-on-top "Voice changer ON/OFF" for about a second.
     pub overlay: bool,
+    /// The panic button also silences "hear myself" and "hear soundboard".
+    pub panic_mutes_monitor: bool,
 }
 
 impl Default for FeedbackSettings {
@@ -60,6 +62,7 @@ impl Default for FeedbackSettings {
             cues: true,
             cue_volume: 0.5,
             overlay: false,
+            panic_mutes_monitor: false,
         }
     }
 }
@@ -279,11 +282,13 @@ mod tests {
                 monitor_toggle: Some(Hotkey::new(0x48, false, false, true, false, "Alt+H")),
                 monitor_sounds_toggle: Some(Hotkey::new(0x4A, false, false, true, false, "Alt+J")),
                 stop_sounds: Some(Hotkey::new(0x6E, false, false, false, false, "Num Del")),
+                panic: Some(Hotkey::new(0x13, true, false, false, false, "Ctrl+Pause")),
             },
             feedback: FeedbackSettings {
                 cues: false,
                 cue_volume: 0.25,
                 overlay: true,
+                panic_mutes_monitor: true,
             },
             start_voice: StartVoice::Off,
             ..Config::default()
@@ -305,6 +310,11 @@ mod tests {
             "Alt+H"
         );
         assert_eq!(loaded.voice_keys.stop_sounds.as_ref().unwrap().vk, 0x6E);
+        assert_eq!(
+            loaded.voice_keys.panic.as_ref().unwrap().label,
+            "Ctrl+Pause"
+        );
+        assert!(loaded.feedback.panic_mutes_monitor);
 
         // A config from before the monitor / stop keys: everything else is kept, the new keys
         // load unassigned.
@@ -321,12 +331,20 @@ mod tests {
         assert!(before.voice_keys.monitor_toggle.is_none());
         assert!(before.voice_keys.monitor_sounds_toggle.is_none());
         assert!(before.voice_keys.stop_sounds.is_none());
+        assert!(
+            before.voice_keys.panic.is_none(),
+            "the panic key starts unassigned"
+        );
 
         // Older files: toggle mode, beeps on, overlay off, remember the last state.
         std::fs::write(&path, r#"{ "voice_on": false }"#).unwrap();
         let (old, _) = load_from(&path);
         assert_eq!(old.voice_keys, VoiceHotkeys::default());
         assert!(old.feedback.cues && !old.feedback.overlay);
+        assert!(
+            !old.feedback.panic_mutes_monitor,
+            "panic keeps the headphones by default"
+        );
         assert_eq!(old.start_voice, StartVoice::RememberLast);
         std::fs::remove_dir_all(dir).ok();
     }

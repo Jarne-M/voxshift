@@ -163,6 +163,7 @@ pub fn assign(
         KeyTarget::MonitorToggle => &mut voice.monitor_toggle,
         KeyTarget::MonitorSoundsToggle => &mut voice.monitor_sounds_toggle,
         KeyTarget::StopSounds => &mut voice.stop_sounds,
+        KeyTarget::Panic => &mut voice.panic,
         KeyTarget::Preset(i) => match voice.presets.get_mut(i) {
             Some(p) => &mut p.hotkey,
             None => return false,

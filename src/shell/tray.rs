@@ -51,6 +51,7 @@ const CMD_MUTE: usize = 3;
 const CMD_STOP: usize = 4;
 const CMD_QUIT: usize = 5;
 const CMD_MONITOR: usize = 6;
+const CMD_PANIC: usize = 7;
 
 type StatusFn = Box<dyn Fn() -> TrayStatus + Send>;
 type ActionFn = Box<dyn Fn(TrayAction) + Send>;
@@ -143,9 +144,16 @@ impl Ctx {
             let monitor = item("Hear myself (monitor)");
             let active = item(&s.active);
             let stop = item("Stop all sounds");
+            let panic = item(if s.safe {
+                "SAFE MODE: Restore everything"
+            } else {
+                "Panic: safe mode (all off)"
+            });
             let quit = item("Quit VoxShift");
             let checked = |on: bool| if on { MF_CHECKED } else { 0 };
             AppendMenuW(menu, MF_STRING, CMD_SHOW, show.as_ptr());
+            AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            AppendMenuW(menu, MF_STRING | checked(s.safe), CMD_PANIC, panic.as_ptr());
             AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
             AppendMenuW(
                 menu,
@@ -187,6 +195,7 @@ impl Ctx {
                 CMD_VOICE => Some(TrayAction::ToggleVoice),
                 CMD_MUTE => Some(TrayAction::ToggleMute),
                 CMD_MONITOR => Some(TrayAction::ToggleMonitor),
+                CMD_PANIC => Some(TrayAction::TogglePanic),
                 CMD_STOP => Some(TrayAction::StopAllSounds),
                 CMD_QUIT => Some(TrayAction::Quit),
                 _ => None,
@@ -437,6 +446,7 @@ fn run(
             Health::Muted,
             Health::NoMic,
             Health::NoOutput,
+            Health::Safe,
         ]
         .into_iter()
         .map(|h| (h, make_icon(&icon::render(h, 32), 32)))
@@ -486,6 +496,7 @@ mod tests {
                 voice_on: true,
                 muted: false,
                 monitor: true,
+                safe: false,
                 active: String::new(),
                 tooltip: "VoxShift overlay test".into(),
             },
@@ -524,6 +535,7 @@ mod tests {
                     voice_on: true,
                     muted: false,
                     monitor: true,
+                    safe: false,
                     active: "Active: Primary mic".into(),
                     tooltip: "VoxShift test".into(),
                 }

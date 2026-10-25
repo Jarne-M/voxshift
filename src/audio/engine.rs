@@ -63,6 +63,8 @@ pub struct Engine {
     stop_sounds_seen: u32,
     /// Monitor gains for your voice and the soundboard (0..1, ramped).
     monitor_gain: [Ramp; 2],
+    /// Safe mode as of the last block (to act on the moment it starts).
+    was_safe: bool,
 }
 
 /// How long the monitor takes to fade your voice (or the soundboard) in or out.
@@ -105,6 +107,7 @@ impl Engine {
             preview_was_playing: false,
             stop_sounds_seen,
             monitor_gain,
+            was_safe: false,
         };
         let link = EngineLink {
             cmds: cmd_tx,
@@ -134,6 +137,12 @@ impl Engine {
                 if let Some(old) = std::mem::replace(&mut self.monitor, tx) {
                     self.retire(Garbage::Monitor(old));
                 }
+            }
+            EngineCmd::Sound(SoundCmd::Play { data, .. })
+                if self.shared.safe_mode.load(Relaxed) =>
+            {
+                // Safe mode plays no clip, whoever asks.
+                self.retire(Garbage::Sound(data));
             }
             EngineCmd::Sound(cmd) => {
                 if let Some(done) = self.sounds.apply(cmd) {
@@ -173,6 +182,17 @@ impl Engine {
 
 impl BlockSource for Engine {
     fn render(&mut self, out: &mut StereoBlock) {
+        // Panic first: from the moment it is set, every clip fades out (12 ms), "Play melody"
+        // stops, and below the voice switches to clean (25 ms crossfade).
+        let safe = self.shared.safe_mode.load(Relaxed);
+        if safe && !self.was_safe {
+            if let Some(done) = self.sounds.apply(SoundCmd::StopAll) {
+                self.retire(Garbage::Sound(done));
+            }
+            self.preview.stop();
+            self.shared.melody_preview.store(false, Relaxed);
+        }
+        self.was_safe = safe;
         while let Ok(cmd) = self.cmds.pop() {
             self.apply(cmd);
         }
@@ -184,7 +204,9 @@ impl BlockSource for Engine {
             .set(self.in_meter.update(in_peak, BLOCK));
 
         let params = self.shared.params.snapshot();
-        let voice_on = self.shared.voice_on.load(Relaxed);
+        // Safe mode = the clean mic, exactly like switching the voice changer off (the same
+        // crossfade, Melody Voice included), without touching that switch.
+        let voice_on = self.shared.voice_on.load(Relaxed) && !safe;
         let melody = self.chain.melody();
         melody.sync(&self.shared.melody);
         let restart = self.shared.melody_restart.load(Relaxed);
@@ -267,7 +289,10 @@ impl BlockSource for Engine {
         }
         // "Play melody": the tune in the headphones, also never into the virtual mic.
         self.preview.sync(&self.shared.melody);
-        let wanted = self.shared.melody_preview.load(Relaxed);
+        let wanted = self.shared.melody_preview.load(Relaxed) && !safe;
+        if safe {
+            self.shared.melody_preview.store(false, Relaxed);
+        }
         if wanted && !self.preview.playing() {
             if !self.preview_was_playing {
                 self.preview.start();
@@ -297,9 +322,11 @@ impl BlockSource for Engine {
         // turning the monitor on never blasts in at full level (and off never clicks). The
         // ramps run even without a monitor device, so they are always where they should be.
         let on = |b: bool| if b { 1.0 } else { 0.0 };
+        // Safe mode can also silence the headphones (the beeps still come through).
+        let muted = safe && self.shared.safe_mutes_monitor.load(Relaxed);
         let (tv, ts) = (
-            on(self.shared.monitor_voice.load(Relaxed)),
-            on(self.shared.monitor_sounds.load(Relaxed)),
+            on(self.shared.monitor_voice.load(Relaxed) && !muted),
+            on(self.shared.monitor_sounds.load(Relaxed) && !muted),
         );
         let vol = self.shared.monitor_volume.get();
         let mut gv = [0.0; BLOCK];
@@ -614,6 +641,93 @@ mod tests {
         );
         assert!(!shared_a.is_playing(5) && shared_a.sounds_playing.load(Relaxed) == 0);
         assert!(shared_a.voice_on.load(Relaxed) && shared_a.monitor_voice.load(Relaxed));
+    }
+
+    #[test]
+    fn panic_during_a_loud_effect_and_a_clip_sends_the_clean_mic_and_restore_brings_it_back() {
+        use crate::dsp::params::P;
+        use crate::soundboard::mixer::{SoundCmd, SoundData};
+        // A: loud distortion (+12 dB) and a playing clip. B: the same mic with the voice
+        // changer off, so B is exactly "the clean mic".
+        let (shared, mut a, mut tx_a, mut mon_a) = rig();
+        let (clean, mut b, mut tx_b, mut mon_b) = rig();
+        clean.voice_on.store(false, Relaxed);
+        shared.params.set(P::DistOn, 1.0);
+        shared.params.set(P::DistDrive, 40.0);
+        shared.params.set(P::OutputGain, 12.0);
+        let params = shared.params.snapshot();
+        let clip = || {
+            Arc::new(SoundData {
+                frames: vec![0.4; 48_000 * 10 * 2],
+                sample_rate: 48_000,
+            })
+        };
+        a.apply(EngineCmd::Sound(SoundCmd::Play {
+            id: 5,
+            data: clip(),
+            volume: 1.0,
+            looped: true,
+        }));
+        let ms = |ms: usize| ms * 48 / BLOCK + 1;
+        let (va, _) = talk(&mut a, &mut tx_a, &mut mon_a, 0, ms(200), sine);
+        let (vb, _) = talk(&mut b, &mut tx_b, &mut mon_b, 0, ms(200), sine);
+        let diff = |x: &[f32], y: &[f32]| {
+            x.iter()
+                .zip(y)
+                .map(|(p, q)| (p - q).abs())
+                .fold(0.0f32, f32::max)
+        };
+        let n = va.len();
+        assert!(diff(&va[n / 2..], &vb[n / 2..]) > 0.3, "loud effect + clip");
+        assert!(shared.is_playing(5));
+
+        // Panic, with "also mute my headphones".
+        shared.safe_mutes_monitor.store(true, Relaxed);
+        shared.safe_mode.store(true, Relaxed);
+        let start = ms(200) * BLOCK;
+        let (va, ma) = talk(&mut a, &mut tx_a, &mut mon_a, start, ms(300), sine);
+        let (vb, _) = talk(&mut b, &mut tx_b, &mut mon_b, start, ms(300), sine);
+        // Within 50 ms the virtual mic is exactly the clean mic: no effect, no clip...
+        let settled = ms(50) * BLOCK;
+        let d = diff(&va[settled..], &vb[settled..]);
+        assert!(d < 1e-4, "clean mic after panic, off by {d}");
+        // (Both get there by the usual fades: the clip's 12 ms one, tested above, and the
+        // voice changer's 25 ms crossfade, tested in the chain.)
+        assert!(!shared.is_playing(5), "the looping clip stopped");
+        let tail = &ma[ma.len() - 1000..];
+        assert!(tail.iter().all(|x| x.abs() < 1e-6), "headphones muted");
+        // Nothing the user set was changed.
+        let now = shared.params.snapshot();
+        for info in crate::dsp::params::PARAMS {
+            assert_eq!(now.get(info.id), params.get(info.id), "{}", info.key);
+        }
+        assert!(shared.voice_on.load(Relaxed));
+        assert!(shared.monitor_voice.load(Relaxed) && shared.monitor_sounds.load(Relaxed));
+
+        // While safe: no new clip, no "Play melody".
+        a.apply(EngineCmd::Sound(SoundCmd::Play {
+            id: 6,
+            data: clip(),
+            volume: 1.0,
+            looped: false,
+        }));
+        shared.melody_preview.store(true, Relaxed);
+        let (va, _) = talk(&mut a, &mut tx_a, &mut mon_a, start, ms(50), sine);
+        let (vb, _) = talk(&mut b, &mut tx_b, &mut mon_b, start, ms(50), sine);
+        assert!(diff(&va, &vb) < 1e-4, "refused clip is not heard");
+        assert!(!shared.is_playing(6) && !shared.melody_preview.load(Relaxed));
+
+        // Restore: the effect and the headphones come back (fading in); the clip stays off.
+        shared.safe_mode.store(false, Relaxed);
+        let (va, ma) = talk(&mut a, &mut tx_a, &mut mon_a, start, ms(200), sine);
+        let (vb, _) = talk(&mut b, &mut tx_b, &mut mon_b, start, ms(200), sine);
+        let n = va.len();
+        assert!(diff(&va[n / 2..], &vb[n / 2..]) > 0.3, "the effect is back");
+        assert!(
+            ma[ma.len() - 1000..].iter().any(|x| x.abs() > 0.01),
+            "monitor back"
+        );
+        assert!(!shared.is_playing(5) && !shared.is_playing(6));
     }
 
     #[test]

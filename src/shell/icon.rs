@@ -10,6 +10,7 @@ pub fn disc_color(h: Health) -> [u8; 3] {
         Health::VoiceOff | Health::Muted => [110, 110, 118],
         Health::NoMic => [235, 150, 40],
         Health::NoOutput => [220, 50, 50],
+        Health::Safe => [200, 20, 20],
     }
 }
 
@@ -77,6 +78,13 @@ pub fn render(h: Health, size: u32) -> Vec<u8> {
                     *v += (red - *v) * s;
                 }
             }
+            if h == Health::Safe {
+                // A white bar across the red disc: a "prohibited" sign, not just "red".
+                let s = cover(seg_dist(p, (0.2 * n, 0.8 * n), (0.8 * n, 0.2 * n)) - 0.07 * n);
+                for v in rgb.iter_mut() {
+                    *v += (255.0 - *v) * s;
+                }
+            }
             let i = ((y * size + x) * 4) as usize;
             out[i] = rgb[0] as u8;
             out[i + 1] = rgb[1] as u8;
@@ -121,5 +129,9 @@ mod tests {
         let muted = render(Health::Muted, 64);
         let p = px(&muted, 64, 18, 18);
         assert!(p[0] > 200 && p[1] < 100, "slash: {p:?}");
+        // Safe mode: red, with a white bar from bottom left to top right.
+        let safe = render(Health::Safe, 64);
+        assert_eq!(&px(&safe, 64, 3, 32)[..3], &disc_color(Health::Safe));
+        assert_eq!(&px(&safe, 64, 16, 48)[..3], &[255, 255, 255], "the bar");
     }
 }

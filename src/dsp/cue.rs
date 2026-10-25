@@ -18,6 +18,9 @@ pub enum CueKind {
     VoiceOff,
     MonitorOn,
     MonitorOff,
+    /// Panic: three falling tones. Restore: three rising ones.
+    SafeOn,
+    SafeOff,
 }
 
 impl CueKind {
@@ -28,6 +31,8 @@ impl CueKind {
             Self::VoiceOff => 2,
             Self::MonitorOn => 3,
             Self::MonitorOff => 4,
+            Self::SafeOn => 5,
+            Self::SafeOff => 6,
         }
     }
 
@@ -37,6 +42,8 @@ impl CueKind {
             2 => Some(Self::VoiceOff),
             3 => Some(Self::MonitorOn),
             4 => Some(Self::MonitorOff),
+            5 => Some(Self::SafeOn),
+            6 => Some(Self::SafeOff),
             _ => None,
         }
     }
@@ -48,6 +55,8 @@ impl CueKind {
             Self::VoiceOff => &[HIGH_HZ, LOW_HZ],
             Self::MonitorOn => &[MONITOR_ON_HZ],
             Self::MonitorOff => &[MONITOR_OFF_HZ],
+            Self::SafeOn => &[HIGH_HZ, LOW_HZ, MONITOR_OFF_HZ],
+            Self::SafeOff => &[MONITOR_OFF_HZ, LOW_HZ, HIGH_HZ],
         }
     }
 }
@@ -179,9 +188,35 @@ mod tests {
             CueKind::VoiceOff,
             CueKind::MonitorOn,
             CueKind::MonitorOff,
+            CueKind::SafeOn,
+            CueKind::SafeOff,
         ] {
             assert_eq!(CueKind::from_code(k.code()), Some(k));
         }
         assert_eq!(CueKind::from_code(0), None);
+    }
+
+    #[test]
+    fn the_panic_beep_is_three_falling_tones_and_restore_three_rising() {
+        let on = render(CueKind::SafeOn);
+        let off = render(CueKind::SafeOff);
+        let len = (3.0 * TONE_S + 2.0 * GAP_S) * 48_000.0;
+        assert!((on.len() as f32 - len).abs() < 2.0);
+        let tone = |v: &[f32], k: usize| {
+            let start = (k as f32 * (TONE_S + GAP_S) * 48_000.0) as usize;
+            let part = &v[start..start + (TONE_S * 48_000.0) as usize];
+            frequency(&[part, part].concat(), 48_000.0)
+        };
+        assert!(
+            tone(&on, 0) > tone(&on, 1) && tone(&on, 1) > tone(&on, 2),
+            "falling"
+        );
+        assert!(
+            tone(&off, 0) < tone(&off, 1) && tone(&off, 1) < tone(&off, 2),
+            "rising"
+        );
+        for v in [&on, &off] {
+            assert_clean(v);
+        }
     }
 }

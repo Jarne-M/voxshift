@@ -74,6 +74,8 @@ pub struct VoiceHotkeys {
     pub monitor_sounds_toggle: Option<Hotkey>,
     /// Stops every soundboard clip, like the Stop all button.
     pub stop_sounds: Option<Hotkey>,
+    /// Panic: safe mode on (and, pressed again, off).
+    pub panic: Option<Hotkey>,
 }
 
 /// Which hotkey is being assigned.
@@ -89,13 +91,15 @@ pub enum KeyTarget {
     MonitorToggle,
     MonitorSoundsToggle,
     StopSounds,
+    Panic,
 }
 
 impl VoiceHotkeys {
-    /// The one-shot action keys (Melody Voice, monitor, stop all) with their targets and how
-    /// they are named to the user.
-    pub fn action_keys(&self) -> [(KeyTarget, &Option<Hotkey>, &'static str); 6] {
+    /// The one-shot action keys (panic, Melody Voice, monitor, stop all) with their targets
+    /// and how they are named to the user.
+    pub fn action_keys(&self) -> [(KeyTarget, &Option<Hotkey>, &'static str); 7] {
         [
+            (KeyTarget::Panic, &self.panic, "the panic button"),
             (
                 KeyTarget::MelodyToggle,
                 &self.melody_toggle,
@@ -210,6 +214,36 @@ impl Feedback {
     pub fn stop_all_sounds(&self) {
         self.shared.stop_sounds.fetch_add(1, Relaxed);
     }
+
+    pub fn safe_mode(&self) -> bool {
+        self.shared.safe_mode.load(Relaxed)
+    }
+
+    /// Panic (`on`) or Restore. The audio engine does the rest the moment it sees the flag:
+    /// clips stop, the voice goes clean, the monitor is muted if so set. No setting is
+    /// touched, so Restore is exactly the state before. Beeps if beeps are on.
+    pub fn set_safe(&self, on: bool) {
+        if self.shared.safe_mode.swap(on, Relaxed) == on {
+            return;
+        }
+        if on {
+            self.shared.stop_sounds.fetch_add(1, Relaxed); // also lets go of held clips
+        }
+        if self.shared.cue_enabled.load(Relaxed) {
+            self.shared.request_cue(if on {
+                CueKind::SafeOn
+            } else {
+                CueKind::SafeOff
+            });
+        }
+    }
+
+    /// The panic key: safe mode on, or (pressed again) restore.
+    pub fn toggle_safe(&self) -> bool {
+        let on = !self.safe_mode();
+        self.set_safe(on);
+        on
+    }
 }
 
 /// Requests that need the window (changing sliders lives there).
@@ -274,6 +308,12 @@ impl VoiceKeys {
 impl KeyHandler for VoiceKeys {
     fn pressed(&self, key: &Hotkey) -> bool {
         let is = |h: &Option<Hotkey>| h.as_ref().is_some_and(|h| h.same_keys(key));
+        // Panic comes first, before anything else is looked at.
+        if is(&self.lock().panic) {
+            self.feedback.toggle_safe();
+            (self.wake)();
+            return true;
+        }
         let (toggle, mute, preset, mode, action) = {
             let b = self.lock();
             let preset = b
@@ -308,9 +348,16 @@ impl KeyHandler for VoiceKeys {
                     self.feedback.toggle_monitor_sounds();
                 }
                 KeyTarget::StopSounds => self.feedback.stop_all_sounds(),
-                _ => {
+                KeyTarget::Panic => {
+                    self.feedback.toggle_safe();
+                }
+                KeyTarget::MelodyToggle => {
                     let _ = self.requests.send(VoiceRequest::ToggleMelody);
                 }
+                KeyTarget::Sound(_)
+                | KeyTarget::Toggle
+                | KeyTarget::Mute
+                | KeyTarget::Preset(_) => {}
             }
         } else if toggle {
             match mode {
@@ -672,6 +719,67 @@ mod tests {
             Some("the soundboard-in-headphones toggle")
         );
         assert!(VoiceHotkeys::default().monitor_sounds_toggle.is_none());
+    }
+
+    #[test]
+    fn panic_key_toggles_safe_mode_first_with_its_beeps_and_changes_no_setting() {
+        // Even if a broken config gave the voice toggle the same key, panic wins.
+        let pause = hk(0x13, false, "Pause");
+        let r = rig(VoiceHotkeys {
+            toggle: Some(pause.clone()),
+            panic: Some(pause.clone()),
+            ..Default::default()
+        });
+        r.shared.cue_enabled.store(true, Relaxed);
+        r.shared.overlay_enabled.store(true, Relaxed);
+        let params = r.shared.params.snapshot();
+        assert!(
+            VoiceHotkeys::default().panic.is_none(),
+            "unassigned by default"
+        );
+
+        assert!(r.keys.pressed(&pause));
+        assert!(r.shared.safe_mode.load(Relaxed));
+        assert_eq!(r.shared.take_cue(), Some(CueKind::SafeOn));
+        assert_eq!(r.shared.stop_sounds.load(Relaxed), 1, "all clips stop");
+        assert!(r.wakes.load(Relaxed) >= 1, "the window and tray are told");
+        // The switches keep the state Restore goes back to.
+        assert!(r.shared.voice_on.load(Relaxed), "voice toggle not pressed");
+        assert!(r.shared.monitor_voice.load(Relaxed) && !r.shared.mic_muted.load(Relaxed));
+        assert_eq!(r.shared.params.snapshot(), params);
+        assert_eq!(r.overlays.load(Relaxed), 0);
+
+        // Pressed again: restore, with the rising beep; no second "stop".
+        assert!(r.keys.pressed(&pause));
+        assert!(!r.shared.safe_mode.load(Relaxed));
+        assert_eq!(r.shared.take_cue(), Some(CueKind::SafeOff));
+        assert_eq!(r.shared.stop_sounds.load(Relaxed), 1);
+        assert!(r.shared.voice_on.load(Relaxed));
+
+        // The button and the tray use the same calls; setting the same state twice is a no-op.
+        let f = &r.keys.feedback;
+        f.set_safe(true);
+        f.set_safe(true);
+        assert_eq!(r.shared.stop_sounds.load(Relaxed), 2);
+        assert_eq!(r.shared.take_cue(), Some(CueKind::SafeOn));
+        f.set_safe(false);
+        assert!(!f.safe_mode());
+        // Beeps off: still works, silently.
+        r.shared.cue_enabled.store(false, Relaxed);
+        r.shared.take_cue();
+        assert!(f.toggle_safe());
+        assert_eq!(r.shared.take_cue(), None);
+
+        // Conflicts name it.
+        let b = VoiceHotkeys {
+            panic: Some(pause.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            conflict(&pause, KeyTarget::StopSounds, &b, []).as_deref(),
+            Some("the panic button")
+        );
+        assert_eq!(conflict(&pause, KeyTarget::Panic, &b, []), None);
     }
 
     #[test]

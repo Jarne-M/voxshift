@@ -7,6 +7,8 @@ pub const ON: Color32 = Color32::from_rgb(40, 170, 100);
 pub const OFF: Color32 = Color32::from_rgb(90, 90, 96);
 pub const WARN: Color32 = Color32::from_rgb(235, 170, 50);
 pub const BAD: Color32 = Color32::from_rgb(230, 70, 70);
+/// The panic button and the SAFE MODE banner: a deeper red than BAD, with white text.
+pub const PANIC: Color32 = Color32::from_rgb(190, 25, 30);
 pub const CARD: Color32 = Color32::from_gray(32);
 
 pub fn apply(ctx: &Context) {

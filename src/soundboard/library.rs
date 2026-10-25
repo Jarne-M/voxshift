@@ -160,6 +160,13 @@ impl Board {
     /// Starts a sound, looping it until stopped if `looped`; counts the play and puts the
     /// clip at the top of "Recent".
     pub fn start(&mut self, id: SoundId, looped: bool) -> bool {
+        if self
+            .shared
+            .as_ref()
+            .is_some_and(|s| s.safe_mode.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            return false; // panic / safe mode: no clips (the engine refuses them too)
+        }
         let Some(s) = self.sounds.iter_mut().find(|s| s.id == id) else {
             return false;
         };
@@ -223,7 +230,13 @@ impl Board {
         };
         let playing = self.is_playing(id);
         match self.triggers.press(id, mode, vk, playing) {
-            Some(cmd) => self.apply(cmd),
+            Some(cmd) => {
+                let ok = self.apply(cmd);
+                if !ok {
+                    self.triggers.forget(id); // refused (safe mode, not loaded): holds nothing
+                }
+                ok
+            }
             None => true, // held already: nothing to do
         }
     }
@@ -628,6 +641,42 @@ mod tests {
         sb.lock().release(0x70);
         render(&mut engine, 40.0);
         assert!(!shared.is_playing(id));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn safe_mode_plays_nothing_and_counts_nothing_until_restored() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (sb, mut engine, shared, id, dir) = rig("mode-safe", 3.0, PlayMode::Hold);
+        // A held clip is playing when panic hits: it stops (the engine sees the flag).
+        sb.lock().hotkey_pressed(&f1());
+        render(&mut engine, 50.0);
+        assert!(shared.is_playing(id));
+        shared.safe_mode.store(true, Relaxed);
+        render(&mut engine, 40.0);
+        assert!(!shared.is_playing(id), "stopped by the panic");
+        // Key-up afterwards is harmless; new presses (key or mouse) start nothing.
+        sb.lock().release(0x70);
+        sb.lock().hotkey_pressed(&f1());
+        assert!(
+            sb.lock().held_keys().is_empty(),
+            "a refused press holds nothing"
+        );
+        assert!(!sb.lock().press(id, playmode::MOUSE));
+        render(&mut engine, 50.0);
+        assert!(!shared.is_playing(id));
+        let b = sb.lock();
+        assert_eq!(b.sounds[0].entry.plays, 1, "refused plays not counted");
+        assert_eq!(b.recent, [b.sounds[0].entry.uid]);
+        drop(b);
+        // Restore: the next press plays again (nothing comes back by itself).
+        sb.lock().release_all();
+        shared.safe_mode.store(false, Relaxed);
+        render(&mut engine, 50.0);
+        assert!(!shared.is_playing(id), "restore does not restart clips");
+        sb.lock().hotkey_pressed(&f1());
+        render(&mut engine, 50.0);
+        assert!(shared.is_playing(id));
         std::fs::remove_dir_all(dir).ok();
     }
 
