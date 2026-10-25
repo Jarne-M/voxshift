@@ -153,6 +153,9 @@ turn off the driver's noise suppression, raise the seconds, or turn silence dete
   accidental in-game actions. Each key belongs to one action at a time (see "One key, one
   action" in 5a).
 - **Also play in my headphones** routes sounds to the monitor. The monitor must be on.
+- The small key buttons next to **Stop all** and **Also play in my headphones** set their
+  hotkeys right there. They're the same hotkeys as *Stop all sounds* and *Hear soundboard*
+  under Voice changer hotkeys, so both places always show the same key.
 
 Hotkeys use Windows' Raw Input API: VoxShift is told about every key press, even in the
 background, but only listens. It can't block or change keys and adds no delay to your typing.
@@ -357,7 +360,7 @@ second profile, or trying things without touching your normal settings.
 
 ## 8. Testing on your hardware
 
-These were checked automatically: `cargo test` (211 tests; they briefly show a tray icon) and the self-tests below on the
+These were checked automatically: `cargo test` (212 tests; they briefly show a tray icon) and the self-tests below on the
 development PC (USB PnP mic, webcam mic, HyperX Cloud II Wireless). The rest needs your setup.
 
 Melody Voice's tests feed synthetic voices through the real effect chain offline: a low and a

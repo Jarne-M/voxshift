@@ -2,8 +2,10 @@
 
 use super::theme::{ACCENT, BAD, CARD};
 use crate::audio::shared::Shared;
+use crate::soundboard::hotkeys::Hotkey;
 use crate::soundboard::library::{Board, LoadState};
 use crate::soundboard::mixer::SoundId;
+use crate::voice_keys::KeyTarget;
 use egui::{Color32, RichText, Ui, vec2};
 
 pub enum Action {
@@ -17,6 +19,10 @@ pub enum Action {
     CancelHotkey,
     ClearHotkey(SoundId),
     MonitorSounds(bool),
+    /// Assign / clear the Stop all or "Also play in my headphones" hotkey (the same ones as
+    /// under Voice changer hotkeys).
+    BeginActionKey(KeyTarget),
+    ClearActionKey(KeyTarget),
 }
 
 const CELL: f32 = 190.0;
@@ -24,10 +30,68 @@ const CELL: f32 = 190.0;
 pub struct View<'a> {
     pub board: &'a Board,
     pub shared: &'a Shared,
-    pub capturing: Option<SoundId>,
+    /// The hotkey waiting for a key, whatever it is.
+    pub capturing: Option<KeyTarget>,
     pub hotkeys_available: bool,
     pub monitor_sounds: bool,
     pub monitor_on: bool,
+    pub stop_key: Option<&'a Hotkey>,
+    pub monitor_sounds_key: Option<&'a Hotkey>,
+}
+
+impl View<'_> {
+    fn capturing_sound(&self) -> Option<SoundId> {
+        match self.capturing {
+            Some(KeyTarget::Sound(id)) => Some(id),
+            _ => None,
+        }
+    }
+}
+
+/// The small hotkey button next to Stop all / Also play in my headphones.
+fn action_key(
+    ui: &mut Ui,
+    v: &View,
+    target: KeyTarget,
+    key: Option<&Hotkey>,
+    what: &str,
+    actions: &mut Vec<Action>,
+) {
+    if v.capturing == Some(target) {
+        if ui
+            .small_button(RichText::new("Press a key... (Esc)").color(ACCENT))
+            .on_hover_text("Press the key combination to use. Click to cancel.")
+            .clicked()
+        {
+            actions.push(Action::CancelHotkey);
+        }
+        return;
+    }
+    let (label, tip) = match key {
+        Some(k) => (
+            k.label.clone(),
+            format!("Hotkey for {what}: {}. Click to change.", k.label),
+        ),
+        None => (
+            "Not set".to_string(),
+            format!("No hotkey for {what}. Click, then press a key."),
+        ),
+    };
+    if ui
+        .add_enabled(v.hotkeys_available, egui::Button::new(label).small())
+        .on_hover_text(tip)
+        .clicked()
+    {
+        actions.push(Action::BeginActionKey(target));
+    }
+    if key.is_some()
+        && ui
+            .small_button("x")
+            .on_hover_text("Remove hotkey")
+            .clicked()
+    {
+        actions.push(Action::ClearActionKey(target));
+    }
 }
 
 pub fn panel(ui: &mut Ui, v: &View) -> Vec<Action> {
@@ -45,6 +109,15 @@ pub fn panel(ui: &mut Ui, v: &View) -> Vec<Action> {
         {
             actions.push(Action::StopAll);
         }
+        action_key(
+            ui,
+            v,
+            KeyTarget::StopSounds,
+            v.stop_key,
+            "Stop all",
+            &mut actions,
+        );
+        ui.separator();
         let mut mon = v.monitor_sounds;
         let tip = if v.monitor_on {
             "Sounds also play on the monitor output"
@@ -58,6 +131,14 @@ pub fn panel(ui: &mut Ui, v: &View) -> Vec<Action> {
         {
             actions.push(Action::MonitorSounds(mon));
         }
+        action_key(
+            ui,
+            v,
+            KeyTarget::MonitorSoundsToggle,
+            v.monitor_sounds_key,
+            "\"Also play in my headphones\"",
+            &mut actions,
+        );
     });
     ui.label(
         RichText::new(if v.hotkeys_available {
@@ -170,7 +251,7 @@ fn cell(
     }
 
     ui.horizontal(|ui| {
-        if v.capturing == Some(id) {
+        if v.capturing_sound() == Some(id) {
             if ui
                 .button(RichText::new("Press a key... (Esc)").color(ACCENT))
                 .on_hover_text("Press the key combination to use. Click to cancel.")

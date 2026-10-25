@@ -948,13 +948,12 @@ impl VoxApp {
             let view = soundboard::View {
                 board: &board,
                 shared: &self.shared,
-                capturing: match self.capturing {
-                    Some(KeyTarget::Sound(id)) => Some(id),
-                    _ => None,
-                },
+                capturing: self.capturing,
                 hotkeys_available: self.hotkeys.as_ref().is_some_and(|h| h.available()),
                 monitor_sounds: self.cfg.monitor_sounds,
                 monitor_on: self.cfg.devices.monitor_enabled,
+                stop_key: self.cfg.voice_keys.stop_sounds.as_ref(),
+                monitor_sounds_key: self.cfg.voice_keys.monitor_sounds_toggle.as_ref(),
             };
             soundboard::panel(ui, &view)
         };
@@ -996,6 +995,8 @@ impl VoxApp {
                 self.cfg.monitor_sounds = on;
                 apply_to_shared(&self.cfg, &self.shared);
             }
+            A::BeginActionKey(target) => self.begin_capture(target),
+            A::ClearActionKey(target) => self.clear_hotkey(target),
         }
     }
 
@@ -2580,6 +2581,53 @@ pub(crate) mod tests {
         let app = start(reloaded);
         assert!(app.startup_notice.is_none(), "{:?}", app.startup_notice);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn stop_all_and_hear_soundboard_keys_can_be_set_on_the_soundboard_tab() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = app_with_airhorn_on_f8(&ctx);
+        app.cfg.tab = Tab::Soundboard;
+        // The buttons start a capture for the same targets as the settings rows...
+        app.apply_sound_action(
+            &ctx,
+            soundboard::Action::BeginActionKey(KeyTarget::StopSounds),
+        );
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]); // "Press a key..." shows
+        let f10 = hotkeys::Hotkey::new(0x79, false, false, false, false, "F10");
+        app.key_captured(&ctx, KeyTarget::StopSounds, f10);
+        assert_eq!(
+            app.cfg.voice_keys.stop_sounds.as_ref().unwrap().label,
+            "F10"
+        );
+        // ...so they share the conflict dialog with everything else.
+        app.key_captured(&ctx, KeyTarget::MonitorSoundsToggle, f8());
+        assert_eq!(
+            app.key_conflict.as_ref().unwrap().owner.name,
+            "the sound \"airhorn\""
+        );
+        app.resolve_key_conflict(&ctx, true);
+        assert_eq!(
+            app.cfg
+                .voice_keys
+                .monitor_sounds_toggle
+                .as_ref()
+                .unwrap()
+                .label,
+            "F8"
+        );
+        for size in [(920.0, 600.0), (1920.0, 1080.0)] {
+            frame(&ctx, &mut app, size, 0.1, vec![]); // both keys shown, airhorn "Not set"
+        }
+        app.apply_sound_action(
+            &ctx,
+            soundboard::Action::ClearActionKey(KeyTarget::StopSounds),
+        );
+        assert!(app.cfg.voice_keys.stop_sounds.is_none());
+        // The capture can be cancelled from there too.
+        app.capturing = Some(KeyTarget::MonitorSoundsToggle);
+        app.apply_sound_action(&ctx, soundboard::Action::CancelHotkey);
+        assert!(app.capturing.is_none());
     }
 
     /// With the real listener: pressing a taken key asks, and while the dialog is open that
