@@ -176,8 +176,10 @@ Under **Voice changer hotkeys** in the left panel:
   that checkbox and the tray menu item, and it only changes your headphones, never the virtual
   mic or your effects. Your voice fades in or out over 20 ms instead of switching. With beeps
   on, you hear one high beep for on and one low beep for off (different from the voice
-  changer's two-tone beeps). *Stop all sounds* does what the Stop all button does: every clip
-  fades out within about 12 ms. Both are unassigned until you set them.
+  changer's two-tone beeps). *Hear soundboard* does the same for "Also play in my headphones"
+  (the soundboard on your headphones; others always hear the clips). *Stop all sounds* does
+  what the Stop all button does: every clip fades out within about 12 ms. All three are
+  unassigned until you set them.
 - **Duplicates are refused:** a key already used by a clip, the toggle, mute, a preset key or
   any other action shows a message instead.
 - **Switching never changes your sliders or preset.** Switching back gives exactly what was

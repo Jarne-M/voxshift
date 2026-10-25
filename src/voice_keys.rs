@@ -10,7 +10,7 @@ use crate::dsp::cue::CueKind;
 use crate::soundboard::hotkeys::{Hotkey, KeyHandler};
 use crate::soundboard::mixer::SoundId;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, mpsc};
 
 /// What the voice changer hotkey does.
@@ -70,6 +70,8 @@ pub struct VoiceHotkeys {
     pub melody_next: Option<Hotkey>,
     /// "Hear myself" (the monitor's "my voice") on/off.
     pub monitor_toggle: Option<Hotkey>,
+    /// Soundboard in my headphones ("Also play in my headphones") on/off.
+    pub monitor_sounds_toggle: Option<Hotkey>,
     /// Stops every soundboard clip, like the Stop all button.
     pub stop_sounds: Option<Hotkey>,
 }
@@ -85,13 +87,14 @@ pub enum KeyTarget {
     MelodyRestart,
     MelodyNext,
     MonitorToggle,
+    MonitorSoundsToggle,
     StopSounds,
 }
 
 impl VoiceHotkeys {
     /// The one-shot action keys (Melody Voice, monitor, stop all) with their targets and how
     /// they are named to the user.
-    pub fn action_keys(&self) -> [(KeyTarget, &Option<Hotkey>, &'static str); 5] {
+    pub fn action_keys(&self) -> [(KeyTarget, &Option<Hotkey>, &'static str); 6] {
         [
             (
                 KeyTarget::MelodyToggle,
@@ -108,6 +111,11 @@ impl VoiceHotkeys {
                 KeyTarget::MonitorToggle,
                 &self.monitor_toggle,
                 "the monitor (hear myself) toggle",
+            ),
+            (
+                KeyTarget::MonitorSoundsToggle,
+                &self.monitor_sounds_toggle,
+                "the soundboard-in-headphones toggle",
             ),
             (KeyTarget::StopSounds, &self.stop_sounds, "stop all sounds"),
         ]
@@ -197,7 +205,17 @@ impl Feedback {
     /// Flips "hear myself" on the monitor (only the headphones; the virtual mic and the
     /// effects are untouched) and beeps the new state if beeps are on. Returns the new state.
     pub fn toggle_monitor(&self) -> bool {
-        let on = !self.shared.monitor_voice.fetch_xor(true, Relaxed);
+        self.flip_and_beep(&self.shared.monitor_voice)
+    }
+
+    /// Flips "Also play in my headphones" (the soundboard on the monitor; the virtual mic is
+    /// untouched) with the same beeps. Returns the new state.
+    pub fn toggle_monitor_sounds(&self) -> bool {
+        self.flip_and_beep(&self.shared.monitor_sounds)
+    }
+
+    fn flip_and_beep(&self, flag: &AtomicBool) -> bool {
+        let on = !flag.fetch_xor(true, Relaxed);
         if self.shared.cue_enabled.load(Relaxed) {
             self.shared.request_cue(if on {
                 CueKind::MonitorOn
@@ -305,6 +323,9 @@ impl KeyHandler for VoiceKeys {
                 }
                 KeyTarget::MonitorToggle => {
                     self.feedback.toggle_monitor();
+                }
+                KeyTarget::MonitorSoundsToggle => {
+                    self.feedback.toggle_monitor_sounds();
                 }
                 KeyTarget::StopSounds => self.feedback.stop_all_sounds(),
                 _ => {
@@ -637,6 +658,40 @@ mod tests {
             Some(CueKind::MonitorOff),
             "only the monitor beeped"
         );
+    }
+
+    #[test]
+    fn soundboard_in_headphones_key_flips_only_that() {
+        let r = rig(VoiceHotkeys {
+            monitor_toggle: Some(hk(0x48, false, "H")),
+            monitor_sounds_toggle: Some(hk(0x4A, false, "J")),
+            ..Default::default()
+        });
+        r.shared.cue_enabled.store(true, Relaxed);
+        assert!(r.shared.monitor_sounds.load(Relaxed), "on by default");
+        assert!(r.keys.pressed(&hk(0x4A, false, "J")));
+        assert!(!r.shared.monitor_sounds.load(Relaxed));
+        assert_eq!(r.shared.take_cue(), Some(CueKind::MonitorOff));
+        assert!(
+            r.shared.monitor_voice.load(Relaxed),
+            "hear myself untouched"
+        );
+        assert!(r.shared.voice_on.load(Relaxed));
+        assert_eq!(r.shared.stop_sounds.load(Relaxed), 0, "clips keep playing");
+        assert!(r.keys.pressed(&hk(0x4A, false, "J")));
+        assert!(r.shared.monitor_sounds.load(Relaxed));
+        assert_eq!(r.shared.take_cue(), Some(CueKind::MonitorOn));
+        assert_eq!(
+            conflict(
+                &hk(0x4A, false, "J"),
+                KeyTarget::MonitorToggle,
+                &r.keys.bindings(),
+                []
+            )
+            .as_deref(),
+            Some("the soundboard-in-headphones toggle")
+        );
+        assert!(VoiceHotkeys::default().monitor_sounds_toggle.is_none());
     }
 
     #[test]

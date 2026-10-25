@@ -482,6 +482,10 @@ impl VoxApp {
         if monitor_voice != self.cfg.monitor_voice {
             self.cfg.monitor_voice = monitor_voice;
         }
+        let monitor_sounds = self.shared.monitor_sounds.load(Relaxed);
+        if monitor_sounds != self.cfg.monitor_sounds {
+            self.cfg.monitor_sounds = monitor_sounds;
+        }
         self.handle_manager_events(ctx);
         self.handle_shell_requests(ctx);
         self.sync_voice_keys(ctx);
@@ -1051,6 +1055,7 @@ impl VoxApp {
             KeyTarget::MelodyRestart => vk.melody_restart = key,
             KeyTarget::MelodyNext => vk.melody_next = key,
             KeyTarget::MonitorToggle => vk.monitor_toggle = key,
+            KeyTarget::MonitorSoundsToggle => vk.monitor_sounds_toggle = key,
             KeyTarget::StopSounds => vk.stop_sounds = key,
             KeyTarget::Preset(i) => {
                 if let Some(p) = vk.presets.get_mut(i) {
@@ -2146,6 +2151,33 @@ pub(crate) mod tests {
         frame(&ctx, &mut app, (1240.0, 800.0), 0.3, vec![]);
         assert_eq!(app.fx, fx);
         assert!(app.cfg.voice_on && app.cfg.monitor_sounds);
+
+        // "Also play in my headphones" works the same way, on the Soundboard tab too.
+        app.cfg.tab = Tab::Soundboard;
+        assert!(!app.feedback.toggle_monitor_sounds());
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.4, vec![]);
+        assert!(!app.cfg.monitor_sounds, "the checkbox follows");
+        assert!(
+            !app.mirror.lock().unwrap().monitor_sounds,
+            "and it is saved"
+        );
+        app.apply_sound_action(&ctx, soundboard::Action::MonitorSounds(true)); // the checkbox
+        assert!(app.shared.monitor_sounds.load(Relaxed));
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.5, vec![]);
+        assert!(app.cfg.monitor_sounds);
+        app.set_hotkey(
+            KeyTarget::MonitorSoundsToggle,
+            Some(hotkeys::Hotkey::new(0x4A, false, false, false, false, "J")),
+        );
+        assert_eq!(
+            app.cfg
+                .voice_keys
+                .monitor_sounds_toggle
+                .as_ref()
+                .unwrap()
+                .label,
+            "J"
+        );
     }
 
     #[test]

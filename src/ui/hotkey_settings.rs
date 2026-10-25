@@ -153,6 +153,13 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, v: &View) -> Vec<Action> {
                  virtual mic), with a beep: high = on, low = off",
             ),
             (
+                KeyTarget::MonitorSoundsToggle,
+                &vk.monitor_sounds_toggle,
+                "Hear soundboard",
+                "Turns \"Also play in my headphones\" on or off (the soundboard on your \
+                 headphones; your friends always hear the clips), with the same beeps",
+            ),
+            (
                 KeyTarget::StopSounds,
                 &vk.stop_sounds,
                 "Stop all sounds",

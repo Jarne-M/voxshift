@@ -263,6 +263,7 @@ mod tests {
                 melody_restart: Some(Hotkey::new(0x52, true, true, false, false, "Ctrl+Shift+R")),
                 melody_next: Some(Hotkey::new(0x22, false, false, false, false, "Page Down")),
                 monitor_toggle: Some(Hotkey::new(0x48, false, false, true, false, "Alt+H")),
+                monitor_sounds_toggle: Some(Hotkey::new(0x4A, false, false, true, false, "Alt+J")),
                 stop_sounds: Some(Hotkey::new(0x6E, false, false, false, false, "Num Del")),
             },
             feedback: FeedbackSettings {
@@ -304,6 +305,7 @@ mod tests {
         assert!(warning.is_none(), "{warning:?}");
         assert_eq!(before.voice_keys.toggle.as_ref().unwrap().label, "F8");
         assert!(before.voice_keys.monitor_toggle.is_none());
+        assert!(before.voice_keys.monitor_sounds_toggle.is_none());
         assert!(before.voice_keys.stop_sounds.is_none());
 
         // Older files: toggle mode, beeps on, overlay off, remember the last state.
