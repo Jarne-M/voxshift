@@ -160,7 +160,7 @@ fn main() -> eframe::Result {
         height: 64,
     };
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("VoxShift")
+        .with_title(concat!("VoxShift v", env!("CARGO_PKG_VERSION")))
         .with_icon(icon)
         .with_inner_size(ui::WINDOW_SIZE)
         .with_min_inner_size([920.0, 600.0]);

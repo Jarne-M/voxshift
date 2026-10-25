@@ -1,0 +1,60 @@
+# Builds VoxShift on Windows. Every push/PR is checked; pushing a tag like
+# v0.2.0 also publishes a GitHub Release with VoxShift.exe and a zip.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The skipped tests need a real interactive desktop (they press keys and listen to the
+      # keyboard, or show a tray icon); run them locally with `cargo test`.
+      - name: Unit tests
+        run: >
+          cargo test --
+          --skip listener --skip presses_are_counted --skip assigning_a_hotkey
+          --skip duplicate_hotkeys --skip tray_starts
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build release exe
+        run: cargo build --release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force pkg | Out-Null
+          Copy-Item target/release/voxshift.exe pkg/VoxShift.exe
+          Copy-Item "packaging/Read me.txt" pkg/
+          Compress-Archive -Path pkg/* -DestinationPath VoxShift-windows.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: VoxShift-windows
+          path: pkg/
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            pkg/VoxShift.exe
+            VoxShift-windows.zip
+          generate_release_notes: true

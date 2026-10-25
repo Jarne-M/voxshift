@@ -1,0 +1,20 @@
+VoxShift - voice changer, soundboard and Melody Voice (Windows)
+===============================================================
+
+1. Unzip this folder anywhere (for example your Desktop).
+2. Double-click VoxShift.exe.
+   - If Windows says "Windows protected your PC": click "More info", then "Run anyway".
+     (The app isn't signed by a company, so Windows warns about it.)
+3. To be heard with the effects in Discord, games or OBS: install the free VB-CABLE driver
+   from https://vb-audio.com/Cable/ (run the setup as administrator, then reboot).
+   VoxShift finds it by itself. In Discord, set your input device to "CABLE Output".
+   Without VB-CABLE you can still try everything: pick your headphones as VoxShift's
+   output and you hear yourself.
+4. Pick a preset at the top of the Effects tab. For Melody Voice (talk, and it comes out
+   sung): choose "Sing the Song (per-syllable)" and say a sentence slowly, one syllable at
+   a time.
+
+Got a .voxpack file from a friend? Click "Import..." next to the preset list (or drop the
+file on the window): their presets and songs are added to yours.
+
+Everything runs on your own PC: no account, no ads, nothing is uploaded.
