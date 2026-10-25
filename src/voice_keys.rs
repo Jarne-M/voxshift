@@ -122,36 +122,16 @@ impl VoiceHotkeys {
     }
 }
 
-/// Who else already uses `key` (anything but `target`), described for the user.
+/// Who else already uses `key` (anything but `target`), described for the user. See
+/// [`keymap`](crate::keymap) for the full rules.
+#[cfg(test)]
 pub fn conflict<'a>(
     key: &Hotkey,
     target: KeyTarget,
-    voice: &VoiceHotkeys,
+    voice: &'a VoiceHotkeys,
     sounds: impl IntoIterator<Item = (SoundId, &'a str, Option<&'a Hotkey>)>,
 ) -> Option<String> {
-    let same = |h: &Option<Hotkey>| h.as_ref().is_some_and(|h| h.same_keys(key));
-    if target != KeyTarget::Toggle && same(&voice.toggle) {
-        return Some("the voice changer toggle".into());
-    }
-    if target != KeyTarget::Mute && same(&voice.mute) {
-        return Some("mute mic".into());
-    }
-    for (i, p) in voice.presets.iter().enumerate() {
-        if target != KeyTarget::Preset(i) && same(&p.hotkey) {
-            return Some(format!("the \"{}\" preset", p.preset));
-        }
-    }
-    for (t, h, name) in voice.action_keys() {
-        if target != t && same(h) {
-            return Some(name.into());
-        }
-    }
-    for (id, name, h) in sounds {
-        if target != KeyTarget::Sound(id) && h.is_some_and(|h| h.same_keys(key)) {
-            return Some(format!("the sound \"{name}\""));
-        }
-    }
-    None
+    crate::keymap::owner(key, target, voice, sounds).map(|o| o.name)
 }
 
 type OverlayFn = Box<dyn Fn(bool) + Send + Sync>;

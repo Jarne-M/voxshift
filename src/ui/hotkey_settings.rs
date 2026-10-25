@@ -39,10 +39,19 @@ fn key_button(
         }
         return;
     }
-    let text = key.map_or("Set hotkey".to_string(), |k| k.label.clone());
+    let (text, hover) = match key {
+        Some(k) => (
+            k.label.clone(),
+            "Click, then press another key or combination",
+        ),
+        None => (
+            "Not set".to_string(),
+            "No hotkey. Click, then press the key or combination to use",
+        ),
+    };
     if ui
         .add_enabled(v.hotkeys_available, egui::Button::new(text))
-        .on_hover_text("Click, then press the key or combination to use")
+        .on_hover_text(hover)
         .clicked()
     {
         actions.push(Action::Capture(target));

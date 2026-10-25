@@ -6,6 +6,7 @@
 mod audio;
 mod config;
 mod dsp;
+mod keymap;
 mod melody;
 mod shell;
 mod soundboard;

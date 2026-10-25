@@ -9,7 +9,7 @@
 use super::library::Board;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 /// Troubleshooting log for assigning hotkeys, written next to the config. It only records
@@ -179,6 +179,8 @@ pub struct HotkeyService {
     available: bool,
     /// Key presses received so far (for noticing a listener that hears nothing).
     presses: Arc<AtomicU64>,
+    /// While set, key presses trigger nothing (a dialog about hotkeys is open).
+    paused: Arc<AtomicBool>,
 }
 
 impl HotkeyService {
@@ -200,6 +202,8 @@ impl HotkeyService {
             drop(raw_tx);
             false
         };
+        let paused = Arc::new(AtomicBool::new(false));
+        let hold = paused.clone();
         let cap = capture.clone();
         let counter = presses.clone();
         let worker = std::thread::Builder::new()
@@ -260,6 +264,9 @@ impl HotkeyService {
                         continue;
                     }
                     drop(capturing);
+                    if hold.load(Ordering::Relaxed) {
+                        continue; // e.g. Tab/Enter/Esc in the "key already used" dialog
+                    }
                     if handler.as_ref().is_some_and(|h| h.pressed(&key)) {
                         continue;
                     }
@@ -278,11 +285,22 @@ impl HotkeyService {
             worker,
             available,
             presses,
+            paused,
         }
     }
 
     pub fn available(&self) -> bool {
         self.available
+    }
+
+    /// While paused, no hotkey triggers anything (key capture still works).
+    pub fn set_paused(&self, on: bool) {
+        self.paused.store(on, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub fn paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
     }
 
     /// Number of key presses the listener has delivered since it started.

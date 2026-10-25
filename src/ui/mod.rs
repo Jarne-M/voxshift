@@ -17,6 +17,7 @@ use crate::audio::device_manager::{DeviceStatus, Event, ManagerCmd, ManagerHandl
 use crate::audio::shared::{ActiveMic, Shared};
 use crate::config::{self, CloseBehavior, Config, StartVoice};
 use crate::dsp::params::{P, Snapshot};
+use crate::keymap;
 use crate::melody::{Loaded, MelodySource};
 use crate::shell::tray::{Tray, TrayPoster};
 use crate::shell::{TrayAction, autostart};
@@ -55,6 +56,8 @@ pub struct VoxApp {
     hotkeys: Option<HotkeyService>,
     /// The hotkey waiting for a key combination (a sound, the voice toggle, ...).
     capturing: Option<KeyTarget>,
+    /// A captured key that is already taken: the Keep / Change dialog.
+    key_conflict: Option<KeyConflict>,
     capture_watch: Option<CaptureWatch>,
     /// Switches the voice changer and announces it (button, tray and hotkey all use this).
     feedback: Arc<Feedback>,
@@ -102,6 +105,40 @@ struct CaptureWatch {
 
 /// How long a key press in the window may go unreported by the listener.
 const CAPTURE_GRACE_S: f64 = 0.75;
+
+/// A captured key that another action already has, waiting for Keep or Change.
+struct KeyConflict {
+    key: hotkeys::Hotkey,
+    /// The action being assigned, and how it is called.
+    target: KeyTarget,
+    target_name: String,
+    owner: keymap::Owner,
+    focus_pending: bool,
+}
+
+/// Makes every hotkey in a loaded config unique (see [`keymap::dedupe`]); returns what was
+/// cleared.
+fn dedupe_hotkeys(cfg: &mut Config) -> Vec<String> {
+    let mut sounds: Vec<keymap::SoundKey> = cfg
+        .sounds
+        .iter_mut()
+        .enumerate()
+        .map(|(i, s)| keymap::SoundKey {
+            id: i as u64 + 1,
+            name: &s.name,
+            hotkey: &mut s.hotkey,
+        })
+        .collect();
+    keymap::dedupe(&mut cfg.voice_keys, &mut sounds)
+}
+
+/// "the sound \"x\"" -> "The sound \"x\"".
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
+}
 
 struct CloseDialog {
     remember: bool,
@@ -268,6 +305,10 @@ impl VoxApp {
 
     fn with_manager(mut cfg: Config, shared: Arc<Shared>, manager: ManagerHandle) -> Self {
         cfg.voice_on = start_voice_on(&cfg);
+        // `saved` is the config as loaded, so a cleanup below differs from it and is saved:
+        // the notice about it shows once.
+        let loaded = cfg.clone();
+        let cleared = dedupe_hotkeys(&mut cfg);
         apply_to_shared(&cfg, &shared);
         let sounds = Soundboard::new(manager.port.clone(), cfg.sounds.clone());
         let tray_poster: Arc<OnceLock<TrayPoster>> = Arc::new(OnceLock::new());
@@ -300,10 +341,11 @@ impl VoxApp {
             sounds,
             hotkeys: None,
             capturing: None,
+            key_conflict: None,
             capture_watch: None,
             preset_name: String::new(),
             config_path: None,
-            saved: cfg.clone(),
+            saved: loaded,
             changed_at: None,
             startup_notice: None,
             fx: Snapshot::from_settings(&cfg.effects),
@@ -323,6 +365,16 @@ impl VoxApp {
                 app.startup_notice = Some(format!("Melody Voice: {e}. Using the default melody."));
                 let _ = app.select_melody(MelodySource::default(), false);
             }
+        }
+        if !cleared.is_empty() {
+            let note = format!(
+                "Some hotkeys were set twice. The first one kept its key; cleared: {}",
+                cleared.join(", ")
+            );
+            app.startup_notice = Some(match app.startup_notice.take() {
+                Some(other) => format!("{note}\n{other}"),
+                None => note,
+            });
         }
         app
     }
@@ -827,6 +879,7 @@ impl VoxApp {
 
         self.handle_dropped_files(&ctx);
         self.poll_hotkey_capture(&ctx);
+        self.key_conflict_dialog(&ctx);
         self.close_dialog(&ctx);
         self.toasts.show(&ctx);
         ctx.request_repaint_after(Duration::from_millis(33));
@@ -1040,39 +1093,51 @@ impl VoxApp {
         self.set_hotkey(target, None);
     }
 
-    fn set_hotkey(&mut self, target: KeyTarget, key: Option<hotkeys::Hotkey>) {
-        let vk = &mut self.cfg.voice_keys;
-        match target {
-            KeyTarget::Sound(id) => {
-                if let Some(s) = self.sounds.lock().get_mut(id) {
-                    s.entry.hotkey = key;
-                }
-                self.sounds_changed();
-            }
-            KeyTarget::Toggle => vk.toggle = key,
-            KeyTarget::Mute => vk.mute = key,
-            KeyTarget::MelodyToggle => vk.melody_toggle = key,
-            KeyTarget::MelodyRestart => vk.melody_restart = key,
-            KeyTarget::MelodyNext => vk.melody_next = key,
-            KeyTarget::MonitorToggle => vk.monitor_toggle = key,
-            KeyTarget::MonitorSoundsToggle => vk.monitor_sounds_toggle = key,
-            KeyTarget::StopSounds => vk.stop_sounds = key,
-            KeyTarget::Preset(i) => {
-                if let Some(p) = vk.presets.get_mut(i) {
-                    p.hotkey = key;
-                }
-            }
-        }
+    /// Runs `f` on the whole keymap: the voice hotkeys and every clip's key.
+    fn with_keymap<R>(
+        &mut self,
+        f: impl FnOnce(&mut voice_keys::VoiceHotkeys, &mut [keymap::SoundKey]) -> R,
+    ) -> R {
+        let r = {
+            let mut board = self.sounds.lock();
+            let mut keys: Vec<keymap::SoundKey> = board
+                .sounds
+                .iter_mut()
+                .map(|s| keymap::SoundKey {
+                    id: s.id,
+                    name: &s.entry.name,
+                    hotkey: &mut s.entry.hotkey,
+                })
+                .collect();
+            f(&mut self.cfg.voice_keys, &mut keys)
+        };
+        self.sounds_changed();
+        r
     }
 
-    /// Who else uses this key combination, if anyone.
-    fn hotkey_conflict(&self, key: &hotkeys::Hotkey, target: KeyTarget) -> Option<String> {
+    fn set_hotkey(&mut self, target: KeyTarget, key: Option<hotkeys::Hotkey>) {
+        self.with_keymap(|voice, sounds| keymap::assign(voice, sounds, target, key));
+    }
+
+    /// What assigning `key` to `target` would do (see [`keymap::check`]), and how `target` is
+    /// called.
+    fn hotkey_check(&self, key: &hotkeys::Hotkey, target: KeyTarget) -> (keymap::Check, String) {
         let board = self.sounds.lock();
         let sounds = board
             .sounds
             .iter()
             .map(|s| (s.id, s.entry.name.as_str(), s.entry.hotkey.as_ref()));
-        voice_keys::conflict(key, target, &self.cfg.voice_keys, sounds)
+        let check = keymap::check(key, target, &self.cfg.voice_keys, sounds.clone());
+        (check, keymap::name_of(target, &self.cfg.voice_keys, sounds))
+    }
+
+    /// Who else uses this key combination, if anyone.
+    #[cfg(test)]
+    fn hotkey_conflict(&self, key: &hotkeys::Hotkey, target: KeyTarget) -> Option<String> {
+        match self.hotkey_check(key, target).0 {
+            keymap::Check::Conflict(o) => Some(o.name),
+            _ => None,
+        }
     }
 
     fn poll_hotkey_capture(&mut self, ctx: &egui::Context) {
@@ -1090,19 +1155,120 @@ impl VoxApp {
             hotkeys::diag::log("window: got 'cancelled' (Esc)");
             return;
         };
-        hotkeys::diag::log(format!("window: got key {} -> saving", key.label));
+        hotkeys::diag::log(format!("window: got key {} -> checking", key.label));
+        self.key_captured(ctx, target, key);
+    }
+
+    /// A key was pressed for `target`: assign it, refuse it, or ask (see [`keymap`]).
+    fn key_captured(&mut self, ctx: &egui::Context, target: KeyTarget, key: hotkeys::Hotkey) {
         let label = key.label.clone();
-        if let Some(owner) = self.hotkey_conflict(&key, target) {
+        match self.hotkey_check(&key, target) {
+            (keymap::Check::Reserved(why), _) => {
+                self.toasts.push(
+                    ctx,
+                    format!("{label} can't be a hotkey: {why}. Pick another key."),
+                );
+            }
+            (keymap::Check::AlreadyYours, _) => {
+                self.set_hotkey(target, Some(key)); // keeps it (with the fresh label)
+            }
+            (keymap::Check::Assign, _) => {
+                self.set_hotkey(target, Some(key));
+                self.toasts.push(ctx, format!("Hotkey {label} assigned"));
+            }
+            (keymap::Check::Conflict(owner), name) => {
+                // Ask. Until answered, no hotkey triggers anything (Tab, Enter and Esc in the
+                // dialog must not start a clip or switch the voice changer).
+                if let Some(h) = &self.hotkeys {
+                    h.set_paused(true);
+                }
+                self.key_conflict = Some(KeyConflict {
+                    key,
+                    target,
+                    target_name: name,
+                    owner,
+                    focus_pending: true,
+                });
+            }
+        }
+    }
+
+    /// The answer to the "already used" dialog.
+    fn resolve_key_conflict(&mut self, ctx: &egui::Context, change: bool) {
+        let Some(c) = self.key_conflict.take() else {
+            return;
+        };
+        if let Some(h) = &self.hotkeys {
+            h.set_paused(false);
+        }
+        let label = c.key.label.clone();
+        if change {
+            let (key, target, owner) = (c.key, c.target, c.owner.target);
+            self.with_keymap(|voice, sounds| keymap::change(voice, sounds, key, target, owner));
             self.toasts.push(
                 ctx,
                 format!(
-                    "{label} is already used by {owner}. Pick another key, or clear that one first."
+                    "{label} now goes to {}. {} is not set any more.",
+                    c.target_name,
+                    capitalize(&c.owner.name)
                 ),
             );
-            return;
+        } else {
+            self.toasts
+                .push(ctx, format!("Kept: {label} stays with {}.", c.owner.name));
         }
-        self.set_hotkey(target, Some(key));
-        self.toasts.push(ctx, format!("Hotkey {label} assigned"));
+    }
+
+    /// "F8 is already used for the voice changer toggle." Keep (default) or Change.
+    fn key_conflict_dialog(&mut self, ctx: &egui::Context) {
+        let Some(c) = &mut self.key_conflict else {
+            return;
+        };
+        let mut choice = None;
+        let response = egui::Modal::new(egui::Id::new("key_conflict")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.heading("Key already in use");
+            ui.add_space(4.0);
+            ui.label(format!(
+                "{} is already used for {}.",
+                c.key.label, c.owner.name
+            ));
+            ui.label(
+                RichText::new(format!(
+                    "Change moves it to {}; {} is then not set.",
+                    c.target_name, c.owner.name
+                ))
+                .small()
+                .weak(),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let keep = egui::Button::new(RichText::new("Keep").strong().color(Color32::WHITE))
+                    .fill(ACCENT);
+                let r = ui
+                    .add(keep)
+                    .on_hover_text("Leave both hotkeys as they were (Esc)");
+                if std::mem::take(&mut c.focus_pending) {
+                    r.request_focus(); // Enter picks the default; Tab moves to Change
+                }
+                if r.clicked() {
+                    choice = Some(false);
+                }
+                if ui
+                    .button("Change")
+                    .on_hover_text(format!("Use {} here instead", c.key.label))
+                    .clicked()
+                {
+                    choice = Some(true);
+                }
+            });
+        });
+        if choice.is_none() && response.should_close() {
+            choice = Some(false); // Esc or a click outside: keep
+        }
+        if let Some(change) = choice {
+            self.resolve_key_conflict(ctx, change);
+        }
     }
 
     /// Applies a preset's sliders and, if it has one, its melody.
@@ -2243,9 +2409,184 @@ pub(crate) mod tests {
     }
 
     /// Assigning a key another action already uses is refused.
+    fn key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    /// An app where the clip "airhorn" has F8; returns it with the clip's id.
+    fn app_with_airhorn_on_f8(ctx: &egui::Context) -> (VoxApp, crate::soundboard::mixer::SoundId) {
+        let mut app = test_app();
+        app.add_sounds(ctx, vec!["C:/nope/airhorn.wav".into()]);
+        let id = app.sounds.lock().sounds[0].id;
+        app.set_hotkey(
+            KeyTarget::Sound(id),
+            Some(hotkeys::Hotkey::new(0x77, false, false, false, false, "F8")),
+        );
+        app.cfg.tab = Tab::Effects;
+        (app, id)
+    }
+
+    fn f8() -> hotkeys::Hotkey {
+        hotkeys::Hotkey::new(0x77, false, false, false, false, "F8")
+    }
+
+    #[test]
+    fn a_taken_key_opens_the_dialog_and_esc_or_enter_keep_both() {
+        let ctx = egui::Context::default();
+        for (name, events) in [
+            (
+                "Esc",
+                vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
+            ),
+            (
+                "Enter",
+                vec![key_event(egui::Key::Enter, egui::Modifiers::NONE)],
+            ),
+        ] {
+            let (mut app, id) = app_with_airhorn_on_f8(&ctx);
+            app.key_captured(&ctx, KeyTarget::MonitorToggle, f8());
+            let c = app.key_conflict.as_ref().expect("asks");
+            assert_eq!(c.owner.name, "the sound \"airhorn\"", "names the clip");
+            frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]); // dialog shows, Keep focused
+            frame(&ctx, &mut app, (1240.0, 800.0), 0.1, events);
+            assert!(app.key_conflict.is_none(), "{name} answers the dialog");
+            assert!(
+                app.cfg.voice_keys.monitor_toggle.is_none(),
+                "{name}: nothing moved"
+            );
+            assert_eq!(app.cfg.sounds[0].hotkey.as_ref().unwrap().label, "F8");
+            assert!(
+                app.sounds
+                    .lock()
+                    .get_mut(id)
+                    .unwrap()
+                    .entry
+                    .hotkey
+                    .is_some()
+            );
+            assert!(
+                app.toasts
+                    .contains("Kept: F8 stays with the sound \"airhorn\"")
+            );
+        }
+    }
+
+    #[test]
+    fn tab_then_enter_changes_and_the_old_owner_is_not_set() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = app_with_airhorn_on_f8(&ctx);
+        app.key_captured(&ctx, KeyTarget::StopSounds, f8());
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
+        let tab = key_event(egui::Key::Tab, egui::Modifiers::NONE);
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.1, vec![tab]); // Keep -> Change
+        let enter = key_event(egui::Key::Enter, egui::Modifiers::NONE);
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.2, vec![enter]);
+        assert!(app.key_conflict.is_none());
+        assert_eq!(app.cfg.voice_keys.stop_sounds.as_ref().unwrap().label, "F8");
+        assert!(
+            app.cfg.sounds[0].hotkey.is_none(),
+            "airhorn is not set any more"
+        );
+        assert!(app.toasts.contains("F8 now goes to stop all sounds"));
+        assert!(
+            app.toasts
+                .contains("The sound \"airhorn\" is not set any more")
+        );
+        // And the soundboard tab shows it as "Not set".
+        app.cfg.tab = Tab::Soundboard;
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.3, vec![]);
+    }
+
+    #[test]
+    fn change_works_for_voice_keys_too_and_same_key_or_reserved_never_ask() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.set_hotkey(KeyTarget::Toggle, Some(f8()));
+        // A clip takes F8 from the voice changer toggle.
+        app.add_sounds(&ctx, vec!["C:/nope/bruh.wav".into()]);
+        let id = app.sounds.lock().sounds[0].id;
+        app.key_captured(&ctx, KeyTarget::Sound(id), f8());
+        assert_eq!(
+            app.key_conflict.as_ref().unwrap().owner.name,
+            "the voice changer toggle"
+        );
+        app.resolve_key_conflict(&ctx, true);
+        assert!(app.cfg.voice_keys.toggle.is_none());
+        assert_eq!(app.cfg.sounds[0].hotkey.as_ref().unwrap().label, "F8");
+        // Pressing F8 again for that clip: accepted silently, no dialog.
+        app.toasts = Toasts::default();
+        app.key_captured(&ctx, KeyTarget::Sound(id), f8());
+        assert!(app.key_conflict.is_none());
+        assert!(!app.toasts.contains("F8"), "nothing to say");
+        assert_eq!(app.cfg.sounds[0].hotkey.as_ref().unwrap().label, "F8");
+        // Windows keys are refused with a reason, without a dialog.
+        let win_r = hotkeys::Hotkey::new(0x52, false, false, false, true, "Win+R");
+        app.key_captured(&ctx, KeyTarget::Mute, win_r);
+        assert!(app.key_conflict.is_none() && app.cfg.voice_keys.mute.is_none());
+        assert!(app.toasts.contains("Win+R can't be a hotkey"));
+        // A free key is simply assigned.
+        let f9 = hotkeys::Hotkey::new(0x78, false, false, false, false, "F9");
+        app.key_captured(&ctx, KeyTarget::Mute, f9);
+        assert_eq!(app.cfg.voice_keys.mute.as_ref().unwrap().label, "F9");
+        assert!(app.toasts.contains("Hotkey F9 assigned"));
+    }
+
+    #[test]
+    fn duplicate_hotkeys_in_a_loaded_config_are_cleared_once_with_a_notice() {
+        let dir = crate::soundboard::decode::tests::temp_dir("dupe-config");
+        let path = dir.join("config.json");
+        let mut cfg = Config::default();
+        cfg.voice_keys.toggle = Some(f8());
+        cfg.voice_keys.stop_sounds = Some(f8());
+        cfg.sounds.push(SoundEntry {
+            name: "airhorn".into(),
+            path: "C:/nope/airhorn.wav".into(),
+            volume: 1.0,
+            hotkey: Some(f8()),
+        });
+        let start = |cfg: Config| {
+            VoxApp::with_manager(
+                cfg,
+                Arc::new(Shared::default()),
+                ManagerHandle::detached(fake_status()),
+            )
+        };
+        let mut app = start(cfg);
+        app.config_path = Some(path.clone());
+        assert_eq!(
+            app.cfg.voice_keys.toggle.as_ref().unwrap().label,
+            "F8",
+            "first keeps it"
+        );
+        assert!(app.cfg.voice_keys.stop_sounds.is_none());
+        assert!(app.cfg.sounds[0].hotkey.is_none());
+        assert!(
+            app.sounds.lock().sounds[0].entry.hotkey.is_none(),
+            "the board agrees"
+        );
+        let notice = app.startup_notice.clone().unwrap();
+        assert!(notice.contains("F8 (stop all sounds)"), "{notice}");
+        assert!(notice.contains("F8 (the sound \"airhorn\")"), "{notice}");
+        // The cleaned config is saved, so the next start has nothing to report.
+        app.autosave(0.0);
+        app.autosave(2.0);
+        let (reloaded, _) = config::load_from(&path);
+        let app = start(reloaded);
+        assert!(app.startup_notice.is_none(), "{:?}", app.startup_notice);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// With the real listener: pressing a taken key asks, and while the dialog is open that
+    /// key triggers nothing (the clip does not play, the global hotkeys are paused).
     #[cfg(windows)]
     #[test]
-    fn duplicate_hotkeys_are_refused() {
+    fn duplicate_hotkeys_ask_and_pause_the_listener() {
         use crate::soundboard::hotkeys::tests::{HOOK_TESTS, VK_F24, tap_f24};
         let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut app = test_app();
@@ -2261,8 +2602,18 @@ pub(crate) mod tests {
         std::thread::sleep(Duration::from_millis(100));
         tap_f24();
         assert!(wait_for(&ctx, &mut app, |a| a.capturing.is_none()));
-        assert!(app.cfg.voice_keys.toggle.is_none(), "not assigned");
-        assert!(app.toasts.contains("already used by the sound \"airhorn\""));
+        let c = app.key_conflict.as_ref().expect("the dialog is open");
+        assert_eq!(c.owner.name, "the sound \"airhorn\"");
+        assert!(app.hotkeys.as_ref().unwrap().paused());
+        assert!(app.cfg.voice_keys.toggle.is_none(), "nothing assigned yet");
+        app.resolve_key_conflict(&ctx, false);
+        assert!(
+            !app.hotkeys.as_ref().unwrap().paused(),
+            "hotkeys work again"
+        );
+        assert!(app.cfg.voice_keys.toggle.is_none());
+        std::thread::sleep(Duration::from_millis(200)); // the key-up arrives here
+        frame(&ctx, &mut app, (1240.0, 800.0), 5.0, vec![]);
     }
 
     #[test]

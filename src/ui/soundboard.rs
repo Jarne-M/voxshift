@@ -184,7 +184,10 @@ fn cell(
                     h.label.clone(),
                     format!("Hotkey: {}. Click to change.", h.label),
                 ),
-                None => ("Set key".to_string(), "Assign a global hotkey".to_string()),
+                None => (
+                    "Not set".to_string(),
+                    "No hotkey. Click, then press a key to assign a global hotkey".to_string(),
+                ),
             };
             if ui
                 .add_enabled(v.hotkeys_available, egui::Button::new(label).small())

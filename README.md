@@ -147,9 +147,11 @@ turn off the driver's noise suppression, raise the seconds, or turn silence dete
   resampled to the output rate. Clips longer than 3 minutes are cut.
 - **Click** plays a sound and clicking again restarts it. **Right-click** stops it, and
   **Stop all** stops everything.
-- **Set key**, then press a key combination anywhere (Esc cancels). Hotkeys are **global** and
-  **pass-through**: the sound plays *and* the game still receives the key. A combination such as
-  Ctrl+Numpad 1 avoids accidental in-game actions. If two sounds share a key, both play.
+- Click a clip's key button (it reads **Not set** until it has one), then press a key
+  combination anywhere (Esc cancels). Hotkeys are **global** and **pass-through**: the sound
+  plays *and* the game still receives the key. A combination such as Ctrl+Numpad 1 avoids
+  accidental in-game actions. Each key belongs to one action at a time (see "One key, one
+  action" in 5a).
 - **Also play in my headphones** routes sounds to the monitor. The monitor must be on.
 
 Hotkeys use Windows' Raw Input API: VoxShift is told about every key press, even in the
@@ -180,8 +182,22 @@ Under **Voice changer hotkeys** in the left panel:
   (the soundboard on your headphones; others always hear the clips). *Stop all sounds* does
   what the Stop all button does: every clip fades out within about 12 ms. All three are
   unassigned until you set them.
-- **Duplicates are refused:** a key already used by a clip, the toggle, mute, a preset key or
-  any other action shows a message instead.
+- **One key, one action.** If the key you press is already used by something else (a clip,
+  the toggle, mute, a preset key or any other action), a dialog says so and names it:
+  "F8 is already used for the sound "airhorn"."
+  - **Keep** (the default, also Enter or Esc) leaves both as they were.
+  - **Change** moves the key to what you're setting up, and the other action shows **Not set**.
+
+  Tab switches between the two buttons. While the dialog is open, no hotkey does anything.
+  Pressing the key an action already has is simply accepted. Windows' own combinations
+  (anything with the Windows key, Ctrl+Alt+Del, Alt+Tab, Alt+F4, Esc combinations) are
+  refused with a short message. If a settings file ever has the same key twice (an old or
+  hand-edited one), VoxShift keeps it on the first action, clears the others and tells you
+  once which ones.
+
+  While you assign a key, it doesn't trigger anything in VoxShift. VoxShift only listens to
+  the keyboard, though, so it can't hide that key from other apps: assign keys with the
+  VoxShift window in front, not a game.
 - **Switching never changes your sliders or preset.** Switching back gives exactly what was
   active before. The switch is a 25 ms crossfade, and an echo or reverb that's still sounding
   rings out naturally instead of being cut off. Clean mode keeps your input gain (mic
@@ -341,7 +357,7 @@ second profile, or trying things without touching your normal settings.
 
 ## 8. Testing on your hardware
 
-These were checked automatically: `cargo test` (200 tests; they briefly show a tray icon) and the self-tests below on the
+These were checked automatically: `cargo test` (211 tests; they briefly show a tray icon) and the self-tests below on the
 development PC (USB PnP mic, webcam mic, HyperX Cloud II Wireless). The rest needs your setup.
 
 Melody Voice's tests feed synthetic voices through the real effect chain offline: a low and a
@@ -409,8 +425,11 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
     hotkey right after: the echoes keep sounding and fade away naturally.
 18. **In a game.** Focus a game, press the hotkey: the beep confirms it, Discord hears the
     change, and the game still reacts to the key normally. Try *Hold for effects* too.
-19. **Duplicates.** Try giving the toggle the same key as a soundboard clip: you get a
-    message, and nothing changes.
+19. **Duplicates.** Give a soundboard clip F8, then click *Effects on/off* → press F8. The
+    dialog reads "F8 is already used for the sound "…"." with *Keep* highlighted. Press Esc:
+    nothing changes. Try again, press Tab then Enter (Change): the toggle shows F8, and the
+    clip shows *Not set*. While the dialog is open, pressing F8 plays nothing. Try Win+R:
+    it's refused with a message.
 
 **Monitor and stop keys (headphones on, monitor device on):**
 
