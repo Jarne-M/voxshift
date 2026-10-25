@@ -582,6 +582,7 @@ mod tests {
             id: 5,
             data: clip,
             volume: 1.0,
+            looped: false,
         }));
         let (va1, _) = talk(&mut a, &mut tx_a, &mut mon_a, 0, 200, sine);
         let (vb1, _) = talk(&mut b, &mut tx_b, &mut mon_b, 0, 200, sine);
@@ -724,6 +725,7 @@ mod tests {
                 id: 1,
                 data,
                 volume: 1.0,
+                looped: false,
             }))
             .ok()
             .unwrap();

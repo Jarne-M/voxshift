@@ -445,9 +445,10 @@ mod tests {
             .textures_delta
             .clear();
         let font = egui::FontId::proportional(14.0);
-        // (The default fonts have no arrows: "→" would show as a box, hence "»".)
+        // (The default fonts have no arrows and no "●": "→" would show as a box, hence "»".)
+        // This also covers the soundboard's stars.
         let candidates = [
-            '\u{bb}', '\u{2605}', '\u{2014}', '\u{2026}', '\u{fc}', '\u{e8}',
+            '\u{bb}', '\u{2605}', '\u{2606}', '\u{2014}', '\u{2026}', '\u{fc}', '\u{e8}',
         ];
         let missing: Vec<char> = candidates
             .into_iter()

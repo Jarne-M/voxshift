@@ -9,6 +9,7 @@ use crate::audio::mic_select::MicSettings;
 use crate::dsp::params::EffectSettings;
 use crate::melody::MelodySource;
 use crate::soundboard::library::SoundEntry;
+use crate::soundboard::organize::BoardSettings;
 use crate::voice_keys::VoiceHotkeys;
 use presets::Preset;
 use serde::{Deserialize, Serialize};
@@ -107,6 +108,8 @@ pub struct Config {
     pub preset: Option<String>,
     pub user_presets: Vec<Preset>,
     pub sounds: Vec<SoundEntry>,
+    /// Soundboard folders, recents, the open tab and the sort order.
+    pub soundboard: BoardSettings,
     pub melody: MelodySettings,
 }
 
@@ -129,6 +132,7 @@ impl Default for Config {
             preset: None,
             user_presets: Vec::new(),
             sounds: Vec::new(),
+            soundboard: BoardSettings::default(),
             melody: MelodySettings::default(),
         }
     }
@@ -228,12 +232,21 @@ mod tests {
             ],
             "newest first, no duplicates"
         );
+        let folder = cfg.soundboard.create_folder("Memes");
         cfg.sounds.push(SoundEntry {
             name: "airhorn".into(),
             path: "C:/sounds/airhorn.mp3".into(),
             volume: 0.5,
             hotkey: Some(Hotkey::new(0x61, true, false, false, false, "Ctrl+Num 1")),
+            uid: 7,
+            folder: Some(folder),
+            favorite: true,
+            color: Some(3),
+            plays: 12,
         });
+        cfg.soundboard.recent = vec![7];
+        cfg.soundboard.tab = crate::soundboard::organize::BoardTab::Folder(folder);
+        cfg.soundboard.sort = crate::soundboard::organize::SortMode::MostPlayed;
         save_to(&path, &cfg).unwrap();
         let (loaded, warning) = load_from(&path);
         assert!(warning.is_none());

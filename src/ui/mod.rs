@@ -24,6 +24,8 @@ use crate::shell::{TrayAction, autostart};
 use crate::soundboard::decode;
 use crate::soundboard::hotkeys::{self, Captured, HotkeyService, KeyHandler};
 use crate::soundboard::library::{SoundEntry, Soundboard};
+use crate::soundboard::mixer::SoundId;
+use crate::soundboard::organize;
 use crate::voice_keys::{self, Feedback, KeyTarget, VoiceKeys, VoiceRequest};
 use egui::{Color32, RichText, Ui, ViewportCommand};
 use std::path::PathBuf;
@@ -58,6 +60,10 @@ pub struct VoxApp {
     capturing: Option<KeyTarget>,
     /// A captured key that is already taken: the Keep / Change dialog.
     key_conflict: Option<KeyConflict>,
+    /// The soundboard search box (not saved).
+    search: String,
+    /// Board revision last copied into the config (plays happen on the hotkey thread too).
+    board_revision: u64,
     capture_watch: Option<CaptureWatch>,
     /// Switches the voice changer and announces it (button, tray and hotkey all use this).
     feedback: Arc<Feedback>,
@@ -309,8 +315,15 @@ impl VoxApp {
         // the notice about it shows once.
         let loaded = cfg.clone();
         let cleared = dedupe_hotkeys(&mut cfg);
+        cfg.soundboard.repair(&mut cfg.sounds);
         apply_to_shared(&cfg, &shared);
         let sounds = Soundboard::new(manager.port.clone(), cfg.sounds.clone());
+        {
+            // Clips from older versions get their permanent ids here (saved right after).
+            let mut board = sounds.lock();
+            board.recent = cfg.soundboard.recent.clone();
+            cfg.sounds = board.entries();
+        }
         let tray_poster: Arc<OnceLock<TrayPoster>> = Arc::new(OnceLock::new());
         let poster = tray_poster.clone();
         let feedback = Arc::new(Feedback::new(shared.clone(), move |on| {
@@ -342,6 +355,8 @@ impl VoxApp {
             hotkeys: None,
             capturing: None,
             key_conflict: None,
+            search: String::new(),
+            board_revision: 0,
             capture_watch: None,
             preset_name: String::new(),
             config_path: None,
@@ -537,6 +552,10 @@ impl VoxApp {
         let monitor_sounds = self.shared.monitor_sounds.load(Relaxed);
         if monitor_sounds != self.cfg.monitor_sounds {
             self.cfg.monitor_sounds = monitor_sounds;
+        }
+        // A hotkey may have played clips (play counts, Recent).
+        if self.sounds.lock().revision != self.board_revision {
+            self.sounds_changed();
         }
         self.handle_manager_events(ctx);
         self.handle_shell_requests(ctx);
@@ -954,12 +973,33 @@ impl VoxApp {
                 monitor_on: self.cfg.devices.monitor_enabled,
                 stop_key: self.cfg.voice_keys.stop_sounds.as_ref(),
                 monitor_sounds_key: self.cfg.voice_keys.monitor_sounds_toggle.as_ref(),
+                settings: &self.cfg.soundboard,
             };
-            soundboard::panel(ui, &view)
+            soundboard::panel(ui, &view, &mut self.search)
         };
         for a in actions {
             self.apply_sound_action(ui.ctx(), a);
         }
+    }
+
+    /// Runs `f` on the saved entries of all clips (in board order) and writes them back.
+    fn edit_entries(&mut self, f: impl FnOnce(&mut organize::BoardSettings, &mut [SoundEntry])) {
+        {
+            let mut board = self.sounds.lock();
+            let mut entries = board.entries();
+            f(&mut self.cfg.soundboard, &mut entries);
+            for (s, e) in board.sounds.iter_mut().zip(entries) {
+                s.entry = e;
+            }
+        }
+        self.sounds_changed();
+    }
+
+    fn edit_clip(&mut self, id: SoundId, f: impl FnOnce(&mut SoundEntry)) {
+        if let Some(s) = self.sounds.lock().get_mut(id) {
+            f(&mut s.entry);
+        }
+        self.sounds_changed();
     }
 
     fn apply_sound_action(&mut self, ctx: &egui::Context, action: soundboard::Action) {
@@ -997,6 +1037,65 @@ impl VoxApp {
             }
             A::BeginActionKey(target) => self.begin_capture(target),
             A::ClearActionKey(target) => self.clear_hotkey(target),
+            A::Tab(t) => self.cfg.soundboard.tab = t,
+            A::Sort(s) => self.cfg.soundboard.sort = s,
+            A::ToggleFavorite(id) => self.edit_clip(id, |e| e.favorite = !e.favorite),
+            A::Color(id, c) => self.edit_clip(id, |e| e.color = c),
+            A::MoveTo(id, folder) => {
+                self.edit_clip(id, |e| e.folder = folder);
+                let to = folder
+                    .and_then(|f| self.cfg.soundboard.folder_name(f))
+                    .unwrap_or("Unsorted");
+                self.toasts.push(ctx, format!("Moved to {to}"));
+            }
+            A::Reorder(from, to) => {
+                {
+                    let mut board = self.sounds.lock();
+                    let pos = |id| board.sounds.iter().position(|s| s.id == id);
+                    if let (Some(a), Some(b)) = (pos(from), pos(to)) {
+                        organize::reorder(&mut board.sounds, a, b);
+                    }
+                }
+                self.sounds_changed();
+            }
+            A::Locate(id) => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Audio", &decode::EXTENSIONS)
+                    .pick_file()
+                {
+                    self.sounds.lock().relocate(id, path);
+                    self.sounds_changed();
+                }
+            }
+            A::NewFolder => {
+                let id = self.cfg.soundboard.create_folder("New folder");
+                self.cfg.soundboard.tab = organize::BoardTab::Folder(id);
+                self.toasts.push(
+                    ctx,
+                    "Folder created: right-click its tab to rename it, drag clips onto it",
+                );
+            }
+            A::RenameFolder(id, name) => {
+                self.cfg.soundboard.rename_folder(id, &name);
+            }
+            A::DeleteFolder(id) => {
+                let name = self
+                    .cfg
+                    .soundboard
+                    .folder_name(id)
+                    .unwrap_or("")
+                    .to_string();
+                self.edit_entries(|s, entries| s.delete_folder(id, entries));
+                self.toasts.push(
+                    ctx,
+                    format!("Deleted the folder \"{name}\"; its clips are in Unsorted"),
+                );
+            }
+            A::MoveFolder(id, delta) => self.cfg.soundboard.move_folder(id, delta),
+            A::ClearRecent => {
+                self.sounds.lock().clear_recent();
+                self.sounds_changed();
+            }
         }
     }
 
@@ -1004,9 +1103,17 @@ impl VoxApp {
         let (ok, skipped): (Vec<_>, Vec<_>) =
             files.into_iter().partition(|p| decode::is_supported(p));
         if !ok.is_empty() {
+            // Dropped while a folder is open: they go into that folder.
+            let folder = match self.cfg.soundboard.tab {
+                organize::BoardTab::Folder(f) => Some(f),
+                _ => None,
+            };
             let mut board = self.sounds.lock();
             for p in &ok {
-                board.add(SoundEntry::from_path(p.clone()));
+                board.add(SoundEntry {
+                    folder,
+                    ..SoundEntry::from_path(p.clone())
+                });
             }
             drop(board);
             self.sounds_changed();
@@ -1023,8 +1130,12 @@ impl VoxApp {
         }
     }
 
+    /// Copies the clips (and Recent) from the board into the config.
     fn sounds_changed(&mut self) {
-        self.cfg.sounds = self.sounds.lock().entries();
+        let board = self.sounds.lock();
+        self.cfg.sounds = board.entries();
+        self.cfg.soundboard.recent = board.recent.clone();
+        self.board_revision = board.revision;
     }
 
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
@@ -2550,6 +2661,7 @@ pub(crate) mod tests {
             path: "C:/nope/airhorn.wav".into(),
             volume: 1.0,
             hotkey: Some(f8()),
+            ..Default::default()
         });
         let start = |cfg: Config| {
             VoxApp::with_manager(
@@ -2581,6 +2693,124 @@ pub(crate) mod tests {
         let app = start(reloaded);
         assert!(app.startup_notice.is_none(), "{:?}", app.startup_notice);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_old_config_migrates_clips_keep_their_paths_and_start_unsorted() {
+        let dir = crate::soundboard::decode::tests::temp_dir("old-soundboard");
+        let path = dir.join("config.json");
+        // A config from before folders, favourites and ids.
+        std::fs::write(
+            &path,
+            r#"{ "sounds": [
+                { "name": "airhorn", "path": "C:/s/airhorn.mp3", "volume": 0.5,
+                  "hotkey": { "vk": 97, "ctrl": true, "shift": false, "alt": false,
+                              "win": false, "label": "Ctrl+Num 1" } },
+                { "name": "bruh", "path": "C:/s/bruh.wav", "volume": 0.8, "hotkey": null }
+            ] }"#,
+        )
+        .unwrap();
+        let (cfg, warning) = config::load_from(&path);
+        assert!(warning.is_none(), "{warning:?}");
+        let mut app = VoxApp::with_manager(
+            cfg,
+            Arc::new(Shared::default()),
+            ManagerHandle::detached(fake_status()),
+        );
+        app.config_path = Some(path.clone());
+        let s = &app.cfg.sounds;
+        assert_eq!(
+            (s[0].name.as_str(), s[1].name.as_str()),
+            ("airhorn", "bruh")
+        );
+        assert_eq!(s[0].path, PathBuf::from("C:/s/airhorn.mp3"));
+        assert_eq!(s[0].hotkey.as_ref().unwrap().label, "Ctrl+Num 1");
+        assert!(
+            s.iter()
+                .all(|e| e.folder.is_none() && !e.favorite && e.color.is_none())
+        );
+        assert_eq!((s[0].uid, s[1].uid), (1, 2), "permanent ids handed out");
+        assert_eq!(app.cfg.soundboard, organize::BoardSettings::default());
+        // Saved straight away, and the ids are stable from then on.
+        app.autosave(0.0);
+        app.autosave(2.0);
+        let (again, _) = config::load_from(&path);
+        assert_eq!(again.sounds[1].uid, 2);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn folders_favourites_colours_and_order_through_the_ui_actions() {
+        use soundboard::Action as A;
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.add_sounds(
+            &ctx,
+            vec![
+                "C:/nope/airhorn.wav".into(),
+                "C:/nope/bruh.wav".into(),
+                "C:/nope/Écoute.wav".into(),
+            ],
+        );
+        let ids: Vec<SoundId> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+        let draw = |app: &mut VoxApp, t: f64| {
+            for size in [(920.0, 600.0), (1920.0, 1080.0)] {
+                frame(&ctx, app, size, t, vec![]);
+            }
+        };
+        draw(&mut app, 0.0); // files are missing: greyed out with "Locate..."
+
+        app.apply_sound_action(&ctx, A::NewFolder);
+        let memes = app.cfg.soundboard.folders[0].id;
+        assert_eq!(app.cfg.soundboard.tab, organize::BoardTab::Folder(memes));
+        app.apply_sound_action(&ctx, A::RenameFolder(memes, "Memes".into()));
+        app.apply_sound_action(&ctx, A::MoveTo(ids[1], Some(memes)));
+        app.apply_sound_action(&ctx, A::ToggleFavorite(ids[2]));
+        app.apply_sound_action(&ctx, A::Color(ids[0], Some(4)));
+        app.apply_sound_action(&ctx, A::Sort(organize::SortMode::Name));
+        draw(&mut app, 0.1);
+        let e = &app.cfg.sounds;
+        assert_eq!(e[1].folder, Some(memes));
+        assert!(e[2].favorite && e[0].color == Some(4));
+        assert_eq!(app.cfg.soundboard.folder_name(memes), Some("Memes"));
+
+        // Dropping more files while a folder is open puts them in it.
+        app.add_sounds(&ctx, vec!["C:/nope/wow.wav".into()]);
+        assert_eq!(app.cfg.sounds[3].folder, Some(memes));
+
+        // Manual order: drag the last clip onto the first.
+        app.apply_sound_action(&ctx, A::Sort(organize::SortMode::Manual));
+        let wow = app.sounds.lock().sounds[3].id;
+        app.apply_sound_action(&ctx, A::Reorder(wow, ids[0]));
+        assert_eq!(app.cfg.sounds[0].name, "wow");
+
+        // Searching shows clips of every folder, accents ignored.
+        app.search = "ecou".into();
+        app.cfg.soundboard.tab = organize::BoardTab::Folder(memes);
+        let shown = organize::visible(&app.cfg.sounds, &app.cfg.soundboard, &app.search);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(app.cfg.sounds[shown[0]].name, "Écoute");
+        draw(&mut app, 0.2);
+        app.search.clear();
+
+        // Deleting the folder keeps every clip, in Unsorted.
+        app.apply_sound_action(&ctx, A::DeleteFolder(memes));
+        assert_eq!(app.cfg.sounds.len(), 4);
+        assert!(app.cfg.sounds.iter().all(|e| e.folder.is_none()));
+        assert_eq!(app.cfg.soundboard.tab, organize::BoardTab::Unsorted);
+        for tab in [
+            organize::BoardTab::All,
+            organize::BoardTab::Favorites,
+            organize::BoardTab::Recent,
+        ] {
+            app.apply_sound_action(&ctx, A::Tab(tab));
+            draw(&mut app, 0.3);
+        }
+        assert_eq!(
+            app.cfg.soundboard.tab,
+            organize::BoardTab::Recent,
+            "remembered"
+        );
     }
 
     #[test]

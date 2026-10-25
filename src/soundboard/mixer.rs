@@ -26,6 +26,8 @@ pub enum SoundCmd {
         id: SoundId,
         data: Arc<SoundData>,
         volume: f32,
+        /// Start over at the end until stopped ("loop while held").
+        looped: bool,
     },
     SetVolume(SoundId, f32),
     Stop(SoundId),
@@ -49,6 +51,7 @@ struct Voice {
     gain: Smoother,
     fade: Ramp,
     stopping: bool,
+    looped: bool,
 }
 
 pub struct SoundMixer {
@@ -92,7 +95,12 @@ impl SoundMixer {
     /// Applies a command; may return a buffer that is no longer needed.
     pub fn apply(&mut self, cmd: SoundCmd) -> Option<SoundRetired> {
         match cmd {
-            SoundCmd::Play { id, data, volume } => {
+            SoundCmd::Play {
+                id,
+                data,
+                volume,
+                looped,
+            } => {
                 // Fade out an existing instance; the new one starts from the top.
                 for v in self.voices.iter_mut().flatten() {
                     if v.id == id {
@@ -109,6 +117,7 @@ impl SoundMixer {
                     gain: Smoother::new(RATE, 0.02, volume),
                     fade: Ramp::new(RATE, FADE_IN_S, 0.0),
                     stopping: false,
+                    looped,
                 };
                 let slot = match self.voices.iter().position(Option::is_none) {
                     Some(i) => i,
@@ -164,10 +173,15 @@ impl SoundMixer {
             }
             let mut finished = false;
             for i in 0..BLOCK {
-                let idx = v.pos as usize;
+                let mut idx = v.pos as usize;
                 if idx + 1 >= len {
-                    finished = true;
-                    break;
+                    if v.looped && !v.stopping && len > 2 {
+                        v.pos -= (len - 1) as f64; // around again
+                        idx = v.pos as usize;
+                    } else {
+                        finished = true;
+                        break;
+                    }
                 }
                 let frac = (v.pos - idx as f64) as f32;
                 let target = if v.stopping { 0.0 } else { 1.0 };
@@ -220,7 +234,8 @@ mod tests {
             m.apply(SoundCmd::Play {
                 id: 1,
                 data: tone(4800, 48_000),
-                volume: 1.0
+                volume: 1.0,
+                looped: false,
             })
             .is_none()
         );
@@ -238,6 +253,7 @@ mod tests {
             id: 7,
             data: tone(48_000, 48_000),
             volume: 1.0,
+            looped: false,
         });
         render(&mut m, 10);
         m.apply(SoundCmd::StopAll);
@@ -259,6 +275,7 @@ mod tests {
             id: 1,
             data: tone(24_000, 24_000),
             volume: 1.0,
+            looped: false,
         });
         let mut blocks = 0;
         while m.playing() > 0 && blocks < 2000 {
@@ -278,11 +295,13 @@ mod tests {
             id: 1,
             data: data.clone(),
             volume: 1.0,
+            looped: false,
         });
         m.apply(SoundCmd::Play {
             id: 1,
             data: data.clone(),
             volume: 1.0,
+            looped: false,
         });
         assert_eq!(
             m.playing(),
@@ -296,6 +315,7 @@ mod tests {
                 id: 100 + id,
                 data: data.clone(),
                 volume: 0.1,
+                looped: false,
             });
         }
         assert_eq!(m.playing(), VOICES);

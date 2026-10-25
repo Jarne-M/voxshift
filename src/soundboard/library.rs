@@ -1,16 +1,17 @@
 //! The list of sounds, shared by the GUI, the loader thread and the hotkey thread (all
 //! non-real-time, so a mutex is fine). Playing a sound hands its preloaded buffer to the engine.
 
-use super::decode;
 use super::hotkeys::Hotkey;
 use super::mixer::{SoundCmd, SoundData, SoundId};
+use super::{decode, organize};
 use crate::audio::device_manager::EnginePort;
 use crate::audio::engine::EngineCmd;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
-/// What is saved in the config.
+/// What is saved in the config. Every field has a default, so clips saved by older versions
+/// load (they get a `uid` on load and start in "Unsorted").
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SoundEntry {
@@ -18,6 +19,15 @@ pub struct SoundEntry {
     pub path: PathBuf,
     pub volume: f32,
     pub hotkey: Option<Hotkey>,
+    /// Permanent id (folders, favourites and recents refer to it). 0 = not given yet.
+    pub uid: u64,
+    /// The folder it lives in (`None` = Unsorted).
+    pub folder: Option<u32>,
+    pub favorite: bool,
+    /// Palette index for the button tint (`None` = no colour).
+    pub color: Option<u8>,
+    /// How often it was played (button or hotkey).
+    pub plays: u32,
 }
 
 impl Default for SoundEntry {
@@ -27,6 +37,11 @@ impl Default for SoundEntry {
             path: PathBuf::new(),
             volume: 0.8,
             hotkey: None,
+            uid: 0,
+            folder: None,
+            favorite: false,
+            color: None,
+            plays: 0,
         }
     }
 }
@@ -70,6 +85,11 @@ pub struct Board {
     out_rate: u32,
     port: Arc<EnginePort>,
     jobs: mpsc::Sender<Job>,
+    /// Clip uids, most recently played first (see [`organize::push_recent`]).
+    pub recent: Vec<u64>,
+    /// Bumped whenever something the config saves changes here (play counts, recents), so
+    /// the window knows to copy it; plays also happen on the hotkey thread.
+    pub revision: u64,
 }
 
 impl Board {
@@ -77,7 +97,10 @@ impl Board {
         self.sounds.iter().map(|s| s.entry.clone()).collect()
     }
 
-    pub fn add(&mut self, entry: SoundEntry) -> SoundId {
+    pub fn add(&mut self, mut entry: SoundEntry) -> SoundId {
+        if entry.uid == 0 || self.sounds.iter().any(|s| s.entry.uid == entry.uid) {
+            entry.uid = self.sounds.iter().map(|s| s.entry.uid).max().unwrap_or(0) + 1;
+        }
         self.next_id += 1;
         let id = self.next_id;
         let _ = self.jobs.send(Job {
@@ -95,26 +118,62 @@ impl Board {
 
     pub fn remove(&mut self, id: SoundId) {
         self.port.send(EngineCmd::Sound(SoundCmd::Stop(id)));
+        if let Some(uid) = self.get_mut(id).map(|s| s.entry.uid) {
+            self.recent.retain(|&u| u != uid);
+        }
         self.sounds.retain(|s| s.id != id);
+        self.revision += 1;
     }
 
     pub fn get_mut(&mut self, id: SoundId) -> Option<&mut Sound> {
         self.sounds.iter_mut().find(|s| s.id == id)
     }
 
+    /// Points a clip at another file (it was moved or deleted) and loads it from there. Its
+    /// name, key, folder, colour and favourite stay.
+    pub fn relocate(&mut self, id: SoundId, path: PathBuf) {
+        let rate = self.out_rate;
+        if let Some(s) = self.get_mut(id) {
+            s.entry.path = path.clone();
+            s.state = LoadState::Loading;
+            let _ = self.jobs.send(Job { id, path, rate });
+            self.revision += 1;
+        }
+    }
+
     /// Starts (or restarts) a sound. False if it is not loaded or no engine is running.
-    pub fn play(&self, id: SoundId) -> bool {
-        let Some(s) = self.sounds.iter().find(|s| s.id == id) else {
+    pub fn play(&mut self, id: SoundId) -> bool {
+        self.start(id, false)
+    }
+
+    /// Starts a sound, looping it until stopped if `looped`; counts the play and puts the
+    /// clip at the top of "Recent".
+    pub fn start(&mut self, id: SoundId, looped: bool) -> bool {
+        let Some(s) = self.sounds.iter_mut().find(|s| s.id == id) else {
             return false;
         };
         let LoadState::Ready(data) = &s.state else {
             return false;
         };
-        self.port.send(EngineCmd::Sound(SoundCmd::Play {
+        let sent = self.port.send(EngineCmd::Sound(SoundCmd::Play {
             id,
             data: data.clone(),
             volume: s.entry.volume,
-        }))
+            looped,
+        }));
+        if sent {
+            s.entry.plays = s.entry.plays.saturating_add(1);
+            let uid = s.entry.uid;
+            organize::push_recent(&mut self.recent, uid);
+            self.revision += 1;
+        }
+        sent
+    }
+
+    /// Empties "Recent".
+    pub fn clear_recent(&mut self) {
+        self.recent.clear();
+        self.revision += 1;
     }
 
     pub fn stop(&self, id: SoundId) {
@@ -134,7 +193,7 @@ impl Board {
     }
 
     /// Plays every sound bound to this key combination; returns how many.
-    pub fn hotkey_pressed(&self, key: &Hotkey) -> usize {
+    pub fn hotkey_pressed(&mut self, key: &Hotkey) -> usize {
         let ids: Vec<SoundId> = self
             .sounds
             .iter()
@@ -190,6 +249,8 @@ impl Soundboard {
             out_rate: 0,
             port,
             jobs: tx,
+            recent: Vec::new(),
+            revision: 0,
         }));
         let b = board.clone();
         std::thread::Builder::new()
@@ -211,8 +272,15 @@ impl Soundboard {
             })
             .expect("spawn loader");
         {
+            // Clips saved before ids existed get new ones above every saved id, so a saved
+            // clip later in the list never has to give up its own.
+            let mut next = entries.iter().map(|e| e.uid).max().unwrap_or(0);
             let mut b = board.lock().unwrap_or_else(|e| e.into_inner());
-            for e in entries {
+            for mut e in entries {
+                if e.uid == 0 {
+                    next += 1;
+                    e.uid = next;
+                }
                 b.add(e);
             }
         }
@@ -260,12 +328,13 @@ mod tests {
             ],
         );
         wait_loaded(&sb, 2);
-        let b = sb.lock();
+        let mut b = sb.lock();
         assert!(matches!(b.sounds[0].state, LoadState::Ready(_)));
         assert!(matches!(b.sounds[1].state, LoadState::Failed(_)));
         assert_eq!(b.sounds[0].entry.name, "good");
         // No engine is running: play reports failure instead of panicking.
-        assert!(!b.play(b.sounds[0].id));
+        let id = b.sounds[0].id;
+        assert!(!b.play(id));
         drop(b);
         std::fs::remove_dir_all(dir).ok();
     }
@@ -299,6 +368,72 @@ mod tests {
         }
         assert!(peak > 0.3, "sound audible in the output: {peak}");
         assert!(shared.is_playing(id));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn plays_are_counted_recent_follows_and_a_missing_file_can_be_relocated() {
+        use crate::audio::engine::Engine;
+        use crate::audio::shared::Shared;
+        let dir = temp_dir("board-recent");
+        let a = dir.join("a.wav");
+        let b = dir.join("b.wav");
+        write_wav(&a, 48_000, 1, &[1000; 4800]);
+        write_wav(&b, 48_000, 1, &[1000; 4800]);
+        let (_engine, link) = Engine::new(Arc::new(Shared::default()), 48_000);
+        let port = Arc::new(EnginePort::default());
+        port.set(Some(link.cmds));
+        let gone = dir.join("moved away.wav");
+        let sb = Soundboard::new(
+            port,
+            vec![
+                SoundEntry::from_path(a),
+                SoundEntry {
+                    uid: 40, // from a saved config: kept
+                    favorite: true,
+                    color: Some(2),
+                    folder: Some(3),
+                    ..SoundEntry::from_path(gone)
+                },
+                SoundEntry::from_path(b),
+            ],
+        );
+        wait_loaded(&sb, 3);
+        let mut board = sb.lock();
+        let uids: Vec<u64> = board.sounds.iter().map(|s| s.entry.uid).collect();
+        assert_eq!(
+            uids,
+            [41, 40, 42],
+            "new clips get fresh ids, saved ones keep theirs"
+        );
+        let ids: Vec<SoundId> = board.sounds.iter().map(|s| s.id).collect();
+        let rev = board.revision;
+        assert!(board.play(ids[0]));
+        assert!(board.play(ids[2]));
+        assert!(board.play(ids[0]));
+        assert_eq!(board.recent, [41, 42], "most recent first, once each");
+        assert_eq!(board.sounds[0].entry.plays, 2);
+        assert!(board.revision > rev, "the window is told");
+        assert!(!board.play(ids[1]), "a missing file does not play...");
+        assert!(matches!(board.sounds[1].state, LoadState::Failed(_)));
+        board.remove(ids[2]);
+        assert_eq!(board.recent, [41], "a removed clip leaves Recent");
+        board.clear_recent();
+        assert!(board.recent.is_empty());
+
+        // ...until it is located again: name, folder, colour and star are kept.
+        let found = dir.join("found it.wav");
+        write_wav(&found, 48_000, 1, &[1000; 4800]);
+        board.relocate(ids[1], found.clone());
+        drop(board);
+        wait_loaded(&sb, 2);
+        let board = sb.lock();
+        let s = &board.sounds[1];
+        assert!(matches!(s.state, LoadState::Ready(_)));
+        assert_eq!(s.entry.path, found);
+        assert_eq!(s.entry.name, "moved away");
+        assert!(s.entry.favorite && s.entry.color == Some(2) && s.entry.folder == Some(3));
+        drop(board);
         std::fs::remove_dir_all(dir).ok();
     }
 

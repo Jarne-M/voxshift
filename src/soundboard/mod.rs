@@ -4,3 +4,4 @@ pub mod decode;
 pub mod hotkeys;
 pub mod library;
 pub mod mixer;
+pub mod organize;
