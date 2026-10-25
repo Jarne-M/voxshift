@@ -10,6 +10,7 @@ use crate::soundboard::organize::{self, BoardSettings, BoardTab, SortMode};
 use crate::soundboard::playmode::PlayMode;
 use crate::voice_keys::KeyTarget;
 use egui::{Color32, Id, Key, RichText, Ui, vec2};
+use std::sync::atomic::Ordering::Relaxed;
 
 pub enum Action {
     AddFiles,
@@ -382,6 +383,13 @@ pub fn panel(ui: &mut Ui, v: &View, search: &mut String) -> Vec<Action> {
         actions.push(Action::MouseUp);
     }
     top_row(ui, v, &mut actions);
+    if v.shared.safe_mode.load(Relaxed) {
+        ui.label(
+            RichText::new("Safe mode: clips don't play until you press Restore (top right).")
+                .strong()
+                .color(BAD),
+        );
+    }
     ui.label(
         RichText::new(if v.hotkeys_available {
             "Drop wav/mp3/ogg/flac files here. Hotkeys work while other apps (games) are focused, and the key still reaches them."
@@ -412,7 +420,7 @@ pub fn panel(ui: &mut Ui, v: &View, search: &mut String) -> Vec<Action> {
         ui.vertical_centered(|ui| {
             ui.label(match (search.trim().is_empty(), v.settings.tab) {
                 (false, _) => "No clip matches the search.",
-                (true, BoardTab::Favorites) => "No favourites yet: click a clip's star.",
+                (true, BoardTab::Favorites) => "No favorites yet: click a clip's star.",
                 (true, BoardTab::Recent) => "Nothing played yet.",
                 (true, _) => {
                     "Nothing here yet: drag clips onto this tab, or use Move to... (right-click)."
@@ -569,10 +577,17 @@ fn cell(
             name.to_string(),
             true,
             format!(
-                "{:.1} s, played {} times. Click to play, again to restart. Right-click for \
-                 more (stop, favourite, folder, colour, delete); drag onto a tab to move it.",
+                "{:.1} s, played {} times. {} Right-click for more (stop, favorite, folder, \
+                 play mode, colour, delete); drag onto a tab to move it.",
                 d.len_frames() as f32 / d.sample_rate as f32,
-                e.plays
+                e.plays,
+                match e.play_mode {
+                    PlayMode::Normal => "Click to play, again to restart.",
+                    PlayMode::Hold => "Plays while you hold the mouse button (or the key).",
+                    PlayMode::Toggle => "Click to play, again to stop.",
+                    PlayMode::LoopWhileHeld =>
+                        "Loops while you hold the mouse button (or the key).",
+                }
             ),
         ),
         LoadState::Loading => (
@@ -647,7 +662,7 @@ fn cell(
                     .frame(false),
             )
             .on_hover_text(if e.favorite {
-                "Favourite (click to remove)"
+                "In Favorites (click to remove)"
             } else {
                 "Add to Favorites"
             })

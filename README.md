@@ -35,7 +35,12 @@ whether there's a newer one.
   Sing the Song (per-syllable) and Hard Tune. You can also save your own.
 - **Soundboard.** Add wav, mp3, ogg or flac files with the button or by drag and drop. Each sound
   has its own volume and an optional **global hotkey** that works while a game has focus. You can
-  also play sounds in your headphones.
+  also play sounds in your headphones. Sort clips into folders, search them, star favorites,
+  give them colours, and pick how each one plays: to the end, only while held, start/stop, or
+  loop while held.
+- **Panic button.** One key (or click, or tray entry) stops every sound and sends only your
+  clean mic. Press it again and everything is back exactly as it was. See
+  [section 5d](#5d-panic-button-safe-mode).
 - **Monitor.** Hear yourself, the soundboard or both on your headphones, with its own volume.
 - **Meters, clip lamp, estimated latency,** and a big **Voice changer ON/OFF** toggle (OFF =
   clean passthrough).
@@ -145,8 +150,9 @@ turn off the driver's noise suppression, raise the seconds, or turn silence dete
 
 - **Add sounds…** or drag files onto the window. Files are decoded in the background and
   resampled to the output rate. Clips longer than 3 minutes are cut.
-- **Click** plays a sound and clicking again restarts it. **Right-click** stops it, and
-  **Stop all** stops everything.
+- **Click** plays a sound and clicking again restarts it (for clips in the *Normal* play
+  mode). **Right-click** opens the clip's menu: Stop, Favorites, Move to…, Play mode, Colour,
+  Delete. **Stop all** stops everything.
 - Click a clip's key button (it reads **Not set** until it has one), then press a key
   combination anywhere (Esc cancels). Hotkeys are **global** and **pass-through**: the sound
   plays *and* the game still receives the key. A combination such as Ctrl+Numpad 1 avoids
@@ -156,6 +162,39 @@ turn off the driver's noise suppression, raise the seconds, or turn silence dete
 - The small key buttons next to **Stop all** and **Also play in my headphones** set their
   hotkeys right there. They're the same hotkeys as *Stop all sounds* and *Hear soundboard*
   under Voice changer hotkeys, so both places always show the same key.
+
+**Organising clips:**
+
+- **Tabs:** *All*, *★ Favorites*, *Recent*, *Unsorted* and your own folders. **+ Folder**
+  makes one; right-click a folder tab to rename it, move it left or right, or delete it.
+  Deleting a folder never deletes clips or files: its clips go to *Unsorted*. New clips land
+  in the folder that's open.
+- **Moving clips:** drag a clip onto a tab, or right-click → *Move to…*. With the *My order*
+  sort (and no search), drag a clip onto another one to put it there.
+- **Search** (Ctrl+F jumps there, Esc clears it) looks through every folder as you type. It
+  ignores case and accents, and matches part of a name: "cafe" finds "Café Ambience".
+- **Sort:** *My order*, *Name*, *Most played* or *Recently added*. VoxShift remembers the
+  last tab and sort.
+- **Favorites:** click the ☆ under a clip. **Recent** shows the last 20 clips you played,
+  newest first; *Clear* empties it. Every clip counts its plays (hover it to see how many).
+- **Colours:** right-click → *Colour* → one of 10 colours, or *None*. The name stays readable
+  on any colour.
+- **Missing files:** if a clip's file was moved or deleted, the clip turns grey with
+  **Locate…**. Point it to the file again; its folder, colour, hotkey and favorite stay.
+
+**Play modes** (right-click → *Play mode*; a badge on the clip shows any mode but Normal):
+
+| Mode | Press | Let go |
+|---|---|---|
+| **Normal** | plays to the end (pressing again restarts) | nothing |
+| **Hold** (HOLD) | starts | stops, with a short fade (12 ms) |
+| **Toggle** (TOGGLE) | starts, or stops if it's playing | nothing |
+| **Loop while held** (LOOP) | starts and loops | stops, with a short fade |
+
+Hold modes work with the hotkey and with the mouse (keep the button pressed on the clip).
+Holding a key down doesn't restart the clip. If Windows ever loses the key-up (for example when
+a game grabs the keyboard while you alt-tab), VoxShift checks the keyboard every 50 ms and
+stops the clip as soon as the key is really up, so a clip can't get stuck playing.
 
 Hotkeys use Windows' Raw Input API: VoxShift is told about every key press, even in the
 background, but only listens. It can't block or change keys and adds no delay to your typing.
@@ -185,6 +224,7 @@ Under **Voice changer hotkeys** in the left panel:
   (the soundboard on your headphones; others always hear the clips). *Stop all sounds* does
   what the Stop all button does: every clip fades out within about 12 ms. All three are
   unassigned until you set them.
+- **Panic (safe mode)** is at the top of the list: see [5d](#5d-panic-button-safe-mode).
 - **One key, one action.** If the key you press is already used by something else (a clip,
   the toggle, mute, a preset key or any other action), a dialog says so and names it:
   "F8 is already used for the sound "airhorn"."
@@ -226,6 +266,7 @@ Your virtual mic only exists while VoxShift runs, so closing the window never qu
   notification.
 - **Tray icon:** left-click or double-click shows the window. Right-click opens a menu with:
   - Show VoxShift
+  - Panic: safe mode (all off), or *SAFE MODE: Restore everything* while it's on
   - Voice changer ON/OFF
   - Mute mic
   - Hear myself (monitor)
@@ -242,6 +283,7 @@ Your virtual mic only exists while VoxShift runs, so closing the window never qu
   | grey with a red slash | mic muted |
   | orange | no microphone available |
   | red | virtual mic output missing |
+  | red with a white bar | SAFE MODE (panic button pressed) |
 - **Only one copy runs.** Starting VoxShift again (e.g. from the desktop shortcut) brings the
   running one to the front, even from the tray, instead of starting a second copy that would
   fight over the cable.
@@ -330,6 +372,30 @@ than small ones, and very breathy or creaky speech may be left untuned for a mom
 hummed, almost pure tone gets a little quieter with formants preserved (a safety limiter, so
 it can never blow up).
 
+## 5d. Panic button (safe mode)
+
+For when something goes wrong live: a clip that won't stop, an effect that's far too loud, or
+you just need to sound normal right now.
+
+- **Three ways in:** the red **PANIC** button at the top right of the window, the tray menu's
+  *Panic* entry, or a global hotkey (Voice changer hotkeys → *Panic (safe mode)*; unassigned
+  until you set it). The hotkey works in games and with VoxShift hidden in the tray, and it's
+  checked before every other hotkey.
+- **What it does, at once:** every soundboard clip fades out (Hold and Loop clips too), and the
+  virtual mic gets only your clean mic: the voice changer, all effects and Melody Voice are
+  bypassed, and *Play melody* stops. Clips can't be started while it's on. Optionally (*Panic
+  also mutes my headphones*, off by default) your headphones go quiet too.
+- **What it doesn't do:** change anything. Sliders, the preset, the ON/OFF switch, Melody
+  Voice's setting and the monitor checkboxes all stay as they were (the big ON/OFF button is
+  locked while safe mode is on).
+- **You'll know it's on:** a red *SAFE MODE* banner across the window, a red tray icon with a
+  white bar, and the tooltip says so. With beeps on, you hear a falling three-note beep in your
+  headphones (never in the mic).
+- **Restore** (the banner's button, the same top-right button, the tray entry, or the hotkey
+  again) puts everything back exactly as it was, with a rising beep. Clips that were stopped
+  stay stopped. Safe mode never turns itself off, and it isn't saved: VoxShift always starts
+  normally.
+
 ## 6. Latency
 
 The estimate in the UI is the sum of:
@@ -360,7 +426,7 @@ second profile, or trying things without touching your normal settings.
 
 ## 8. Testing on your hardware
 
-These were checked automatically: `cargo test` (212 tests; they briefly show a tray icon) and the self-tests below on the
+These were checked automatically: `cargo test` (238 tests; they briefly show a tray icon) and the self-tests below on the
 development PC (USB PnP mic, webcam mic, HyperX Cloud II Wireless). The rest needs your setup.
 
 Melody Voice's tests feed synthetic voices through the real effect chain offline: a low and a
@@ -447,6 +513,32 @@ Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available
 - **In a game.** Focus a game and press both keys: they work and the game still gets the
   keys. Hold one key down: it acts once, not repeatedly.
 
+**Soundboard folders, play modes and panic:**
+
+- **Folders.** Make two folders, drag clips onto their tabs, rename one, then delete it: its
+  clips show up in *Unsorted*, and nothing is gone from *All*. Type part of a name with an
+  accent left out (e.g. "cafe") in the search: matching clips from every folder appear. Quit
+  and reopen: the same tab and sort are selected, and stars, colours and *Recent* are kept.
+- **Missing file.** Rename one clip's file in Explorer and restart VoxShift: the clip is grey
+  with *Locate…*. Point it to the renamed file: it plays again, still in its folder, with its
+  colour and star.
+- **Hold mode in a game with alt-tab.** Set a long clip to *Hold* with a hotkey (e.g. Num 5).
+  In a game, hold the key: Discord hears the clip only while you hold it, and it stops with no
+  click when you let go. Keep it held for a few seconds: key auto-repeat never restarts the
+  clip. Now hold it and alt-tab out of the game while still holding, then let go on
+  the desktop: the clip stops within about 50 ms. Try the same with *Loop while held* on a
+  short clip: it keeps looping only while held. Hold a *Hold* clip with the mouse and drag
+  off the window before letting go: it stops too.
+- **Panic during a loud effect and a playing clip.** Set the panic key (e.g. Ctrl+Pause),
+  apply *Demon* and turn Output gain up, start a long clip set to *Loop while held* (keep the
+  key down) and another long one, and talk with Discord's input meter (or a recording)
+  running. Press the panic key: the falling beep in your headphones, both clips stop without a
+  pop, Discord hears your plain voice within a fraction of a second, the banner and the tray
+  icon turn red. Clicking clips plays nothing. Press the panic key again: the Demon voice is
+  back with the same sliders, the clips stay stopped. Try it once with the window hidden in the
+  tray and once from inside a game. Tick *Panic also mutes my headphones* and repeat: the
+  headphones go quiet (except the beep) until you restore.
+
 **Melody Voice (needs your mic and headphones; turn the monitor on):**
 
 20. **Hear the target first.** Pick *Twinkle Twinkle Little Star*, click *Play melody*: a soft
@@ -513,7 +605,8 @@ src/
   dsp/        one file per effect + params, smoothing, chain (all unit-tested); Melody Voice:
               pitch_detect (YIN), conductor (which note when), melody (the effect), preview
   melody/     note type, built-in tunes, MIDI import (midly), lock-free hand-off to the engine
-  soundboard/ decoding (symphonia + rubato), sound list + loader, RT mixer, global hotkeys
+  soundboard/ decoding (symphonia + rubato), sound list + loader, RT mixer, global hotkeys,
+              folders/search/sorting (organize), play modes and held keys (playmode)
   ui/         egui panels: devices, effects, Melody Voice, presets, soundboard, meters, toasts
   config/     settings file + presets
 ```
