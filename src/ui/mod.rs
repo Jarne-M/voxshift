@@ -1065,6 +1065,18 @@ impl VoxApp {
                 self.toasts.push(ctx, format!("Moved to {to}"));
             }
             A::Reorder(from, to) => {
+                let sort = self.cfg.soundboard.sort;
+                if sort != organize::SortMode::Manual {
+                    // Dropped while sorted by name/plays/date: what you see becomes your own
+                    // order, and the drop then moves the clip within it.
+                    let mut board = self.sounds.lock();
+                    let order = organize::sorted_order(&board.entries(), sort);
+                    organize::apply_order(&mut board.sounds, &order);
+                    drop(board);
+                    self.cfg.soundboard.sort = organize::SortMode::Manual;
+                    self.toasts
+                        .push(ctx, "Sort switched to My order, so your order is kept");
+                }
                 {
                     let mut board = self.sounds.lock();
                     let pos = |id| board.sounds.iter().position(|s| s.id == id);
@@ -2988,6 +3000,74 @@ pub(crate) mod tests {
         );
         assert_eq!(plays(&app), 1, "dragging didn't play it");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn dragging_a_clip_by_its_grip_onto_another_clip_reorders_even_when_sorted_by_name() {
+        use soundboard::tests::rect_of;
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        // Added in reverse, then shown sorted by name: the list on screen is clip00, clip01...
+        let files = (0..30)
+            .rev()
+            .map(|i| format!("C:/nope/clip{i:02}.wav").into())
+            .collect();
+        app.add_sounds(&ctx, files);
+        app.cfg.soundboard.sort = organize::SortMode::Name;
+        app.cfg.tab = Tab::Soundboard;
+        let size = (1240.0, 800.0);
+        let mut t = 0.0;
+        let mut step = |app: &mut VoxApp, events: Vec<egui::Event>| {
+            t += 0.05;
+            frame(&ctx, app, size, t, events);
+        };
+        step(&mut app, vec![]);
+        step(&mut app, vec![]);
+        let id_of = |app: &VoxApp, name: &str| {
+            let board = app.sounds.lock();
+            board
+                .sounds
+                .iter()
+                .find(|s| s.entry.name == name)
+                .unwrap()
+                .id
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let mut drag = |app: &mut VoxApp, from: &str, onto: &str| {
+            let grip = rect_of(&ctx, "grip", id_of(app, from)).center();
+            let target = rect_of(&ctx, "card", id_of(app, onto)).center();
+            step(app, vec![egui::Event::PointerMoved(grip)]);
+            step(app, vec![button(grip, true)]);
+            for k in 1..=8 {
+                let p = grip + (target - grip) * (k as f32 / 8.0);
+                step(app, vec![egui::Event::PointerMoved(p)]);
+            }
+            step(app, vec![button(target, false)]);
+            step(app, vec![]);
+        };
+        let first = |app: &VoxApp| -> Vec<String> {
+            app.cfg
+                .sounds
+                .iter()
+                .take(4)
+                .map(|e| e.name.clone())
+                .collect()
+        };
+
+        // Sorted by name, clip00 is dropped on clip02: the name order is kept as "My order",
+        // with clip00 moved to clip02's place.
+        drag(&mut app, "clip00", "clip02");
+        assert_eq!(app.cfg.soundboard.sort, organize::SortMode::Manual);
+        assert_eq!(first(&app), ["clip01", "clip02", "clip00", "clip03"]);
+        // In My order it keeps working, also backwards.
+        drag(&mut app, "clip03", "clip01");
+        assert_eq!(first(&app), ["clip03", "clip01", "clip02", "clip00"]);
+        assert_eq!(app.cfg.sounds.len(), 30, "no clip lost");
     }
 
     #[test]

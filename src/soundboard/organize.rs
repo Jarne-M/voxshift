@@ -239,6 +239,29 @@ pub fn visible(sounds: &[SoundEntry], s: &BoardSettings, search: &str) -> Vec<us
     out
 }
 
+/// The order of all clips under `sort`, as indices into `sounds` (what "All" shows).
+pub fn sorted_order(sounds: &[SoundEntry], sort: SortMode) -> Vec<usize> {
+    let all = BoardSettings {
+        tab: BoardTab::All,
+        sort,
+        ..Default::default()
+    };
+    visible(sounds, &all, "")
+}
+
+/// Rearranges `items` into `order` (a permutation of its indices, e.g. from `sorted_order`).
+pub fn apply_order<T>(items: &mut Vec<T>, order: &[usize]) {
+    if order.len() != items.len() {
+        return;
+    }
+    let mut old: Vec<Option<T>> = std::mem::take(items).into_iter().map(Some).collect();
+    items.extend(
+        order
+            .iter()
+            .filter_map(|&i| old.get_mut(i).and_then(Option::take)),
+    );
+}
+
 /// Moves the clip at `from` so it sits where the clip at `to` is (manual order).
 pub fn reorder<T>(items: &mut Vec<T>, from: usize, to: usize) {
     if from == to || from >= items.len() || to >= items.len() {
@@ -422,6 +445,13 @@ mod tests {
         assert_eq!(order(&s, &sounds), ["bravo", "charlie", "Alpha"]);
         reorder(&mut sounds, 0, 9); // out of range: nothing happens
         assert_eq!(sounds[0].name, "bravo");
+
+        // The order a sort shows can become the manual order (before a drag in that view).
+        let by_name = sorted_order(&sounds, SortMode::Name);
+        apply_order(&mut sounds, &by_name);
+        assert_eq!(order(&s, &sounds), ["Alpha", "bravo", "charlie"]);
+        apply_order(&mut sounds, &[0]); // not a full permutation: untouched
+        assert_eq!(sounds.len(), 3);
     }
 
     #[test]

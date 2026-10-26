@@ -271,8 +271,9 @@ are never retuned.
   shaky click still plays it.)
 - **Search** (Ctrl+F) looks through all folders as you type. It ignores upper/lower case and
   accents and matches part of a name, so "cafe" finds "Café Ambience". Esc clears it.
-- **Sort:** *My order*, *Name*, *Most played* or *Recently added*. With *My order*, drag a clip
-  by its dots onto another one to put it there.
+- **Sort:** *My order*, *Name*, *Most played* or *Recently added*. To arrange clips yourself,
+  drag a clip by its dots onto another one to put it there. If the list was sorted another way,
+  that order becomes your starting point and the sort switches to *My order*.
 - **Favorites:** click the ☆ under a clip.
 - **Recent:** the last 20 clips you played, newest first. *Clear* empties the list.
 - **Colours:** right-click → **Colour** gives a clip one of 10 colours.

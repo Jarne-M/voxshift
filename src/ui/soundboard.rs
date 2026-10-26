@@ -431,10 +431,9 @@ pub fn panel(ui: &mut Ui, v: &View, search: &mut String) -> Vec<Action> {
         });
         return actions;
     }
-    // Dragging onto another clip reorders, but only where the order on screen is "My order".
-    let reorderable = v.settings.sort == SortMode::Manual
-        && search.trim().is_empty()
-        && v.settings.tab != BoardTab::Recent;
+    // Dropping onto another clip reorders (under another sort, what's shown becomes "My order"
+    // first). Not in search results or Recent, whose order isn't yours to change.
+    let reorderable = search.trim().is_empty() && v.settings.tab != BoardTab::Recent;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
         for i in shown {
@@ -455,6 +454,8 @@ pub fn panel(ui: &mut Ui, v: &View, search: &mut String) -> Vec<Action> {
                     .response
             });
             let r = card.inner;
+            #[cfg(test)]
+            tests::remember(ui, ("card", format!("{}", s.id)), r.rect);
             if reorderable {
                 if let Some(drag) = r.dnd_hover_payload::<ClipDrag>()
                     && drag.0 != s.id
@@ -495,8 +496,8 @@ fn drag_handle(ui: &mut Ui, id: SoundId, name: &str) {
         }
     }
     let r = r.on_hover_text(
-        "Drag onto a tab to move it there, or (sorted by My order) onto another clip to put it \
-         there",
+        "Drag onto another clip to put it there, or onto a folder tab to move it into that \
+         folder",
     );
     r.dnd_set_drag_payload(ClipDrag(id));
     if r.dragged() {
