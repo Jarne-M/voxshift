@@ -9,8 +9,6 @@ virtual microphone instead of your real one, so they hear the changed voice and 
 Everything runs locally. There's no account, no cloud service, no ads and no telemetry, and
 nothing is uploaded anywhere.
 
-<!-- screenshot: main window -->
-
 ## Contents
 
 - [Features](#features)
@@ -97,8 +95,6 @@ You then have two new audio devices. The names are confusing, so here's what the
 
 ### 3. Pick your devices
 
-<!-- screenshot: left panel with devices -->
-
 The left panel of the window holds the device settings. On the first start VoxShift already
 picks **CABLE Input** as its output (if VB-CABLE is installed) and your Windows default mic as
 the **Primary mic**. Check that:
@@ -161,8 +157,6 @@ with its own volume. The monitor never goes into the virtual mic.
 
 ### Voice changer and effects
 
-<!-- screenshot: Effects tab -->
-
 - The big **Voice changer ON/OFF** button at the top switches all effects at once. OFF sends
   your clean voice. Switching is a short crossfade, never a click, and it doesn't change your
   sliders: switching back gives exactly what you had. An echo or reverb that's still sounding
@@ -205,8 +199,6 @@ The preset bar sits at the top of the Effects tab.
 Soundboard clips aren't part of a `.voxpack`; send those files separately.
 
 ### Melody Voice
-
-<!-- screenshot: Melody Voice panel -->
 
 Melody Voice sits at the top of the Effects tab. Turn it **ON**, pick a melody and talk: each
 syllable comes out on the next note of the song. Sounds like "s", "t", "f" and breaths pass
@@ -252,8 +244,6 @@ Melody Voice adds more delay than the other effects; the panel shows how much. S
 are never retuned.
 
 ### Soundboard
-
-<!-- screenshot: Soundboard tab -->
 
 **Adding and playing clips**
 
@@ -367,8 +357,6 @@ it right away.
   asking.
 
 ## Hotkeys
-
-<!-- screenshot: Voice changer hotkeys card -->
 
 Hotkeys are **global**: they work while another app or game has focus, and while VoxShift is
 in the tray. They also **pass through**, so the game still receives the key. VoxShift only
