@@ -63,7 +63,7 @@ nothing is uploaded anywhere.
 
 ## Requirements
 
-- **Windows 10 or 11** (64-bit).
+- **Windows** (64-bit).
 - **VB-CABLE**, a free virtual audio cable driver by VB-Audio. It creates the virtual
   microphone that other apps listen to. VoxShift doesn't include it; you install it once
   yourself (see below).
@@ -75,12 +75,10 @@ nothing is uploaded anywhere.
 
 ### 1. Install VB-CABLE (once)
 
-1. Download the **VB-CABLE Driver Pack** from <https://vb-audio.com/Cable/>.
-2. Unzip it, right-click `VBCABLE_Setup_x64.exe`, choose **Run as administrator**, then click
-   **Install Driver**.
-3. **Restart your PC.**
+Download VB-CABLE from <https://vb-audio.com/Cable/> and install it following the
+instructions on that page.
 
-You now have two new audio devices. The names are confusing, so here's what they are:
+You then have two new audio devices. The names are confusing, so here's what they are:
 
 | Device | Type | What it's for |
 |---|---|---|
@@ -124,7 +122,6 @@ the **Primary mic**. Check that:
   tab: the level bar next to **CABLE Output** moves when you talk.
 - Record yourself with the Windows **Sound Recorder** app, with CABLE Output as its
   microphone, and play it back.
-- In Discord, use **Let's Check** under Voice & Video.
 
 Then pick a preset at the top of the **Effects** tab and try it.
 
@@ -451,8 +448,6 @@ devices, mic options, sliders, presets, clips, folders, hotkeys and window choic
   speaker for an audience.
 - **Big pitch jumps sound grainier** than small ones. Very breathy or creaky speech may not be
   retuned by Melody Voice for a moment.
-- **Some games ignore hotkeys.** A game running as administrator doesn't pass keys to normal
-  apps, and some anti-cheat systems block reading the keyboard.
 - **The exe is not code-signed**, so Windows SmartScreen and some antivirus programs warn
   about it.
 
@@ -476,21 +471,16 @@ CABLE Input is set as the Windows default playback device. Set your speakers or 
 the default again.
 
 **"VB-CABLE not found".**
-Install VB-CABLE as administrator and restart the PC. Then click **Rescan** in the virtual mic
-card.
+Install VB-CABLE (see [Getting started](#1-install-vb-cable-once)), then click **Rescan** in
+the virtual mic card.
 
 **The delay feels too long.**
 Turn off Pitch and Melody Voice to compare. Try a smaller **Buffer** in the Latency card
-(many Windows drivers ignore values below their own minimum). VB-CABLE's control panel can also
-lower its internal buffer.
+(many Windows drivers ignore values below their own minimum).
 
 **Windows says "Windows protected your PC", or my antivirus complains.**
 VoxShift isn't signed with a paid certificate. Click **More info → Run anyway**. If you'd
 rather not trust a downloaded exe, [build it yourself](#building-from-source).
-
-**Hotkeys don't work in one game.**
-If the game runs as administrator, run VoxShift as administrator too. Some anti-cheat systems
-block it entirely; then use the window or the tray instead.
 
 **It switches to my fallback mic while I'm quiet.**
 Some mics or drivers (with built-in noise suppression or Windows "audio enhancements") send
@@ -503,7 +493,7 @@ See [Settings](#settings).
 
 ## Building from source
 
-For developers. You need Windows 10 or 11 and [Rust](https://rustup.rs) (stable, with the
+For developers. You need Windows and [Rust](https://rustup.rs) (stable, with the
 MSVC or GNU toolchain).
 
 ```powershell
