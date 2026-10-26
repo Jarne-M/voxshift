@@ -1,639 +1,620 @@
 # VoxShift
 
-A local, real-time voice changer and soundboard for Windows, written in Rust. Your mic goes in,
-the changed voice comes out of a **virtual audio cable** (VB-CABLE), and Discord, OBS or a game
-uses that cable as its microphone. Soundboard clips are mixed into the same virtual mic.
+**A free voice changer and soundboard for Windows that runs entirely on your own PC.**
 
-Everything runs on your PC. There are no accounts, no cloud and no telemetry, and no driver of
-its own is installed.
+VoxShift takes your microphone, changes your voice in real time, mixes in sound clips, and
+sends the result to a *virtual microphone*. Discord, OBS, games or any other app then use that
+virtual microphone instead of your real one, so they hear the changed voice and your sounds.
 
-## Download
+Everything runs locally. There's no account, no cloud service, no ads and no telemetry, and
+nothing is uploaded anywhere.
 
-Get the newest `VoxShift.exe` (or the zip) from the **[Releases page](../../releases/latest)**
-and double-click it. You don't need to install anything except the free VB-CABLE driver
-(section 1) if other apps should hear the changed voice. If Windows says "Windows protected
-your PC", click *More info → Run anyway*; the exe isn't code-signed.
+<!-- screenshot: main window -->
 
-The version is shown in the window's title bar; compare it with the latest release to see
-whether there's a newer one.
+## Contents
 
-## What it does
+- [Features](#features)
+- [Requirements](#requirements)
+- [Getting started](#getting-started)
+- [Using VoxShift](#using-voxshift)
+  - [Microphones](#microphones)
+  - [Monitor (hear yourself)](#monitor-hear-yourself)
+  - [Voice changer and effects](#voice-changer-and-effects)
+  - [Presets and sharing](#presets-and-sharing)
+  - [Melody Voice](#melody-voice)
+  - [Soundboard](#soundboard)
+  - [Panic button (safe mode)](#panic-button-safe-mode)
+  - [Tray icon, closing and startup](#tray-icon-closing-and-startup)
+- [Hotkeys](#hotkeys)
+- [Settings](#settings)
+- [Limitations](#limitations)
+- [FAQ and troubleshooting](#faq-and-troubleshooting)
+- [Building from source](#building-from-source)
+- [How it's built](#how-its-built)
+- [Contributing](#contributing)
+- [Responsible use](#responsible-use)
+- [License](#license)
+- [Credits](#credits)
 
-- **Two mics with automatic fallback.** It uses the *primary* mic (e.g. your HyperX headset)
-  when it works, and the *fallback* mic (e.g. a desk mic) when the primary is unplugged,
-  missing or silent. It switches back automatically (optional), with a 50 ms crossfade, and the
-  output stream never restarts. Devices are matched by name, so changing USB ports, reboots or
-  moving between houses don't break the setup.
-- **Effects.** Pitch (±12 semitones, optional formant preservation), noise gate, tone (low and
-  high cut plus a 3-band EQ), distortion, robot (ring modulator), chorus, echo, reverb, input and
-  output gain, and master dry/wet. Every change is click-free.
-- **Melody Voice.** Talk, and it comes out sung: your voice is retuned note by note to a
-  melody (one syllable per note, in time with the song, or a note per hotkey press), or snapped
-  to a key like auto-tune. Built-in public-domain tunes, or import your own MIDI files. See
-  [section 5c](#5c-melody-voice).
-- **Presets.** Built-in: Clean, Deep Voice, Chipmunk, Robot, Cave, Radio, Telephone, Demon,
-  Sing the Song (per-syllable) and Hard Tune. You can also save your own.
-- **Soundboard.** Add wav, mp3, ogg or flac files with the button or by drag and drop. Each sound
-  has its own volume and an optional **global hotkey** that works while a game has focus. You can
-  also play sounds in your headphones. Sort clips into folders, search them, star favorites,
-  give them colours, and pick how each one plays: to the end, only while held, start/stop, or
-  loop while held.
-- **Panic button.** One key (or click, or tray entry) stops every sound and sends only your
-  clean mic. Press it again and everything is back exactly as it was. See
-  [section 5d](#5d-panic-button-safe-mode).
-- **Monitor.** Hear yourself, the soundboard or both on your headphones, with its own volume.
-- **Meters, clip lamp, estimated latency,** and a big **Voice changer ON/OFF** toggle (OFF =
-  clean passthrough).
-- **Everything is remembered:** devices, mic settings, sliders, presets, sounds and hotkeys.
+## Features
 
-## 1. Install VB-CABLE (once)
+**Your voice**
+- Effects: pitch, noise gate, tone/EQ, distortion, robot, chorus, echo and reverb.
+- Ready-made presets (Deep Voice, Chipmunk, Robot, Demon, Radio and more) plus your own.
+- **Melody Voice**: talk and it comes out *sung* to a melody, or auto-tuned to a key. Use the
+  built-in tunes or your own MIDI files.
+- A big ON/OFF switch. OFF sends your normal, clean voice.
 
-1. Download the free **VB-CABLE Driver Pack** from <https://vb-audio.com/Cable/>.
-2. Unzip it, right-click `VBCABLE_Setup_x64.exe` and choose **Run as administrator**, then
+**Soundboard**
+- Play wav, mp3, ogg or flac clips into your virtual mic, mixed with your voice.
+- Folders, search, favorites, a Recent list and colours to keep many clips tidy.
+- Play modes: play to the end, play only while held, start/stop, or loop while held.
+
+**Reliable when it matters**
+- Two microphones: if your main mic is unplugged or goes silent, VoxShift switches to a
+  backup mic on its own, without interrupting the virtual mic.
+- A **panic button** that instantly stops all sounds and sends only your clean voice, and
+  puts everything back with one more press.
+
+**Convenient**
+- Global hotkeys that work while a game has focus (the game still gets the key).
+- Runs in the system tray, can start with Windows, and remembers all your settings.
+- Share your presets and melodies with friends in one file.
+
+## Requirements
+
+- **Windows 10 or 11** (64-bit).
+- **VB-CABLE**, a free virtual audio cable driver by VB-Audio. It creates the virtual
+  microphone that other apps listen to. VoxShift doesn't include it; you install it once
+  yourself (see below).
+- **A working microphone** (a headset, USB mic, webcam mic, ...).
+- **Headphones** are strongly recommended if you want to hear yourself. With speakers your mic
+  picks up its own output and you get echo or feedback.
+
+## Getting started
+
+### 1. Install VB-CABLE (once)
+
+1. Download the **VB-CABLE Driver Pack** from <https://vb-audio.com/Cable/>.
+2. Unzip it, right-click `VBCABLE_Setup_x64.exe`, choose **Run as administrator**, then click
    **Install Driver**.
-3. **Reboot.**
-4. You now have two new devices:
-   - **CABLE Input**, a *playback* device. VoxShift plays into this.
-   - **CABLE Output**, a *recording* device. Other apps use this as their mic.
+3. **Restart your PC.**
 
-If VoxShift can't find CABLE Input, it shows a yellow banner with a download link. You can
-still pick any output device by hand, for example your speakers for a quick test.
+You now have two new audio devices. The names are confusing, so here's what they are:
 
-**Recommended:** in `mmsys.cpl`, set both CABLE Input (Playback tab) and CABLE Output
-(Recording tab) to **48000 Hz** (Properties → Advanced). Don't make CABLE Input your default
-playback device, or every Windows sound would end up in your mic.
-
-## 2. Build and run
-
-Requires Windows 10 or 11. Install Rust from [rustup.rs](https://rustup.rs) (MSVC or GNU
-toolchain), then:
-
-```powershell
-cargo build --release       # -> target\release\voxshift.exe (single exe, ~15 MB)
-cargo run --release         # or build and start it
-```
-
-`build.cmd` and `env.ps1` are only for a portable toolchain in `..\.toolchain` (no
-system-wide Rust). With that setup, **double-click `build.cmd`** (quit VoxShift first), or
-dot-source `env.ps1` in PowerShell, which needs scripts to be allowed
-(`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`).
-
-The release binary is `target\release\voxshift.exe`. It's a single file and needs no installer.
-
-On first start VoxShift selects **CABLE Input** as output and your Windows default mic as the
-primary mic.
-
-### Contributing
-
-1. Fork the repo (or, as a collaborator, create a branch), make your change, and run
-   `cargo test` and `cargo clippy --all-targets`. A few tests press F24 (a key no keyboard
-   has) and listen for it, or show a tray icon for a moment: don't type while they run.
-2. Open a pull request. GitHub Actions builds and tests it on Windows automatically. It skips
-   those desktop tests, because the build machines have no interactive desktop.
-
-[How it works](#9-how-it-works) shows where things live.
-
-### Releasing a new version
-
-1. Bump `version` in `Cargo.toml` (e.g. `0.2.0`) and commit.
-2. Tag and push:
-   ```powershell
-   git tag v0.2.0
-   git push origin main --tags
-   ```
-3. GitHub Actions builds the exe and publishes a Release with `VoxShift.exe` and
-   `VoxShift-windows.zip`. The Releases page always shows the newest one.
-
-## 3. Use the virtual mic in other apps
-
-Select **CABLE Output (VB-Audio Virtual Cable)** as the microphone:
-
-| App | Where |
-|---|---|
-| **Discord** | User Settings → Voice & Video → *Input Device* → **CABLE Output**. Also turn **off** Noise Suppression (Krisp), Echo Cancellation and Automatic Gain Control, otherwise Discord "cleans up" your effects and filters out soundboard music. Set Input Sensitivity manually if needed. |
-| **OBS** | Settings → Audio → *Mic/Auxiliary Audio* → **CABLE Output**, or add an *Audio Input Capture* source with CABLE Output. Remove or mute any source that captures your real mic directly, or you'll be heard twice. |
-| **Games** | In-game voice settings → input device → **CABLE Output**. If the game has no setting, it uses the Windows default: Settings → System → Sound → Input → choose **CABLE Output** (or `mmsys.cpl` → Recording → CABLE Output → *Set Default*). |
-| **Check it** | `mmsys.cpl` → Recording → CABLE Output: the level bar moves when you talk. Or record yourself in Windows *Sound Recorder* with CABLE Output selected. |
-
-## 4. Two mics, two houses
-
-Pick both in the left panel:
-
-- **Primary mic**: e.g. *Microphone (HyperX Cloud II Wireless)*
-- **Fallback mic**: e.g. *Microphone (USB PnP Audio Device)*
-
-With **Auto** mode:
-
-| Situation | What VoxShift does |
-|---|---|
-| Primary present | uses the primary |
-| Primary unplugged, missing or erroring | crossfades to the fallback within about 1.5 s and shows a notification |
-| Primary listed but silent (headset boom mic pulled out) | after *N* seconds below the threshold (default 5 s, −85 dB), uses the fallback |
-| Primary back (or loud again) | switches back, if *Switch back automatically* is on |
-| Neither available | sends silence, shows a red warning and keeps retrying |
-
-You can also force a mic with *Force primary* or *Force fallback*. The top bar always shows the
-active mic and why, for example *"Active: Fallback mic (primary mic is silent)"*.
-
-**Calibrating silence detection.** Each mic shows its level in dB. With the primary plugged
-in and the room quiet, note the value (typically −60 to −75 dB). Pull the boom mic and note it
-again (usually −100 dB or lower). Put the threshold in between; the default of −85 dB works for
-most mics.
-
-Some mics and drivers apply their own noise gate or noise suppression (NGenuity, Realtek or
-Windows "audio enhancements"), so they deliver true silence whenever you're quiet. With such a
-mic, silence detection can switch to the fallback during long pauses. It switches back within
-0.3 s once you speak, but the first syllable comes from the fallback. If that bothers you,
-turn off the driver's noise suppression, raise the seconds, or turn silence detection off.
-
-## 5. Soundboard and hotkeys
-
-- **Add sounds…** or drag files onto the window. Files are decoded in the background and
-  resampled to the output rate. Clips longer than 3 minutes are cut.
-- **Click** plays a sound and clicking again restarts it (for clips in the *Normal* play
-  mode). **Right-click** opens the clip's menu: Stop, Favorites, Move to…, Play mode, Colour,
-  Delete. **Stop all** stops everything.
-- Click a clip's key button (it reads **Not set** until it has one), then press a key
-  combination anywhere (Esc cancels). Hotkeys are **global** and **pass-through**: the sound
-  plays *and* the game still receives the key. A combination such as Ctrl+Numpad 1 avoids
-  accidental in-game actions. Each key belongs to one action at a time (see "One key, one
-  action" in 5a).
-- **Also play in my headphones** routes sounds to the monitor. The monitor must be on.
-- The small key buttons next to **Stop all** and **Also play in my headphones** set their
-  hotkeys right there. They're the same hotkeys as *Stop all sounds* and *Hear soundboard*
-  under Voice changer hotkeys, so both places always show the same key.
-
-**Organising clips:**
-
-- **Tabs:** *All*, *★ Favorites*, *Recent*, *Unsorted* and your own folders. **+ Folder**
-  makes one; right-click a folder tab to rename it, move it left or right, or delete it.
-  Deleting a folder never deletes clips or files: its clips go to *Unsorted*. New clips land
-  in the folder that's open.
-- **Moving clips:** drag a clip onto a tab, or right-click → *Move to…*. With the *My order*
-  sort (and no search), drag a clip onto another one to put it there.
-- **Search** (Ctrl+F jumps there, Esc clears it) looks through every folder as you type. It
-  ignores case and accents, and matches part of a name: "cafe" finds "Café Ambience".
-- **Sort:** *My order*, *Name*, *Most played* or *Recently added*. VoxShift remembers the
-  last tab and sort.
-- **Favorites:** click the ☆ under a clip. **Recent** shows the last 20 clips you played,
-  newest first; *Clear* empties it. Every clip counts its plays (hover it to see how many).
-- **Colours:** right-click → *Colour* → one of 10 colours, or *None*. The name stays readable
-  on any colour.
-- **Missing files:** if a clip's file was moved or deleted, the clip turns grey with
-  **Locate…**. Point it to the file again; its folder, colour, hotkey and favorite stay.
-
-**Play modes** (right-click → *Play mode*; a badge on the clip shows any mode but Normal):
-
-| Mode | Press | Let go |
+| Device | Type | What it's for |
 |---|---|---|
-| **Normal** | plays to the end (pressing again restarts) | nothing |
-| **Hold** (HOLD) | starts | stops, with a short fade (12 ms) |
-| **Toggle** (TOGGLE) | starts, or stops if it's playing | nothing |
-| **Loop while held** (LOOP) | starts and loops | stops, with a short fade |
+| **CABLE Input** | a playback device (like speakers) | VoxShift plays your changed voice *into* this |
+| **CABLE Output** | a recording device (like a mic) | Discord, OBS and games *listen* to this |
+
+> **Tip:** don't make *CABLE Input* your default playback device in Windows, or every
+> Windows sound (notifications, videos, ...) ends up in your mic.
+
+### 2. Download and start VoxShift
+
+1. Download `VoxShift.exe` (or the zip) from the **[Releases page](../../releases/latest)**.
+2. Put it anywhere (for example on your Desktop) and double-click it. There's no installer.
+3. If Windows shows **"Windows protected your PC"**, click **More info → Run anyway**. The
+   app isn't signed with a paid certificate, so Windows warns about it.
+
+### 3. Pick your devices
+
+<!-- screenshot: left panel with devices -->
+
+The left panel of the window holds the device settings. On the first start VoxShift already
+picks **CABLE Input** as its output (if VB-CABLE is installed) and your Windows default mic as
+the **Primary mic**. Check that:
+
+- **Virtual mic (output)** says *CABLE Input (VB-Audio Virtual Cable)*. If VB-CABLE isn't
+  found, a yellow banner says so, with a download link.
+- **Primary mic** is the microphone you talk into.
+
+### 4. Use CABLE Output as your mic in other apps
+
+| App | Where to set it |
+|---|---|
+| **Discord** | User Settings → Voice & Video → **Input Device** → *CABLE Output*. Also turn **off** Noise Suppression, Echo Cancellation and Automatic Gain Control there: they treat effects and music as noise and filter them out. |
+| **OBS** | Settings → Audio → **Mic/Auxiliary Audio** → *CABLE Output* (or add an *Audio Input Capture* source with CABLE Output). Remove or mute any source that records your real mic, or you'll be heard twice. |
+| **Games** | The game's voice chat settings → input device → *CABLE Output*. If the game has no such setting, it uses the Windows default mic: Settings → System → Sound → Input → *CABLE Output*. |
+
+### 5. How do I know it works?
+
+- In VoxShift, the **In** and **Out** meters at the top move when you talk.
+- Open the Windows sound settings (press Win+R, type `mmsys.cpl`, press Enter) → **Recording**
+  tab: the level bar next to **CABLE Output** moves when you talk.
+- Record yourself with the Windows **Sound Recorder** app, with CABLE Output as its
+  microphone, and play it back.
+- In Discord, use **Let's Check** under Voice & Video.
+
+Then pick a preset at the top of the **Effects** tab and try it.
+
+## Using VoxShift
+
+### Microphones
+
+You can set two mics in the **Microphones** card:
+
+- **Primary mic**: the one you normally use.
+- **Fallback mic** (optional): a backup, for example a desk mic or your webcam's mic.
+
+With **Auto** selected, VoxShift uses the primary while it works and switches to the fallback
+when the primary is unplugged, missing or broken. The switch is a short crossfade, and apps
+listening to CABLE Output never notice a gap. With **Switch back to the primary
+automatically** on, it goes back as soon as the primary works again. **Force primary** and
+**Force fallback** pin one mic.
+
+The top bar always shows which mic is active and why. When it switches, VoxShift tells you with
+a short message in the window, or a Windows notification while it's hidden in the tray.
+
+**Treat a silent primary as unplugged.** Some headsets have a detachable mic. When you pull it
+out, Windows still lists the headset, but it only delivers silence. With this option on, a
+primary that stays below a level (default **−85 dB**) for a number of seconds (default **5 s**)
+counts as unplugged. To tune it, look at the level the Microphones card shows for your primary
+in dB: note it while the mic is plugged in and the room is quiet, then with the mic pulled
+out. Put the threshold in between.
+
+Mics are remembered **by name**, so a different USB port, a reboot or a slightly renamed device
+(for example *"2- USB Microphone"*) doesn't break the setup.
+
+### Monitor (hear yourself)
+
+The **Monitor** card plays the result on your headphones, so you hear what others hear. Pick
+your headphones, tick **on**, and choose what you hear: **my voice**, **soundboard**, or both,
+with its own volume. The monitor never goes into the virtual mic.
+
+### Voice changer and effects
+
+<!-- screenshot: Effects tab -->
+
+- The big **Voice changer ON/OFF** button at the top switches all effects at once. OFF sends
+  your clean voice. Switching is a short crossfade, never a click, and it doesn't change your
+  sliders: switching back gives exactly what you had. An echo or reverb that's still sounding
+  fades out naturally.
+- **Mute mic** silences your mic. Soundboard clips still play.
+- The meters show your input and output level. The red **clip** lamp lights up when the
+  output is too loud and gets distorted: lower the output gain.
+
+Effects on the **Effects** tab (each one can be turned on and off by itself):
+
+| Effect | What it does |
+|---|---|
+| **Gain** | Input gain (how loud your mic comes in), output gain, and dry/wet (how much of the effect you hear versus your clean voice). |
+| **Noise gate** | Mutes your mic when you're not talking, to cut background noise. |
+| **Pitch** | Makes your voice higher or lower, up to 12 semitones (one octave). *Preserve formants* keeps it sounding like you instead of a chipmunk or a giant. |
+| **Tone** | Low cut, high cut and a 3-band EQ (bass, mids, treble). |
+| **Distortion** | A crunchy, overdriven sound. |
+| **Robot** | A metallic, robotic voice. |
+| **Chorus** | A thicker voice, as if several people talk at once. |
+| **Echo** | Repeats of your voice. |
+| **Reverb** | Room or hall sound. |
+
+Every slider change is smooth, so you can adjust things while talking.
+
+### Presets and sharing
+
+The preset bar sits at the top of the Effects tab.
+
+- **Built-in presets:** Clean, Deep Voice, Chipmunk, Robot, Cave, Radio, Telephone, Demon,
+  Sing the Song (per-syllable) and Hard Tune. They can't be overwritten.
+- **Your own:** set the sliders, type a name and click **Save**. Typing the name of one of your
+  existing presets turns the button into **Update**, which overwrites it. **Delete** removes the
+  selected preset. A preset saved with Melody Voice on also remembers its melody. When you
+  change a slider after picking a preset, the list shows *(modified)*.
+- **Share…** saves all your own presets and imported MIDI files in one `.voxpack` file.
+- **Import…** (or dropping a `.voxpack` on the window) adds the presets and melodies from such
+  a file. Your own presets are kept. A name you already use gets "(2)", and importing the same
+  pack twice adds nothing.
+
+Soundboard clips aren't part of a `.voxpack`; send those files separately.
+
+### Melody Voice
+
+<!-- screenshot: Melody Voice panel -->
+
+Melody Voice sits at the top of the Effects tab. Turn it **ON**, pick a melody and talk: each
+syllable comes out on the next note of the song. Sounds like "s", "t", "f" and breaths pass
+through unchanged, so you stay understandable. The easiest start is the *Sing the Song
+(per-syllable)* preset: say a sentence slowly, one syllable at a time.
+
+**Modes**
+
+| Mode | When it moves to the next note |
+|---|---|
+| **Per syllable** (default) | On every new syllable. *Sensitivity* sets how easily a new syllable is detected; *Min note length* stops glitches from skipping notes. |
+| **Tempo-synced** | The song plays at the **Tempo** you set, starting when you start making sound. |
+| **Manual step (hotkey)** | Only when you click **Next note** or press its hotkey. |
+| **Scale snap (auto-tune)** | No melody: your voice is pulled to the nearest note of a key and scale (major, minor, major or minor pentatonic, chromatic). |
+
+**Melodies**
+
+- **Built in** (all public domain, written into the app as notes): Ode to Joy, Twinkle
+  Twinkle Little Star, Happy Birthday, Greensleeves, Für Elise (opening), Frère Jacques, a
+  major scale, a minor scale, a pentatonic run and a major arpeggio.
+- **Your own:** click **Import MIDI…** or drop a `.mid` file on the window. VoxShift lists the
+  file's parts and picks the one most likely to be the tune (marked ★ under **Part**). If it
+  picked the bass or the chords, choose another part. Imported files are remembered.
+
+**Controls**
+
+- **Retune speed:** 0 ms gives the instant, robotic "hard tune" sound; higher values keep more
+  of your natural voice.
+- **Glide:** how quickly it slides from one note to the next.
+- **Transpose:** moves the melody up or down (±24 semitones). **Octave-fold into my range**
+  (on by default) moves it by whole octaves to sit near your own voice.
+- **Preserve formants** keeps your voice's character on high or low notes. **Formant shift**
+  changes that character on purpose: darker/bigger or brighter/smaller.
+- **Loop**, **Restart**, **Next note**, and **Back to start after silence**.
+- **Analysis window** and **Lowest / highest voice pitch:** advanced settings. If it ever jumps
+  to the wrong octave, narrow the pitch range to your own voice.
+- The line **"You: A3 » Target: C4"** shows the note it hears and the note it's aiming for.
+  The piano roll shows the melody and the current note.
+- **Play melody** plays the tune as a soft tone in your headphones only (the monitor must be
+  on), so you can learn it. It never goes into your mic.
+
+Melody Voice adds more delay than the other effects; the panel shows how much. Soundboard clips
+are never retuned.
+
+### Soundboard
+
+<!-- screenshot: Soundboard tab -->
+
+**Adding and playing clips**
+
+- Click **Add sounds…** or drag wav, mp3, ogg or flac files onto the window. Each file is
+  loaded in the background. Clips longer than 3 minutes are cut off.
+- **Click** a clip to play it. **Right-click** it for more: Stop, add to Favorites, Move to…,
+  Play mode, Colour, Locate file (if missing) and Delete.
+- Each clip has its own **volume** slider and an optional **hotkey** (the key button under it).
+- **Stop all** stops every clip. **Also play in my headphones** lets you hear the clips too
+  (the monitor must be on). Other people always hear them.
+- Clips are mixed into the virtual mic together with your voice; voice effects don't change
+  them.
+
+**Organising**
+
+- **Tabs:** *All*, *★ Favorites*, *Recent*, *Unsorted* and your own folders.
+  - **+ Folder** creates a folder. Right-click a folder tab to rename it, move it left or right,
+    or delete it.
+  - Deleting a folder never deletes clips or files: its clips move to *Unsorted*.
+  - New clips go into the folder that's open.
+- **Moving clips:** drag a clip onto a tab, or use right-click → **Move to…**.
+- **Search** (Ctrl+F) looks through all folders as you type. It ignores upper/lower case and
+  accents and matches part of a name, so "cafe" finds "Café Ambience". Esc clears it.
+- **Sort:** *My order*, *Name*, *Most played* or *Recently added*. With *My order*, drag a clip
+  onto another one to put it there.
+- **Favorites:** click the ☆ under a clip.
+- **Recent:** the last 20 clips you played, newest first. *Clear* empties the list.
+- **Colours:** right-click → **Colour** gives a clip one of 10 colours.
+- Hover a clip to see its length and how often you've played it.
+- **Missing files:** if a clip's file was moved or deleted, the clip turns grey and shows
+  **Locate…**. Point it to the file again, and it keeps its folder, colour, hotkey and star.
+
+**Play modes** (right-click → **Play mode**; a small badge on the clip shows the mode):
+
+| Mode | When you press | When you let go |
+|---|---|---|
+| **Normal** | Plays to the end (pressing again restarts it) | Nothing |
+| **Hold** | Starts | Stops, with a quick fade |
+| **Toggle** | Starts, or stops it if it's playing | Nothing |
+| **Loop while held** | Starts and keeps looping | Stops, with a quick fade |
 
 Hold modes work with the hotkey and with the mouse (keep the button pressed on the clip).
-Holding a key down doesn't restart the clip. If Windows ever loses the key-up (for example when
-a game grabs the keyboard while you alt-tab), VoxShift checks the keyboard every 50 ms and
-stops the clip as soon as the key is really up, so a clip can't get stuck playing.
+Holding a key down doesn't restart the clip. If Windows misses the moment you let go (for
+example when you alt-tab out of a game), VoxShift notices that the key is up and stops the
+clip anyway.
 
-Hotkeys use Windows' Raw Input API: VoxShift is told about every key press, even in the
-background, but only listens. It can't block or change keys and adds no delay to your typing.
-(An earlier version used a low-level keyboard hook, which Windows can silently switch off;
-raw input doesn't have that problem.) If you press a key while VoxShift waits for a hotkey and
-it hears nothing, it tells you instead of waiting forever.
+### Panic button (safe mode)
 
-## 5a. Voice changer hotkeys
+For when something goes wrong live: a clip won't stop, an effect is far too loud, or you just
+need to sound normal right now.
 
-Under **Voice changer hotkeys** in the left panel:
+- **How:** the red **PANIC** button at the top right of the window, the tray menu, or a
+  hotkey. The hotkey works in games and while VoxShift is hidden, and it's checked before any
+  other hotkey.
+- **What happens at once:**
+  - every clip fades out, including Hold and Loop clips;
+  - the virtual mic gets only your clean voice: voice changer, effects and Melody Voice are
+    bypassed;
+  - *Play melody* stops, and no clip can be started.
+  - Optionally (**Panic also mutes my headphones**, off by default) your headphones go quiet
+    too.
+- **What doesn't change:** your sliders, preset, the ON/OFF switch and all other settings. The
+  big ON/OFF button is locked while safe mode is on.
+- **How you can tell:** a red **SAFE MODE** banner in the window, a red tray icon with a white
+  bar, and (with beeps on) a falling beep in your headphones. The beep never goes into the
+  mic.
+- **Restore:** the banner's **Restore** button, the same top-right button, the tray menu or
+  the hotkey again. Everything comes back exactly as it was, and you hear a rising beep. Clips
+  that were stopped stay stopped. Safe mode never turns itself off, and VoxShift always starts
+  normally.
 
-- **Effects on/off:** click *Set hotkey*, then press a key or combination (Ctrl/Alt/Shift +
-  key). It works in the background, in the tray and in games, and the game still gets the key.
-  Holding the key doesn't repeat. The mode can be:
-  - **Toggle:** each press switches.
-  - **Hold for effects (push-to-talk):** clean, with effects only while held.
-  - **Hold for clean (push-to-clean):** effects, clean only while held.
-- **Mute / unmute mic** has its own hotkey.
-- **Jump to a preset:** add a row, pick a preset, give it a key. Pressing it loads that preset
-  and turns effects on.
-- **Hear myself (monitor) and Stop all sounds:** two more keys, under *Monitor and
-  soundboard*. *Hear myself* flips the monitor's "my voice" checkbox. It's the same setting as
-  that checkbox and the tray menu item, and it only changes your headphones, never the virtual
-  mic or your effects. Your voice fades in or out over 20 ms instead of switching. With beeps
-  on, you hear one high beep for on and one low beep for off (different from the voice
-  changer's two-tone beeps). *Hear soundboard* does the same for "Also play in my headphones"
-  (the soundboard on your headphones; others always hear the clips). *Stop all sounds* does
-  what the Stop all button does: every clip fades out within about 12 ms. All three are
-  unassigned until you set them.
-- **Panic (safe mode)** is at the top of the list: see [5d](#5d-panic-button-safe-mode).
-- **One key, one action.** If the key you press is already used by something else (a clip,
-  the toggle, mute, a preset key or any other action), a dialog says so and names it:
-  "F8 is already used for the sound "airhorn"."
-  - **Keep** (the default, also Enter or Esc) leaves both as they were.
-  - **Change** moves the key to what you're setting up, and the other action shows **Not set**.
+### Tray icon, closing and startup
 
-  Tab switches between the two buttons. While the dialog is open, no hotkey does anything.
-  Pressing the key an action already has is simply accepted. Windows' own combinations
-  (anything with the Windows key, Ctrl+Alt+Del, Alt+Tab, Alt+F4, Esc combinations) are
-  refused with a short message. If a settings file ever has the same key twice (an old or
-  hand-edited one), VoxShift keeps it on the first action, clears the others and tells you
-  once which ones.
+Your virtual mic only works while VoxShift runs. That's why closing the window doesn't quit
+it right away.
 
-  While you assign a key, it doesn't trigger anything in VoxShift. VoxShift only listens to
-  the keyboard, though, so it can't hide that key from other apps: assign keys with the
-  VoxShift window in front, not a game.
-- **Switching never changes your sliders or preset.** Switching back gives exactly what was
-  active before. The switch is a 25 ms crossfade, and an echo or reverb that's still sounding
-  rings out naturally instead of being cut off. Clean mode keeps your input gain (mic
-  calibration), so the volume doesn't jump.
-- **Feedback:** a short beep in your headphones (rising = ON, falling = OFF). It plays on the
-  monitor output only and never goes into your mic. You can set its volume or turn it off. The
-  monitor must be on; untick "my voice" there to hear only the beeps. Optionally a
-  "Voice changer: ON/OFF" banner shows at the top of the screen for a second (it doesn't show
-  over games in exclusive fullscreen). The big button, the tray icon and its tooltip always
-  show the current state.
-- **At start:** remember the last state (default), always effects ON, or always OFF.
+- **Closing the window** asks what to do:
+  - **Minimize to tray** (the default) keeps everything running: audio, mic fallback,
+    soundboard and hotkeys.
+  - **Quit completely**.
+  - **Cancel**.
 
-## 5b. Closing, the tray icon and startup
-
-Your virtual mic only exists while VoxShift runs, so closing the window never quietly kills it:
-
-- **The X (or Alt+F4)** asks: **Minimize to tray** (the default; Enter picks it), **Quit
-  completely**, or **Cancel**. Tick *Remember my choice* to stop asking. You can change or reset
-  it later under **Window & startup** in the left panel: *Ask every time*, *Always minimize to
-  tray* or *Always quit*.
-- **Hidden in the tray**, everything keeps running: audio, mic fallback, soundboard and hotkeys.
-  The first time per run, a notification says so. Mic switches while hidden also show as a
-  notification.
-- **Tray icon:** left-click or double-click shows the window. Right-click opens a menu with:
+  Tick **Remember my choice** to stop being asked. You can change this later under
+  **Window & startup** in the left panel.
+- **Tray icon:** click it to show the window. Right-click for a menu:
   - Show VoxShift
-  - Panic: safe mode (all off), or *SAFE MODE: Restore everything* while it's on
-  - Voice changer ON/OFF
+  - Panic / Restore
+  - Voice changer on/off
   - Mute mic
   - Hear myself (monitor)
-  - the active mic (read-only)
+  - the active mic
   - Stop all sounds
-  - Quit VoxShift (always quits, no question)
+  - Quit
 
-  The tooltip shows the status, and the icon colour shows problems at a glance:
+  Hovering the icon shows the status, and its colour shows problems at a glance:
 
-  | Colour | Meaning |
+  | Icon | Meaning |
   |---|---|
   | violet | all good |
   | grey | voice changer off |
   | grey with a red slash | mic muted |
   | orange | no microphone available |
   | red | virtual mic output missing |
-  | red with a white bar | SAFE MODE (panic button pressed) |
-- **Only one copy runs.** Starting VoxShift again (e.g. from the desktop shortcut) brings the
-  running one to the front, even from the tray, instead of starting a second copy that would
-  fight over the cable.
-- **Start with Windows** adds VoxShift to your user's startup programs. That's the
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` registry key, so no admin rights are
-  needed. **Start minimized to tray** starts it straight in the tray. Both are off by default.
-- **Windows shutdown or logoff** saves your settings and exits without showing the dialog.
-- **Mute mic** (top bar or tray) fades your mic out; soundboard sounds still play.
+  | red with a white bar | safe mode (panic) is on |
 
-## 5c. Melody Voice
+- **Only one copy runs.** Starting VoxShift again brings the running copy to the front.
+- **Start with Windows** (under Window & startup) starts VoxShift when you sign in, and
+  **Start minimized to tray** starts it straight in the tray. Both are off by default and need
+  no admin rights.
+- When Windows shuts down or you sign out, VoxShift saves your settings and closes without
+  asking.
 
-Melody Voice sits at the top of the **Effects** tab. Turn it **ON**, pick a melody and talk:
-each syllable comes out on the next note of the song. Consonants and breaths (s, t, f, h)
-pass through untouched, so you stay understandable.
+## Hotkeys
 
-**Modes**
+<!-- screenshot: Voice changer hotkeys card -->
 
-| Mode | What moves you to the next note |
+Hotkeys are **global**: they work while another app or game has focus, and while VoxShift is
+in the tray. They also **pass through**, so the game still receives the key. VoxShift only
+listens to the keyboard; it never blocks or changes keys.
+
+All hotkeys start unassigned. To set one, click its button (it says **Not set**), then press a
+key or a combination with Ctrl, Alt and/or Shift. Esc cancels. A combination like
+Ctrl+Numpad 1 avoids accidental in-game actions.
+
+| Action | Where to set it | What it does |
+|---|---|---|
+| Panic (safe mode) | Voice changer hotkeys | Safe mode on, or restore ([details](#panic-button-safe-mode)) |
+| Effects on/off | Voice changer hotkeys | Switches the voice changer (see the modes below) |
+| Mute / unmute mic | Voice changer hotkeys | Mutes your mic; clips still play |
+| Jump to a preset | Voice changer hotkeys → *+ Add preset hotkey* | Loads that preset and turns effects on |
+| Melody Voice on / off | Voice changer hotkeys → Melody Voice | Turns Melody Voice on or off |
+| Restart melody | Voice changer hotkeys → Melody Voice | Back to the first note |
+| Next note | Voice changer hotkeys → Melody Voice | One note further (used by *Manual step*) |
+| Hear myself | Voice changer hotkeys → Monitor and soundboard | Your voice on the monitor on/off |
+| Hear soundboard | Voice changer hotkeys, or next to *Also play in my headphones* | Clips on the monitor on/off |
+| Stop all sounds | Voice changer hotkeys, or next to *Stop all* | Stops every clip |
+| A clip | The key button under the clip | Plays it, according to its play mode |
+
+**Effects on/off modes**
+
+- **Toggle** (default): each press switches.
+- **Hold for effects (push-to-talk):** clean voice, with effects only while you hold the key.
+- **Hold for clean (push-to-clean):** effects, with your clean voice only while you hold the key.
+
+**Feedback when you switch**
+
+- **Beep in my headphones** (on by default): a rising beep for ON and a falling beep for OFF.
+  *Hear myself* and *Hear soundboard* use one high or low beep. Beeps play on the monitor only,
+  so the monitor must be on. To hear only the beeps, untick *my voice* there.
+- **Show "Voice changer: ON/OFF" on screen** (off by default): a small banner for a second.
+  It doesn't appear over games in exclusive fullscreen.
+- **At start:** remember the last ON/OFF state (default), always start with effects on, or
+  always off.
+
+**One key, one action.** If the key you press is already used for something else, a dialog
+names it, for example *F8 is already used for the sound "airhorn"*:
+
+- **Keep** (the default; also Enter or Esc) leaves everything as it was.
+- **Change** moves the key to the new action, and the other one becomes **Not set**.
+
+Windows' own shortcuts (anything with the Windows key, Ctrl+Alt+Del, Alt+Tab, Alt+F4 and Esc
+combinations) can't be used and are refused with a message. Set hotkeys with the VoxShift
+window in front: VoxShift can't hide the key you press from other apps.
+
+## Settings
+
+| What | Where |
 |---|---|
-| **Per syllable** (default) | Every new syllable: after a short pause, a dip in loudness ("hel-lo") or a jump in pitch. *Sensitivity* sets how readily a syllable is heard; *Min note length* stops glitches from skipping notes. |
-| **Tempo-synced** | The song plays at the *Tempo* slider's speed. It starts the moment you start singing; notes you are silent for pass by, and a rest keeps the note before it. |
-| **Manual step** | Only the *Next note* button or hotkey. |
-| **Scale snap (auto-tune)** | No melody: your pitch is pulled to the nearest note of the chosen key and scale (major, minor, major/minor pentatonic, chromatic). |
+| Settings file | `%APPDATA%\VoxShift\config.json` (paste that into Explorer's address bar) |
+| Imported MIDI files | `%APPDATA%\VoxShift\melodies` |
+| Soundboard clips | Stay where they are on your disk; VoxShift remembers their location |
 
-**Controls**
-- **Retune speed:** 0 ms is the instant, robotic "hard tune". 150 ms and up keeps your own
-  vibrato and slides (natural). Default 5 ms.
-- **Glide:** how fast it slides from note to note while you keep sounding.
-- **Transpose:** ±24 semitones. **Octave-fold** moves the whole melody by octaves so it sits
-  around your voice, so a deep voice doesn't have to squeak out a song written for a high
-  one. It only changes octave between notes, never in the middle of one.
-- **Preserve formants** (on by default) keeps your voice's character when the melody goes high
-  or low (no chipmunk). **Formant shift** (±6 st) moves the character on purpose: down is
-  darker or bigger, up is brighter or smaller.
-- **Loop**, **Restart**, **Next note**, and **Back to start after silence** (seconds; 0 = never).
-- **Analysis window** (20–60 ms) trades latency for steadiness and how low a voice it can
-  hear. **Lowest / highest voice pitch** (default 70–500 Hz) covers a low male to a high
-  female voice; narrow it to yours if it ever jumps an octave.
-- The line **"You: A3 » Target: C4"** shows what it hears and where it is taking you. The
-  piano roll shows the melody, the current note (lit) and where it is (white line).
-- **Play melody** plays the tune as a soft synth tone at the tempo slider's speed, **in your
-  headphones only** (the monitor must be on). It never goes into your mic.
+Everything is saved automatically, about a second after each change and when you quit:
+devices, mic options, sliders, presets, clips, folders, hotkeys and window choices.
 
-**Melodies**
-- Built in, all public domain and typed in by hand (no audio or song files are bundled): Ode
-  to Joy, Twinkle Twinkle Little Star, Happy Birthday, Greensleeves, Für Elise (opening), Frère
-  Jacques, plus a major and a minor scale, a pentatonic run and a major arpeggio.
-- **Your own songs:** *Import MIDI…* or drop a `.mid` file on the window. VoxShift lists the
-  file's parts (each track and channel; drums are skipped) and picks the one most likely to
-  be the tune: the highest part that plays one note at a time (marked ★ under **Part**). If it
-  guessed wrong, pick another part. Chords are reduced to their top note. The file's tempo
-  sets the tempo slider; later tempo changes in the file are ignored. Imported files are
-  remembered in the melody list. Bring your own MIDI files; VoxShift doesn't download songs.
+- **Reset everything:** quit VoxShift (from the tray menu), then delete or rename
+  `config.json`. The next start uses the defaults.
+- **Damaged file:** if the file can't be read, VoxShift renames it to `config.broken.json`,
+  starts with the defaults and tells you.
+- **A second profile:** start VoxShift with `--config` and a path, for example
+  `VoxShift.exe --config D:\VoxShift\streaming.json`.
 
-**Presets and hotkeys.** A preset you save with Melody Voice on remembers its melody too. The
-built-in *Sing the Song (per-syllable)* and *Hard Tune* presets keep whatever melody you picked.
-Under **Voice changer hotkeys → Melody Voice** you can set global keys for **on/off**,
-**restart melody** and **next note**. They work in games and while VoxShift is in the tray.
+## Limitations
 
-**Sharing with friends.** **Share…** (next to the preset list) saves all your own presets plus
-your imported MIDI files in one `.voxpack` file. Your friend clicks **Import…** or drops the
-file on the VoxShift window: the presets appear in their preset list, and the MIDI files go to
-`%APPDATA%\VoxShift\melodies` and into their melody list, with the presets pointing at them.
-Their own presets are kept. A name they already use gets "(2)", and importing the same pack
-twice adds nothing. Soundboard sounds aren't included; send those files separately.
+- **Windows only.** VoxShift uses Windows-specific features for the tray, hotkeys and startup.
+- **VB-CABLE is required** for other apps to hear you. Without it you can still try VoxShift
+  by picking your headphones as its output.
+- **There is a small delay.** Your voice reaches other apps a few tens of milliseconds late.
+  Most of it comes from Windows' audio buffers (often about 10 ms per device) and VB-CABLE's own
+  buffer; the Pitch effect and especially Melody Voice add more. The **Latency** card shows
+  VoxShift's estimate. For voice chat this is normally fine; don't use the monitor as a
+  speaker for an audience.
+- **Big pitch jumps sound grainier** than small ones. Very breathy or creaky speech may not be
+  retuned by Melody Voice for a moment.
+- **Some games ignore hotkeys.** A game running as administrator doesn't pass keys to normal
+  apps, and some anti-cheat systems block reading the keyboard.
+- **The exe is not code-signed**, so Windows SmartScreen and some antivirus programs warn
+  about it.
 
-**Soundboard clips are never retuned:** they're mixed in after the voice effects.
+## FAQ and troubleshooting
 
-**Latency.** Melody Voice adds more delay than any other effect, and the panel shows how much.
-The pitch analysis and the pitch shifter overlap (whichever is longer sets the delay), so it
-adds:
+**Nobody hears me / they hear my normal voice.**
+The other app must use **CABLE Output** as its microphone (not CABLE Input, and not your real
+mic). In VoxShift, the virtual mic (output) must be **CABLE Input**, and the top bar must show
+an active mic. Check the **In** meter moves when you talk.
 
-| Analysis window | Added delay (measured, 48 kHz) |
-|---|---|
-| 20 ms | 15.0 ms |
-| **30 ms (default)** | **16.2 ms** |
-| 45 ms | 23.8 ms |
-| 60 ms | 31.2 ms |
+**Discord makes the effects or soundboard music sound bad or cuts them off.**
+Turn off Discord's Noise Suppression, Echo Cancellation and Automatic Gain Control (User
+Settings → Voice & Video), and set the input sensitivity by hand if needed.
 
-That comes on top of the ~38–40 ms base latency (section 6), and on top of the Pitch effect's
-~15 ms if you use both. It's measured by an automated test that times a sound through the
-effect.
+**I hear an echo or my voice twice.**
+You're probably hearing yourself through speakers (use headphones), or another app (OBS,
+Discord) is also recording your real mic. Remove that source.
 
-**Limits.** It's a fast, time-domain shifter: big jumps (more than an octave) sound grainier
-than small ones, and very breathy or creaky speech may be left untuned for a moment. A
-hummed, almost pure tone gets a little quieter with formants preserved (a safety limiter, so
-it can never blow up).
+**All my Windows sounds go into my mic.**
+CABLE Input is set as the Windows default playback device. Set your speakers or headphones as
+the default again.
 
-## 5d. Panic button (safe mode)
+**"VB-CABLE not found".**
+Install VB-CABLE as administrator and restart the PC. Then click **Rescan** in the virtual mic
+card.
 
-For when something goes wrong live: a clip that won't stop, an effect that's far too loud, or
-you just need to sound normal right now.
+**The delay feels too long.**
+Turn off Pitch and Melody Voice to compare. Try a smaller **Buffer** in the Latency card
+(many Windows drivers ignore values below their own minimum). VB-CABLE's control panel can also
+lower its internal buffer.
 
-- **Three ways in:** the red **PANIC** button at the top right of the window, the tray menu's
-  *Panic* entry, or a global hotkey (Voice changer hotkeys → *Panic (safe mode)*; unassigned
-  until you set it). The hotkey works in games and with VoxShift hidden in the tray, and it's
-  checked before every other hotkey.
-- **What it does, at once:** every soundboard clip fades out (Hold and Loop clips too), and the
-  virtual mic gets only your clean mic: the voice changer, all effects and Melody Voice are
-  bypassed, and *Play melody* stops. Clips can't be started while it's on. Optionally (*Panic
-  also mutes my headphones*, off by default) your headphones go quiet too.
-- **What it doesn't do:** change anything. Sliders, the preset, the ON/OFF switch, Melody
-  Voice's setting and the monitor checkboxes all stay as they were (the big ON/OFF button is
-  locked while safe mode is on).
-- **You'll know it's on:** a red *SAFE MODE* banner across the window, a red tray icon with a
-  white bar, and the tooltip says so. With beeps on, you hear a falling three-note beep in your
-  headphones (never in the mic).
-- **Restore** (the banner's button, the same top-right button, the tray entry, or the hotkey
-  again) puts everything back exactly as it was, with a rising beep. Clips that were stopped
-  stay stopped. Safe mode never turns itself off, and it isn't saved: VoxShift always starts
-  normally.
+**Windows says "Windows protected your PC", or my antivirus complains.**
+VoxShift isn't signed with a paid certificate. Click **More info → Run anyway**. If you'd
+rather not trust a downloaded exe, [build it yourself](#building-from-source).
 
-## 6. Latency
+**Hotkeys don't work in one game.**
+If the game runs as administrator, run VoxShift as administrator too. Some anti-cheat systems
+block it entirely; then use the window or the tray instead.
 
-The estimate in the UI is the sum of:
-- the mic buffer
-- the ring buffer between mic and cable
-- one 64-sample processing block
-- the pitch shifter (about 15 ms, only while pitch is on)
-- Melody Voice (about 16 ms at its default analysis window, only while it is on; see 5c)
-- the output buffer
+**It switches to my fallback mic while I'm quiet.**
+Some mics or drivers (with built-in noise suppression or Windows "audio enhancements") send
+pure silence when you don't talk, which looks like an unplugged mic. Lower the dB threshold,
+raise the seconds, or turn off **Treat a silent primary as unplugged**. Turning off the
+driver's noise suppression also helps.
 
-It doesn't include VB-CABLE's own buffer or the receiving app.
+**I lost my settings / want to start fresh.**
+See [Settings](#settings).
 
-Measured on the development PC (Windows shared mode, 10 ms device buffers): **about 38–40 ms**
-without pitch. That's above the 30 ms goal, and most of it is fixed by Windows: the mic and the
-cable each run 10 ms buffers, and the ring buffer must absorb one of them. The *Buffer* setting
-requests smaller device buffers, but most Windows shared-mode drivers ignore requests below
-their 10 ms period; the UI shows the actual buffer each device runs at. VB-CABLE's own control
-panel (installed with the driver) can lower its internal buffer.
+## Building from source
 
-## 7. Settings file
-
-`%APPDATA%\VoxShift\config.json`, saved about 1 s after a change and on exit. Devices are
-stored **by name**. If the file is ever damaged, it's moved aside as `config.broken.json` and
-VoxShift starts with defaults.
-
-`voxshift.exe --config D:\path\other.json` uses a different settings file, for example a
-second profile, or trying things without touching your normal settings.
-
-## 8. Testing on your hardware
-
-These were checked automatically: `cargo test` (238 tests; they briefly show a tray icon) and the self-tests below on the
-development PC (USB PnP mic, webcam mic, HyperX Cloud II Wireless). The rest needs your setup.
-
-Melody Voice's tests feed synthetic voices through the real effect chain offline: a low and a
-high "speaker" saying 12 syllables come out singing the first 12 notes of Twinkle Twinkle
-(each within 0.25 semitones, in practice within 0.1), a held vowel follows the tune in
-tempo mode, and the pitch detector is checked on sines and sawtooths from 75 to 490 Hz (within
-1 %), on noise, whispers and silence.
-
-**Headless self-tests:**
+For developers. You need Windows 10 or 11 and [Rust](https://rustup.rs) (stable, with the
+MSVC or GNU toolchain).
 
 ```powershell
-.\target\release\voxshift.exe --list-devices     # what Windows exposes; shows whether VB-CABLE is found
-.\target\release\voxshift.exe --selftest         # opens default mic + output, sends silence, prints status for 8 s
-.\target\release\voxshift.exe --selftest switch  # first two mics as primary/fallback at -48 dB, simulates unplug at 4 s and replug at 8 s
+git clone https://github.com/Jarne-M/voxshift.git
+cd voxshift
+cargo run --release          # build and start
+cargo build --release        # just build: target\release\voxshift.exe
 ```
 
-Expected for `--selftest switch`: at 5 s `active=Fallback 'primary not available'`, at 9 s
-`active=Primary`, and `out=Running` on every line.
+The result is a single exe with no installer and no extra files.
 
-**Manual checklist (needs VB-CABLE, the headset and the desk mic):**
+`build.cmd` and `env.ps1` are only for a *portable* Rust toolchain in a `.toolchain` folder
+next to the project (no system-wide Rust install). With that setup, double-click `build.cmd`
+(quit VoxShift first), or dot-source `env.ps1` in PowerShell before running cargo. PowerShell
+may first need `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
-1. **Passthrough.** Start VoxShift with Voice changer OFF. In `mmsys.cpl` → Recording, CABLE
-   Output's level bar moves when you talk. Record a few seconds in Sound Recorder with CABLE
-   Output: your clean voice.
-2. **Monitor.** Pick your headphones, turn the monitor on and talk: you hear yourself slightly
-   late (the monitor adds its own buffer on top of the virtual-mic latency). Use headphones,
-   not speakers, to avoid feedback.
-3. **Effects.** Turn the voice changer ON and try each preset while monitoring. Drag sliders
-   while talking: there should be no clicks. ON/OFF should fade, not click.
-4. **Unplug the primary.** Set the headset as primary and the desk mic as fallback. While talking,
-   pull the headset's USB dongle (or cable). Within about 1.5 s: a notification, the top bar says
-   *Fallback mic (primary not available)*, and Discord keeps hearing you. Plug it back: it
-   switches back (with switch-back on). The output must never drop out; check with Discord's
-   input meter or a recording.
-5. **Pull the boom mic** with the headset still connected. After about 5 s: *Fallback mic
-   (primary mic is silent)*. Plug the boom back in and talk: back on the primary. If it never
-   triggers, look at the primary's dB value with the boom pulled and adjust the threshold.
-6. **Neither mic.** Unplug both: a red warning and silence on CABLE Output; the app stays
-   responsive. Plug one in: it is picked up within about 2 s.
-7. **Second house.** On the other PC, or with renamed devices, the same names are found again
-   (e.g. *Microphone (2- HyperX …)* still matches *Microphone (HyperX …)*).
-8. **Soundboard.** Drop an mp3 on the window, click it: Discord hears it mixed with your voice.
-   Assign Ctrl+Numpad1, focus a game or another window, press it: it plays, and the game still
-   gets the key.
-9. **Persistence.** Quit and reopen: devices, sliders, presets, sounds and hotkeys are back.
-10. **Close to tray.** Talk with Discord's input meter (or a recording) running. Click the X and
-    choose *Minimize to tray*: the window disappears, the notification appears, and the meter
-    keeps moving without a gap. Click the tray icon: the window comes back with no audio glitch.
-11. **Tray menu.** Right-click the icon and try *Voice changer* (the icon turns grey), *Mute
-    mic* (red slash; Discord hears silence but sounds still play), *Stop all sounds*, and check
-    that the read-only line shows the active mic. Pull the primary mic: the icon tooltip says
-    *Fallback mic*. Unplug both mics: the icon turns orange.
-12. **Quit from the tray.** The icon disappears at once (no ghost icon when you hover the tray)
-    and CABLE Output goes silent.
-13. **Second launch.** With VoxShift in the tray, double-click the exe again: no second copy
-    in Task Manager, and the existing window comes to the front.
-14. **Remember my choice.** Tick it and choose *Quit completely*: the next X quits right away.
-    Set it back to *Ask every time* under *Window & startup*.
-15. **Start with Windows.** Tick it and *Start minimized to tray*, sign out and back in:
-    VoxShift is only in the tray, and the mic works. In Task Manager → Startup apps, VoxShift
-    is listed. Untick it: the entry is gone.
-16. **Voice hotkey while talking.** Set a toggle key (e.g. F8) and talk while monitoring. Press
-    it a few times: you hear the beeps, and the switch between effects and clean has no pop.
-17. **Echo tail.** Turn on Echo (or the Cave preset), say something short, and press the
-    hotkey right after: the echoes keep sounding and fade away naturally.
-18. **In a game.** Focus a game, press the hotkey: the beep confirms it, Discord hears the
-    change, and the game still reacts to the key normally. Try *Hold for effects* too.
-19. **Duplicates.** Give a soundboard clip F8, then click *Effects on/off* → press F8. The
-    dialog reads "F8 is already used for the sound "…"." with *Keep* highlighted. Press Esc:
-    nothing changes. Try again, press Tab then Enter (Change): the toggle shows F8, and the
-    clip shows *Not set*. While the dialog is open, pressing F8 plays nothing. Try Win+R:
-    it's refused with a message.
+Command-line options for checking audio without the window:
 
-**Monitor and stop keys (headphones on, monitor device on):**
-
-- **Hear myself while talking.** Give *Hear myself* a key (e.g. F9) and keep talking while you
-  press it a few times. Off: a low beep and your voice fades out of the headphones. On: a high
-  beep and it fades back in smoothly, with no loud jump. The *my voice* checkbox and the tray
-  menu's *Hear myself* tick follow every press. Discord (CABLE Output) must hear you the whole
-  time, unchanged.
-- **Stop a long clip.** Play a long soundboard clip and press the *Stop all sounds* key
-  halfway: it stops at once, with no pop, and the clip's highlight disappears. Your voice in
-  Discord keeps going, and *my voice* on the monitor doesn't change.
-- **In a game.** Focus a game and press both keys: they work and the game still gets the
-  keys. Hold one key down: it acts once, not repeatedly.
-
-**Soundboard folders, play modes and panic:**
-
-- **Folders.** Make two folders, drag clips onto their tabs, rename one, then delete it: its
-  clips show up in *Unsorted*, and nothing is gone from *All*. Type part of a name with an
-  accent left out (e.g. "cafe") in the search: matching clips from every folder appear. Quit
-  and reopen: the same tab and sort are selected, and stars, colours and *Recent* are kept.
-- **Missing file.** Rename one clip's file in Explorer and restart VoxShift: the clip is grey
-  with *Locate…*. Point it to the renamed file: it plays again, still in its folder, with its
-  colour and star.
-- **Hold mode in a game with alt-tab.** Set a long clip to *Hold* with a hotkey (e.g. Num 5).
-  In a game, hold the key: Discord hears the clip only while you hold it, and it stops with no
-  click when you let go. Keep it held for a few seconds: key auto-repeat never restarts the
-  clip. Now hold it and alt-tab out of the game while still holding, then let go on
-  the desktop: the clip stops within about 50 ms. Try the same with *Loop while held* on a
-  short clip: it keeps looping only while held. Hold a *Hold* clip with the mouse and drag
-  off the window before letting go: it stops too.
-- **Panic during a loud effect and a playing clip.** Set the panic key (e.g. Ctrl+Pause),
-  apply *Demon* and turn Output gain up, start a long clip set to *Loop while held* (keep the
-  key down) and another long one, and talk with Discord's input meter (or a recording)
-  running. Press the panic key: the falling beep in your headphones, both clips stop without a
-  pop, Discord hears your plain voice within a fraction of a second, the banner and the tray
-  icon turn red. Clicking clips plays nothing. Press the panic key again: the Demon voice is
-  back with the same sliders, the clips stay stopped. Try it once with the window hidden in the
-  tray and once from inside a game. Tick *Panic also mutes my headphones* and repeat: the
-  headphones go quiet (except the beep) until you restore.
-
-**Melody Voice (needs your mic and headphones; turn the monitor on):**
-
-20. **Hear the target first.** Pick *Twinkle Twinkle Little Star*, click *Play melody*: a soft
-    tone plays the tune in your headphones and the green line runs along the piano roll.
-    Discord/CABLE Output hears nothing of it.
-21. **Talk the song.** Apply *Sing the Song (per-syllable)*. Say slowly, one syllable at a time
-    with a tiny gap: "twin - kle - twin - kle - lit - tle - star". You should hear yourself
-    *sing* C C G G A A G (the first line of the tune), and the lit note in the piano roll
-    moves one step per syllable. The top line reads like "You: A2 » Target: C3".
-    Say "sss" or whisper: it passes through unchanged. Stop talking: nothing moves.
-22. **Glitches.** Say one long "heeeeelloooo" with no gap: one or two notes, not a run of
-    them. If syllables get skipped or doubled, raise or lower *Sensitivity* and *Min note
-    length*.
-23. **Your range.** A low voice should get the tune in a low octave (the "Target" note is
-    near your own), a high voice in a higher one. Toggle *Octave-fold* off to hear the tune
-    as written (it may then sound strained or chipmunk-like far from your voice).
-24. **Formants.** With *Preserve formants* off, high notes sound chipmunk-like; with it on, still
-    you. Move *Formant shift* to −6 and +6: darker or bigger, then brighter or smaller, same notes.
-25. **Tempo-synced.** Switch mode, set the tempo to ~90, and hold one long "aaaah": it walks
-    through the tune in time. Stop for a few notes and start again: it carries on further
-    along, not where you stopped.
-26. **Manual and hotkeys.** Set *Next note* to a key (e.g. Page Down), switch to *Manual step*,
-    hold an "aaah" and press the key: one note per press. Set the *Restart melody* and
-    *on/off* keys and try them with VoxShift in the tray.
-27. **Hard Tune.** Apply the *Hard Tune* preset and slide your voice up and down slowly: it
-    jumps from note to note (the robotic auto-tune sound) instead of sliding.
-28. **Your MIDI file.** Drop a `.mid` on the window: a message names the part it picked (★ in
-    *Part*); the piano roll should look like the tune. If it is the bass or chords, pick
-    another part.
-29. **Soundboard stays clean.** With Melody Voice on, play a soundboard clip with singing or
-    speech: it must sound exactly like the original in Discord, not retuned.
-30. **Latency.** The top bar's latency estimate goes up by ~16 ms when Melody Voice turns on.
-
-## 9. How it works
-
-```
- mic callback(s) ──ring──▶ ┌─────────────── output callback (CABLE Input) ───────────────┐
-  (downmix, level)         │ adaptive resample ─▶ mic crossfade ─▶ voice chain ─▶ + sounds │──▶ CABLE Input
-                           │  (drift control)       (50 ms)          (effects)     (voices) │
- device manager thread ─cmd─▶ (attach/detach mics, monitor; play sounds)                    │──ring──▶ monitor
-  (scan 1.5 s, errors,     └────────────────────────────────────────────────────────────┘
-   stall watchdog, mic choice)          ◀──garbage── (old buffers freed off the audio thread)
+```powershell
+voxshift.exe --list-devices      # lists the audio devices Windows exposes, and whether VB-CABLE is found
+voxshift.exe --selftest          # runs the audio with the default mic for a few seconds and prints the status
+voxshift.exe --selftest switch   # also simulates unplugging and replugging the primary mic
+voxshift.exe --config <file>     # use another settings file
 ```
 
-- **Real-time safety.** The audio callbacks never lock, allocate, log or do I/O. Parameters are
-  atomics (`dsp::params`, read once per 64-sample block). New mic readers, the monitor ring and
-  sound buffers arrive through a lock-free `rtrb` queue. Anything the audio thread lets go of is
-  sent back through a second queue and freed on the device manager thread.
-- **Clock drift and sample rates.** Each mic has its own clock. `audio::adaptive` resamples with
-  rubato's async resampler and nudges the ratio (±1 %, a proportional controller) so the ring
-  buffer stays at its target fill. That also covers 44.1 kHz mics on a 48 kHz cable.
-- **Hot-plug.** Only the device manager thread talks to cpal. Mics and the monitor attach to the
-  running engine, so the virtual-mic stream keeps running when they come and go. It restarts
-  only when you change the output device or buffer size.
+### Running the tests
 
-The window is only a view. While it's hidden, eframe runs only `App::logic` (not `ui`), which
-handles tray requests, close requests and saving. The tray runs on its own thread with its own
-Win32 message loop, so it keeps working whatever the window does.
+```powershell
+cargo test
+cargo clippy --all-targets -- -D warnings
+```
+
+Most tests run anywhere. A few need an interactive Windows desktop: they press a key no
+keyboard has (F24) and listen for it, or show a tray icon for a moment. Don't type while they
+run. The CI skips them; see [`.github/workflows/release.yml`](.github/workflows/release.yml)
+for the exact list. Manual tests on real hardware are described in
+[docs/TESTING.md](docs/TESTING.md).
+
+## How it's built
+
+VoxShift is written in Rust, with [egui](https://github.com/emilk/egui) for the window and
+[cpal](https://github.com/RustAudio/cpal) for audio.
+
+The heart is the **audio thread**: the output device's callback. It reads the mic(s), runs the
+effect chain, mixes in the soundboard and writes to CABLE Input. That thread must never wait,
+so it never locks, allocates memory, logs or touches files. Settings reach it as atomic
+values; new mics, buffers and clips arrive through lock-free queues; and anything it no longer
+needs is sent back to be freed on another thread.
+
+Around it, a **device manager** thread watches devices (rescans, hot-plug, mic choice), a
+**hotkey** thread listens to the keyboard, the **tray** runs its own thread, and the **window**
+is only a view on top. Closing the window doesn't stop any of them.
 
 ```
 src/
-  shell/      tray icon thread, icon drawing, single instance, start with Windows (Win32)
-  audio/      streams, engine, device manager, drift-compensating reader, mic selection, name matching
-  dsp/        one file per effect + params, smoothing, chain (all unit-tested); Melody Voice:
-              pitch_detect (YIN), conductor (which note when), melody (the effect), preview
-  melody/     note type, built-in tunes, MIDI import (midly), lock-free hand-off to the engine
-  soundboard/ decoding (symphonia + rubato), sound list + loader, RT mixer, global hotkeys,
-              folders/search/sorting (organize), play modes and held keys (playmode)
-  ui/         egui panels: devices, effects, Melody Voice, presets, soundboard, meters, toasts
-  config/     settings file + presets
+  audio/       engine (the audio thread), device manager, mic selection, resampling
+  dsp/         the effects, one file each, plus Melody Voice's pitch detection and retuning
+  melody/      built-in tunes and MIDI import
+  soundboard/  decoding, the clip list, the real-time mixer, hotkeys, folders, play modes
+  ui/          the window's panels
+  shell/       tray icon, single instance, start with Windows
+  config/      settings file, presets, .voxpack sharing
 ```
 
-The DSP is hand-written: RBJ biquads, Hann-windowed two-head pitch shifter with
-correlation-aligned splices, LPC (Levinson-Durbin + lattice filters) for formant preservation,
-YIN pitch detection, Freeverb, etc. Each file explains its idea at the top.
+More detail is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Melody Voice in short:** a YIN detector runs on a 12 kHz copy of the mic every 2.5 ms; a
-tracker smooths it (median, octave-jump guard, voiced/unvoiced hysteresis); the conductor
-turns syllables, the clock or key presses into a target note; the shift (target − you) drives
-the formant-preserving pitch stage; unvoiced sounds take a dry path delayed by the same amount.
-The melody reaches the audio thread through a seqlock over fixed atomic arrays (no locks, no
-allocation, and it survives the engine being rebuilt).
+## Contributing
 
-**Adding a neural voice model later:** implement `dsp::VoiceProcessor` (`process` one mono
-block in place and report `latency_samples`). The engine already calls the chain through that
-interface. Run the model inference on a worker thread with lock-free queues on both sides,
-because a model can't promise to finish within one audio block.
+Bug reports, ideas and pull requests are welcome.
 
-## Troubleshooting
+1. Fork the repository and create a branch.
+2. Make your change, then run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
+3. Open a pull request. GitHub Actions builds and tests it on Windows automatically.
 
-- **Nobody hears me.** The app uses *CABLE Output* as its mic, not CABLE Input. Check that the
-  top bar shows an active mic and that the output panel says *running*.
-- **Robotic or choppy audio in Discord.** Turn off Discord's noise suppression and echo
-  cancellation.
-- **My own voice is doubled or echoes.** You're monitoring through speakers, or another app also
-  records your real mic.
-- **Hotkeys do nothing in one specific game.** Some games running as administrator block input
-  key input from non-admin apps. Run VoxShift as administrator in that case.
+Please keep the audio thread rules above in mind: nothing on the audio path may lock,
+allocate or block.
+
+**Releases** (for maintainers): bump `version` in `Cargo.toml`, commit, then push a tag such as
+`v0.2.0` (`git tag v0.2.0` and `git push origin main --tags`). GitHub Actions builds the exe
+and publishes a release with `VoxShift.exe` and a zip.
+
+## Responsible use
+
+VoxShift is meant for fun with friends, streaming and privacy. Please:
+
+- don't use it to impersonate real people, deceive, harass or defraud anyone;
+- follow the rules of the platforms, servers and games you use it in (some forbid
+  soundboards or voice changers);
+- only use sound clips and MIDI files you have the right to use. VoxShift doesn't come with
+  or download any songs; the built-in melodies are public domain.
+
+## License
+
+VoxShift is released under the [MIT License](LICENSE).
+
+## Credits
+
+- **VB-CABLE** by [VB-Audio](https://vb-audio.com/Cable/): the virtual audio cable driver
+  VoxShift sends its audio to. It's a separate product with its own license and isn't included.
+- Built with these open-source Rust libraries (thank you!):
+
+  | Library | Used for | License |
+  |---|---|---|
+  | [cpal](https://github.com/RustAudio/cpal) | audio input and output | Apache-2.0 |
+  | [egui / eframe](https://github.com/emilk/egui) | the window and UI | MIT or Apache-2.0 |
+  | [symphonia](https://github.com/pdeljanov/Symphonia) | decoding mp3, ogg, flac and wav | MPL-2.0 |
+  | [rubato](https://github.com/HEnquist/rubato) | sample-rate conversion | MIT or Apache-2.0 |
+  | [midly](https://github.com/kovaxis/midly) | reading MIDI files | Unlicense |
+  | [rtrb](https://github.com/mgeier/rtrb) | lock-free audio queues | MIT or Apache-2.0 |
+  | [rfd](https://github.com/PolyMeilex/rfd) | file dialogs | MIT |
+  | [serde](https://serde.rs) / serde_json | the settings file | MIT or Apache-2.0 |
+  | [windows-sys](https://github.com/microsoft/windows-rs) | tray, hotkeys and other Windows features | MIT or Apache-2.0 |
+
+- The built-in melodies are public-domain tunes, written into the code note by note.
