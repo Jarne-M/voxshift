@@ -105,17 +105,19 @@ the **Primary mic**. Check that:
 
 ### 4. Use CABLE Output as your mic in other apps
 
-| App | Where to set it |
-|---|---|
-| **Discord** | User Settings → Voice & Video → **Input Device** → *CABLE Output*. Also turn **off** Noise Suppression, Echo Cancellation and Automatic Gain Control there: they treat effects and music as noise and filter them out. |
-| **OBS** | Settings → Audio → **Mic/Auxiliary Audio** → *CABLE Output* (or add an *Audio Input Capture* source with CABLE Output). Remove or mute any source that records your real mic, or you'll be heard twice. |
-| **Games** | The game's voice chat settings → input device → *CABLE Output*. If the game has no such setting, it uses the Windows default mic: Settings → System → Sound → Input → *CABLE Output*. |
+In each app that should hear you, choose **CABLE Output** as the microphone (input device) in
+its voice or audio settings.
+
+- **Discord:** also turn off its noise suppression, echo cancellation and automatic gain
+  control. They treat effects and music as noise and filter them out.
+- **OBS:** remove or mute any source that records your real mic, or you'll be heard twice.
+- **Games without a mic setting** use the Windows default microphone: set *CABLE Output* as the
+  default input in the Windows sound settings.
 
 ### 5. How do I know it works?
 
 - In VoxShift, the **In** and **Out** meters at the top move when you talk.
-- Open the Windows sound settings (press Win+R, type `mmsys.cpl`, press Enter) → **Recording**
-  tab: the level bar next to **CABLE Output** moves when you talk.
+- In the Windows sound settings, the input level of **CABLE Output** moves when you talk.
 - Record yourself with the Windows **Sound Recorder** app, with CABLE Output as its
   microphone, and play it back.
 
@@ -447,8 +449,8 @@ mic). In VoxShift, the virtual mic (output) must be **CABLE Input**, and the top
 an active mic. Check the **In** meter moves when you talk.
 
 **Discord makes the effects or soundboard music sound bad or cuts them off.**
-Turn off Discord's Noise Suppression, Echo Cancellation and Automatic Gain Control (User
-Settings → Voice & Video), and set the input sensitivity by hand if needed.
+Turn off Discord's noise suppression, echo cancellation and automatic gain control in its voice
+settings, and set the input sensitivity by hand if needed.
 
 **I hear an echo or my voice twice.**
 You're probably hearing yourself through speakers (use headphones), or another app (OBS,
