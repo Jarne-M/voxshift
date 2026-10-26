@@ -97,7 +97,8 @@ to hear what others hear.
 
 20. **Playing.** Drop an mp3 on the window and click it: others hear it mixed with your voice.
     Its hotkey works with a game focused.
-21. **Folders and search.** Make two folders, drag clips onto their tabs, rename one, delete
+21. **Folders and search.** Make two folders, drag clips by their dots onto the tabs (a slightly
+    moving click on a clip still plays it), rename one, delete
     it: its clips go to *Unsorted*. Searching "cafe" finds a clip named "Café ...". After a
     restart the same tab and sort are selected, and stars, colours and *Recent* are kept.
 22. **Missing file.** Rename a clip's file and restart: the clip is grey with *Locate…*.

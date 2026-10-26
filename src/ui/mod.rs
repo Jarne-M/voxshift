@@ -2902,6 +2902,95 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_wobbly_click_plays_the_clip_and_only_the_grip_drags_it() {
+        use crate::soundboard::decode::tests::{temp_dir, write_wav};
+        use crate::soundboard::library::LoadState;
+        use soundboard::Action as A;
+        use soundboard::tests::rect_of;
+        let dir = temp_dir("ui-grip");
+        let path = dir.join("boom.wav");
+        write_wav(&path, 48_000, 1, &vec![8000; 48_000]);
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        // An engine queue to play into (the engine itself never runs here).
+        let (_engine, link) = crate::audio::engine::Engine::new(app.shared.clone(), 48_000);
+        app.manager.port.set(Some(link.cmds));
+        app.add_sounds(&ctx, vec![path]);
+        app.apply_sound_action(&ctx, A::NewFolder);
+        let memes = app.cfg.soundboard.folders[0].id;
+        app.apply_sound_action(&ctx, A::Tab(organize::BoardTab::All));
+        app.cfg.tab = Tab::Soundboard;
+        let size = (1240.0, 800.0);
+        let start = std::time::Instant::now();
+        let mut t = 0.0;
+        while !matches!(app.sounds.lock().sounds[0].state, LoadState::Ready(_)) {
+            assert!(start.elapsed().as_secs() < 10, "the clip never loaded");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            frame(&ctx, &mut app, size, t, vec![]);
+            t += 0.02;
+        }
+        frame(&ctx, &mut app, size, t, vec![]);
+        let id = app.sounds.lock().sounds[0].id;
+        let plays = |app: &VoxApp| app.sounds.lock().sounds[0].entry.plays;
+        let mut step = |app: &mut VoxApp, events: Vec<egui::Event>| {
+            t += 0.05;
+            frame(&ctx, app, size, t, events);
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+
+        // Press on the clip, move a few pixels (a shaky hand), let go: it plays.
+        let at = rect_of(&ctx, "clip", id).center();
+        let moved = at + egui::vec2(4.0, 3.0);
+        step(&mut app, vec![egui::Event::PointerMoved(at)]);
+        step(&mut app, vec![button(at, true)]);
+        step(&mut app, vec![egui::Event::PointerMoved(moved)]);
+        step(&mut app, vec![button(moved, false)]);
+        assert_eq!(plays(&app), 1, "the click played the clip");
+
+        // Dragging the clip button itself moves nothing.
+        let tab = rect_of(
+            &ctx,
+            "tab",
+            format!("{:?}", organize::BoardTab::Folder(memes)),
+        )
+        .center();
+        step(&mut app, vec![egui::Event::PointerMoved(at)]);
+        step(&mut app, vec![button(at, true)]);
+        for k in 1..=5 {
+            let p = at + (tab - at) * (k as f32 / 5.0);
+            step(&mut app, vec![egui::Event::PointerMoved(p)]);
+        }
+        step(&mut app, vec![button(tab, false)]);
+        assert_eq!(
+            app.cfg.sounds[0].folder, None,
+            "the button is not a drag handle"
+        );
+
+        // The grip in the corner drags it onto the folder tab.
+        let grip = rect_of(&ctx, "grip", id).center();
+        step(&mut app, vec![egui::Event::PointerMoved(grip)]);
+        step(&mut app, vec![button(grip, true)]);
+        for k in 1..=5 {
+            let p = grip + (tab - grip) * (k as f32 / 5.0);
+            step(&mut app, vec![egui::Event::PointerMoved(p)]);
+        }
+        step(&mut app, vec![button(tab, false)]);
+        step(&mut app, vec![]);
+        assert_eq!(
+            app.cfg.sounds[0].folder,
+            Some(memes),
+            "dropped on the folder tab"
+        );
+        assert_eq!(plays(&app), 1, "dragging didn't play it");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn folders_favourites_colours_and_order_through_the_ui_actions() {
         use soundboard::Action as A;
         let ctx = egui::Context::default();

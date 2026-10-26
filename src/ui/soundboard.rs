@@ -204,6 +204,8 @@ fn tab(
 ) -> egui::Response {
     let selected = v.settings.tab == t;
     let r = ui.selectable_label(selected, label);
+    #[cfg(test)]
+    tests::remember(ui, ("tab", format!("{t:?}")), r.rect);
     if r.clicked() && !selected {
         actions.push(Action::Tab(t));
     }
@@ -439,18 +441,18 @@ pub fn panel(ui: &mut Ui, v: &View, search: &mut String) -> Vec<Action> {
             let s = &v.board.sounds[i];
             // Each card stacks its controls vertically inside the wrapping row.
             let layout = egui::Layout::top_down(egui::Align::Min);
+            // Only the grip in the corner drags (see `drag_handle`): the rest of the card
+            // keeps normal clicks, so a slightly moving click still plays the clip.
             let card = ui.allocate_ui_with_layout(vec2(CELL, 150.0), layout, |ui| {
-                ui.dnd_drag_source(Id::new(("clip", s.id)), ClipDrag(s.id), |ui| {
-                    egui::Frame::new()
-                        .fill(CARD)
-                        .corner_radius(8)
-                        .inner_margin(egui::Margin::same(8))
-                        .show(ui, |ui| {
-                            ui.set_width(CELL - 16.0);
-                            cell(ui, v, s.id, &s.entry, &s.state, &mut actions);
-                        });
-                })
-                .response
+                egui::Frame::new()
+                    .fill(CARD)
+                    .corner_radius(8)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_width(CELL - 16.0);
+                        cell(ui, v, s.id, &s.entry, &s.state, &mut actions);
+                    })
+                    .response
             });
             let r = card.inner;
             if reorderable {
@@ -473,6 +475,46 @@ pub fn panel(ui: &mut Ui, v: &View, search: &mut String) -> Vec<Action> {
         }
     });
     actions
+}
+
+/// The grip (six dots) that drags a clip onto a tab or onto another clip. While dragging, the
+/// clip's name follows the pointer.
+fn drag_handle(ui: &mut Ui, id: SoundId, name: &str) {
+    let (rect, r) = ui.allocate_exact_size(vec2(14.0, 18.0), egui::Sense::drag());
+    #[cfg(test)]
+    tests::remember(ui, ("grip", format!("{id}")), rect);
+    let color = if r.hovered() || r.dragged() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let c = rect.center();
+    for row in [-5.0, 0.0, 5.0] {
+        for col in [-3.0, 3.0] {
+            ui.painter().circle_filled(c + vec2(col, row), 1.6, color);
+        }
+    }
+    let r = r.on_hover_text(
+        "Drag onto a tab to move it there, or (sorted by My order) onto another clip to put it \
+         there",
+    );
+    r.dnd_set_drag_payload(ClipDrag(id));
+    if r.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        if let Some(p) = ui.ctx().pointer_interact_pos() {
+            egui::Area::new(Id::new(("clip_drag", id)))
+                .order(egui::Order::Tooltip)
+                .fixed_pos(p + vec2(14.0, 10.0))
+                .interactable(false)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label(RichText::new(name).strong());
+                    });
+                });
+        }
+    } else if r.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
 }
 
 fn clip_menu(
@@ -578,7 +620,7 @@ fn cell(
             true,
             format!(
                 "{:.1} s, played {} times. {} Right-click for more (stop, favorite, folder, \
-                 play mode, colour, delete); drag onto a tab to move it.",
+                 play mode, colour, delete). To move it, drag the dots in the corner.",
                 d.len_frames() as f32 / d.sample_rate as f32,
                 e.plays,
                 match e.play_mode {
@@ -615,6 +657,8 @@ fn cell(
         .min_size(vec2(ui.available_width(), 52.0))
         .wrap();
     let r = ui.add_enabled(enabled, button);
+    #[cfg(test)]
+    tests::remember(ui, ("clip", format!("{id}")), r.rect);
     let r = if enabled {
         r.on_hover_text(tip)
     } else {
@@ -714,6 +758,7 @@ fn cell(
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            drag_handle(ui, id, name);
             if missing {
                 if ui
                     .small_button("Locate...")
@@ -734,8 +779,20 @@ fn cell(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Notes where a widget was drawn, so UI tests can aim real mouse events at it.
+    pub fn remember(ui: &Ui, key: (&str, String), rect: egui::Rect) {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(Id::new(("test_rect", key.0, key.1)), rect));
+    }
+
+    /// Where `remember` saw the widget last frame, e.g. `rect_of(ctx, "clip", id)`.
+    pub fn rect_of(ctx: &egui::Context, kind: &str, key: impl std::fmt::Display) -> egui::Rect {
+        ctx.data(|d| d.get_temp(Id::new(("test_rect", kind, key.to_string()))))
+            .unwrap_or_else(|| panic!("{kind} {key} was not drawn"))
+    }
 
     #[test]
     fn clip_text_stays_readable_on_every_colour() {

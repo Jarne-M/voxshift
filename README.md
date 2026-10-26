@@ -266,11 +266,13 @@ are never retuned.
     or delete it.
   - Deleting a folder never deletes clips or files: its clips move to *Unsorted*.
   - New clips go into the folder that's open.
-- **Moving clips:** drag a clip onto a tab, or use right-click → **Move to…**.
+- **Moving clips:** grab the six dots in a clip's bottom-right corner and drag it onto a tab,
+  or use right-click → **Move to…**. (The rest of the clip is just for clicking, so a slightly
+  shaky click still plays it.)
 - **Search** (Ctrl+F) looks through all folders as you type. It ignores upper/lower case and
   accents and matches part of a name, so "cafe" finds "Café Ambience". Esc clears it.
 - **Sort:** *My order*, *Name*, *Most played* or *Recently added*. With *My order*, drag a clip
-  onto another one to put it there.
+  by its dots onto another one to put it there.
 - **Favorites:** click the ☆ under a clip.
 - **Recent:** the last 20 clips you played, newest first. *Clear* empties the list.
 - **Colours:** right-click → **Colour** gives a clip one of 10 colours.
