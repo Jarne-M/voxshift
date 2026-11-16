@@ -99,6 +99,8 @@ pub struct Shared {
     pub sounds_playing: AtomicU32,
     /// Sound id per mixer voice (0 = free), so the GUI can highlight playing sounds.
     pub playing_ids: [AtomicU64; VOICES],
+    /// How far each mixer voice is through its clip (0..1), for the progress bar on a pad.
+    pub playing_progress: [AtomicF32; VOICES],
     /// Melody Voice: your pitch and the note you are tuned to (MIDI numbers, NaN = none).
     pub melody_detected: AtomicF32,
     pub melody_target: AtomicF32,
@@ -142,6 +144,7 @@ impl Default for Shared {
             safe_mutes_monitor: AtomicBool::new(false),
             sounds_playing: AtomicU32::new(0),
             playing_ids: std::array::from_fn(|_| AtomicU64::new(0)),
+            playing_progress: std::array::from_fn(|_| AtomicF32::zero()),
             melody_detected: AtomicF32::new(f32::NAN),
             melody_target: AtomicF32::new(f32::NAN),
             melody: MelodyStore::default(),
@@ -169,6 +172,30 @@ impl Shared {
 
     pub fn is_playing(&self, id: u64) -> bool {
         id != 0 && self.playing_ids.iter().any(|a| a.load(Relaxed) == id)
+    }
+
+    /// How far clip `id` is through playing (0..1), if it is playing.
+    pub fn progress_of(&self, id: u64) -> Option<f32> {
+        if id == 0 {
+            return None;
+        }
+        let slot = self
+            .playing_ids
+            .iter()
+            .position(|a| a.load(Relaxed) == id)?;
+        Some(self.playing_progress[slot].get())
+    }
+
+    /// The ids of the clips playing right now, in mixer order.
+    pub fn playing(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self
+            .playing_ids
+            .iter()
+            .map(|a| a.load(Relaxed))
+            .filter(|&id| id != 0)
+            .collect();
+        ids.dedup();
+        ids
     }
 
     pub fn active_mic(&self) -> ActiveMic {

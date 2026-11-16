@@ -256,6 +256,10 @@ impl BlockSource for Engine {
         for (slot, id) in self.shared.playing_ids.iter().zip(self.sounds.ids()) {
             slot.store(id, Relaxed);
         }
+        let progress = self.sounds.progress();
+        for (slot, p) in self.shared.playing_progress.iter().zip(progress) {
+            slot.set(p);
+        }
 
         let mut out_peak = 0.0f32;
         let mut clipped = false;

@@ -92,6 +92,18 @@ impl SoundMixer {
         })
     }
 
+    /// How far each voice is through its clip (0..1) per slot; 0 for an empty slot. Only
+    /// reads what is already in memory: fine on the audio thread.
+    pub fn progress(&self) -> [f32; VOICES] {
+        std::array::from_fn(|i| match &self.voices[i] {
+            Some(v) if !v.stopping => {
+                let last = v.data.len_frames().saturating_sub(1).max(1) as f64;
+                (v.pos / last).clamp(0.0, 1.0) as f32
+            }
+            _ => 0.0,
+        })
+    }
+
     /// Applies a command; may return a buffer that is no longer needed.
     pub fn apply(&mut self, cmd: SoundCmd) -> Option<SoundRetired> {
         match cmd {
@@ -239,7 +251,20 @@ mod tests {
             })
             .is_none()
         );
+        assert_eq!(m.progress()[0], 0.0, "at the start");
+        render(&mut m, 30); // 1920 of 4800 frames
+        let p = m.progress()[0];
+        assert!((p - 0.4).abs() < 0.01, "progress {p}");
+        assert!(m.progress()[1..].iter().all(|&p| p == 0.0), "empty slots");
+        let mut m = SoundMixer::with_rate(48_000);
+        m.apply(SoundCmd::Play {
+            id: 1,
+            data: tone(4800, 48_000),
+            volume: 1.0,
+            looped: false,
+        });
         let (out, retired) = render(&mut m, 100);
+        assert_eq!(m.progress()[0], 0.0, "finished: the slot is empty again");
         assert!(out[0].abs() < 0.01, "starts faded in");
         assert!((out[2000] - 0.5).abs() < 0.01);
         assert_eq!(retired, 1);

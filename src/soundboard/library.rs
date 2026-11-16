@@ -4,7 +4,7 @@
 use super::hotkeys::Hotkey;
 use super::mixer::{SoundCmd, SoundData, SoundId};
 use super::playmode::{Cmd, PlayMode, Triggers};
-use super::{decode, organize};
+use super::{decode, names, organize};
 use crate::audio::device_manager::EnginePort;
 use crate::audio::engine::EngineCmd;
 use crate::audio::shared::Shared;
@@ -52,17 +52,43 @@ impl Default for SoundEntry {
 }
 
 impl SoundEntry {
+    /// A clip named exactly after its file.
+    #[cfg(test)]
     pub fn from_path(path: PathBuf) -> Self {
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "sound".into());
         Self {
-            name,
+            name: names::file_stem(&path),
             path,
             ..Default::default()
         }
     }
+
+    /// A clip for a file the user just added: its name is the file's name tidied up (see
+    /// [`names::clean_name`]). The name can be changed later; the file is never renamed.
+    pub fn imported(path: PathBuf) -> Self {
+        Self {
+            name: names::imported_name(&path),
+            path,
+            ..Default::default()
+        }
+    }
+
+    /// The file's own name ("airhorn.mp3"), shown next to the display name.
+    pub fn file_name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+}
+
+/// A clip taken off the board, with what is needed to put it back where it was (undo).
+#[derive(Clone, Debug)]
+pub struct Removed {
+    pub entry: SoundEntry,
+    /// Its place on the board.
+    pub index: usize,
+    /// Its place in "Recent", if it was there.
+    pub recent_index: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -125,14 +151,45 @@ impl Board {
         id
     }
 
+    #[cfg(test)]
     pub fn remove(&mut self, id: SoundId) {
+        self.take(id);
+    }
+
+    /// Removes a clip and returns it, so it can be put back with [`Board::restore`].
+    pub fn take(&mut self, id: SoundId) -> Option<Removed> {
         self.port.send(EngineCmd::Sound(SoundCmd::Stop(id)));
         self.triggers.forget(id);
-        if let Some(uid) = self.get_mut(id).map(|s| s.entry.uid) {
-            self.recent.retain(|&u| u != uid);
-        }
-        self.sounds.retain(|s| s.id != id);
+        let index = self.sounds.iter().position(|s| s.id == id)?;
+        let entry = self.sounds.remove(index).entry;
+        let recent_index = self.recent.iter().position(|&u| u == entry.uid);
+        self.recent.retain(|&u| u != entry.uid);
         self.revision += 1;
+        Some(Removed {
+            entry,
+            index,
+            recent_index,
+        })
+    }
+
+    /// Puts a removed clip back in its place (it is loaded from its file again). Returns
+    /// its new id.
+    pub fn restore(&mut self, removed: Removed) -> SoundId {
+        let uid_wanted = removed.entry.uid;
+        let id = self.add(removed.entry);
+        if let Some(sound) = self.sounds.pop() {
+            let uid = sound.entry.uid;
+            self.sounds
+                .insert(removed.index.min(self.sounds.len()), sound);
+            // Back into Recent only if it kept its identity.
+            if let Some(at) = removed.recent_index
+                && uid == uid_wanted
+            {
+                self.recent.insert(at.min(self.recent.len()), uid);
+            }
+        }
+        self.revision += 1;
+        id
     }
 
     pub fn get_mut(&mut self, id: SoundId) -> Option<&mut Sound> {

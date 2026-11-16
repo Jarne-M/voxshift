@@ -4,5 +4,6 @@ pub mod decode;
 pub mod hotkeys;
 pub mod library;
 pub mod mixer;
+pub mod names;
 pub mod organize;
 pub mod playmode;

@@ -61,9 +61,33 @@ pub const FX_CHORUS: &str = ph::USERS_THREE;
 pub const FX_ECHO: &str = ph::REPEAT;
 pub const FX_REVERB: &str = ph::CUBE;
 
+// The Soundboard page
+pub const SEARCH: &str = ph::MAGNIFYING_GLASS;
+pub const VIEW_GRID: &str = ph::GRID_FOUR;
+pub const VIEW_LIST: &str = ph::LIST;
+pub const FOLDER: &str = ph::FOLDER;
+pub const FOLDER_ADD: &str = ph::FOLDER_PLUS;
+pub const LOCATE: &str = ph::FOLDER_OPEN;
+pub const DROP_FILES: &str = ph::FILE_AUDIO;
+pub const VOLUME: &str = ph::SPEAKER_HIGH;
+pub const PAD_SIZE: &str = ph::ARROWS_OUT_SIMPLE;
+pub const COLOR: &str = ph::PALETTE;
+pub const PLAY_MODE: &str = ph::REPEAT_ONCE;
+
 /// Every icon above, for the test that checks the font has them all.
 #[cfg(test)]
-pub const ALL: [&str; 45] = [
+pub const ALL: [&str; 56] = [
+    SEARCH,
+    VIEW_GRID,
+    VIEW_LIST,
+    FOLDER,
+    FOLDER_ADD,
+    LOCATE,
+    DROP_FILES,
+    VOLUME,
+    PAD_SIZE,
+    COLOR,
+    PLAY_MODE,
     MORE,
     ADD,
     EDIT,

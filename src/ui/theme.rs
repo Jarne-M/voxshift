@@ -152,16 +152,6 @@ pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     )
 }
 
-/// Black or white, whichever reads better on `bg` (in any theme).
-pub fn text_on(bg: Color32) -> Color32 {
-    let l = 0.2126 * f32::from(bg.r()) + 0.7152 * f32::from(bg.g()) + 0.0722 * f32::from(bg.b());
-    if l > 150.0 {
-        Color32::BLACK
-    } else {
-        Color32::WHITE
-    }
-}
-
 fn style(style: &mut egui::Style, p: &Palette, dark: bool) {
     for (ts, size) in [
         (TextStyle::Small, font::SMALL),
@@ -272,7 +262,6 @@ pub fn set_choice(ctx: &Context, choice: ThemeChoice) {
 
 // The fixed colours of the layout before the redesign; the pages that still use them move to
 // [`palette`] one by one.
-pub const ACCENT: Color32 = DARK.accent;
 pub const ON: Color32 = Color32::from_rgb(40, 170, 100);
 pub const OFF: Color32 = Color32::from_rgb(90, 90, 96);
 pub const WARN: Color32 = DARK.warning;
@@ -331,15 +320,13 @@ mod tests {
     }
 
     #[test]
-    fn mixing_and_text_colour_choice() {
+    fn colours_mix() {
         assert_eq!(mix(Color32::BLACK, Color32::WHITE, 0.0), Color32::BLACK);
         assert_eq!(mix(Color32::BLACK, Color32::WHITE, 1.0), Color32::WHITE);
         assert_eq!(
             mix(Color32::BLACK, Color32::WHITE, 0.5),
             Color32::from_rgb(128, 128, 128)
         );
-        assert_eq!(text_on(Color32::from_gray(52)), Color32::WHITE);
-        assert_eq!(text_on(Color32::from_rgb(230, 200, 60)), Color32::BLACK);
     }
 
     #[test]

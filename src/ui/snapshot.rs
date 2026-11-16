@@ -610,6 +610,103 @@ mod tests {
                 app.shared.mic_muted.store(true, Relaxed);
             },
         );
+        // The soundboard in use: colours, stars, hotkeys, folders, two clips playing.
+        let board = |app: &mut VoxApp, ctx: &Context| {
+            use crate::soundboard::hotkeys::Hotkey;
+            use crate::soundboard::playmode::PlayMode;
+            use crate::ui::soundboard::Action as A;
+            use crate::voice_keys::KeyTarget;
+            app.cfg.page = Page::Soundboard;
+            let ids: Vec<u64> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+            for name in ["Memes", "Stream"] {
+                app.apply_sound_action(ctx, A::NewFolder);
+                let id = app.cfg.soundboard.folders.last().unwrap().id;
+                app.apply_sound_action(ctx, A::RenameFolder(id, name.into()));
+            }
+            app.apply_sound_action(ctx, A::Tab(crate::soundboard::organize::BoardTab::All));
+            for (i, color) in [(0, 0), (2, 6), (3, 1), (5, 7), (6, 4), (9, 8)] {
+                app.apply_sound_action(ctx, A::Color(ids[i], Some(color)));
+            }
+            for i in [0, 3, 5] {
+                app.apply_sound_action(ctx, A::ToggleFavorite(ids[i]));
+            }
+            app.apply_sound_action(ctx, A::PlayMode(ids[2], PlayMode::Hold));
+            app.apply_sound_action(ctx, A::PlayMode(ids[6], PlayMode::LoopWhileHeld));
+            app.apply_sound_action(ctx, A::PlayMode(ids[9], PlayMode::Toggle));
+            let key = |vk, ctrl| Hotkey::new(vk, ctrl, false, false, false, "");
+            app.set_hotkey(KeyTarget::Sound(ids[0]), Some(key(0x61, false)));
+            app.set_hotkey(KeyTarget::Sound(ids[2]), Some(key(0x62, true)));
+            app.set_hotkey(KeyTarget::Sound(ids[5]), Some(key(0x75, false)));
+            app.set_hotkey(KeyTarget::StopSounds, Some(key(0x79, false)));
+            app.edit_clip(ids[3], |e| e.plays = 12);
+            for (slot, (i, progress)) in [(1, 0.35), (6, 0.7)].into_iter().enumerate() {
+                app.shared.playing_ids[slot].store(ids[i], Relaxed);
+                app.shared.playing_progress[slot].set(progress);
+            }
+        };
+        let board_editing = |app: &mut VoxApp, ctx: &Context| {
+            board(app, ctx);
+            let (id, name) = {
+                let b = app.sounds.lock();
+                (b.sounds[3].id, b.sounds[3].entry.name.clone())
+            };
+            app.board_page.open(id, &name, false);
+        };
+        let board_list = |app: &mut VoxApp, ctx: &Context| {
+            board(app, ctx);
+            app.cfg.soundboard.view = crate::soundboard::organize::BoardView::List;
+        };
+        let dark = ThemeChoice::Dark;
+        app_shot(&dir, "board-1280x720", (1280, 720), dark, 1.0, board);
+        app_shot(
+            &dir,
+            "board-edit-1280x720",
+            (1280, 720),
+            dark,
+            1.0,
+            board_editing,
+        );
+        app_shot(
+            &dir,
+            "board-edit-920x600",
+            (920, 600),
+            dark,
+            1.0,
+            board_editing,
+        );
+        app_shot(
+            &dir,
+            "board-list-1280x720",
+            (1280, 720),
+            dark,
+            1.0,
+            board_list,
+        );
+        app_shot(&dir, "board-2560x1080", (2560, 1080), dark, 1.0, board);
+        app_shot(
+            &dir,
+            "board-list-2560x1080",
+            (2560, 1080),
+            dark,
+            1.0,
+            board_list,
+        );
+        app_shot(
+            &dir,
+            "board-light",
+            (1280, 720),
+            ThemeChoice::Light,
+            1.0,
+            board_editing,
+        );
+        app_shot(&dir, "board-150", (1280, 720), dark, 1.5, board);
+        app_shot(&dir, "board-empty", (1280, 720), dark, 1.0, |app, ctx| {
+            app.cfg.page = Page::Soundboard;
+            let ids: Vec<u64> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+            for id in ids {
+                app.apply_sound_action(ctx, crate::ui::soundboard::Action::Remove(id));
+            }
+        });
         // Melody Voice singing, own presets (one a favourite), a modified preset.
         app_shot(
             &dir,
@@ -702,21 +799,47 @@ mod tests {
             .find(|p| p.name == "Cave")
             .unwrap();
         app.apply_preset(ctx, &cave);
-        app.add_sounds(
-            ctx,
-            [
-                "airhorn.mp3",
-                "freesound_community-180610-house-fly-close-buzzing-62408.mp3",
-                "bruh.wav",
-                "sad trombone.ogg",
-                "Windows XP shutdown.wav",
-                "vine_boom_sound_effect.mp3",
-                "crickets.flac",
-                "rimshot.wav",
-            ]
-            .map(|f| format!("C:/sounds/{f}").into())
-            .to_vec(),
-        );
+        // Real (silent) files, so the clips load and show as playable.
+        let dir = crate::soundboard::decode::tests::temp_dir("shots");
+        let files: Vec<std::path::PathBuf> = [
+            ("airhorn.wav", 1.4),
+            (
+                "freesound_community-180610-house-fly-close-buzzing-62408.wav",
+                12.0,
+            ),
+            ("bruh.wav", 0.8),
+            ("sad trombone.wav", 3.6),
+            ("Windows XP shutdown.wav", 2.9),
+            ("vine_boom_sound_effect.wav", 1.1),
+            ("crickets.wav", 21.0),
+            ("rimshot.wav", 0.9),
+            ("pixabay-dramatic-suspense-sting-11402.wav", 4.2),
+            ("applause_small_room.wav", 7.5),
+            ("wrong-answer-buzzer.wav", 1.0),
+        ]
+        .into_iter()
+        .map(|(name, seconds)| {
+            let path = dir.join(name);
+            let samples = vec![0i16; (seconds * 8000.0) as usize];
+            crate::soundboard::decode::tests::write_wav(&path, 8000, 1, &samples);
+            path
+        })
+        .collect();
+        app.add_sounds(ctx, files);
+        let start = std::time::Instant::now();
+        while app
+            .sounds
+            .lock()
+            .sounds
+            .iter()
+            .any(|s| matches!(s.state, crate::soundboard::library::LoadState::Loading))
+        {
+            assert!(
+                start.elapsed().as_secs() < 20,
+                "the demo clips never loaded"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         app.cfg.page = Page::Voice;
         app.shared.input_level.set(0.12);
         app.shared.output_level.set(0.3);

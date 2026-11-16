@@ -56,8 +56,22 @@ pub struct Folder {
     pub name: String,
 }
 
+/// How the clips are shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BoardView {
+    /// Pads in a grid.
+    #[default]
+    Grid,
+    /// One compact row per clip.
+    List,
+}
+
+/// The width of a pad, in points.
+pub const PAD_SIZE_DEFAULT: f32 = 150.0;
+pub const PAD_SIZE_RANGE: std::ops::RangeInclusive<f32> = 110.0..=260.0;
+
 /// Saved in the config.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BoardSettings {
     /// In tab order.
@@ -67,9 +81,37 @@ pub struct BoardSettings {
     /// The tab that was open last.
     pub tab: BoardTab,
     pub sort: SortMode,
+    pub view: BoardView,
+    /// Pad width in the grid view.
+    pub pad_size: f32,
+}
+
+impl Default for BoardSettings {
+    fn default() -> Self {
+        Self {
+            folders: Vec::new(),
+            recent: Vec::new(),
+            tab: BoardTab::default(),
+            sort: SortMode::default(),
+            view: BoardView::default(),
+            pad_size: PAD_SIZE_DEFAULT,
+        }
+    }
 }
 
 impl BoardSettings {
+    /// Puts a deleted folder back at `index` (undo). If its id was given to a folder made
+    /// in the meantime it gets a new one. Returns the id it has now.
+    pub fn restore_folder(&mut self, mut folder: Folder, index: usize) -> u32 {
+        if self.folders.iter().any(|f| f.id == folder.id) {
+            folder.id = self.folders.iter().map(|f| f.id).max().unwrap_or(0) + 1;
+        }
+        folder.name = self.unique_name(&folder.name, None);
+        let id = folder.id;
+        self.folders.insert(index.min(self.folders.len()), folder);
+        id
+    }
+
     /// A new folder (the name is made unique: "Memes", "Memes (2)", ...). Returns its id.
     pub fn create_folder(&mut self, name: &str) -> u32 {
         let id = self.folders.iter().map(|f| f.id).max().unwrap_or(0) + 1;
@@ -154,6 +196,12 @@ impl BoardSettings {
         let uids: Vec<u64> = sounds.iter().map(|s| s.uid).collect();
         self.recent.retain(|u| uids.contains(u));
         self.recent.truncate(RECENT_MAX);
+        if !self.pad_size.is_finite() {
+            self.pad_size = PAD_SIZE_DEFAULT;
+        }
+        self.pad_size = self
+            .pad_size
+            .clamp(*PAD_SIZE_RANGE.start(), *PAD_SIZE_RANGE.end());
     }
 }
 

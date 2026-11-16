@@ -120,6 +120,8 @@ pub struct Slider<'a> {
     percent: bool,
     tip: &'a str,
     label_width: f32,
+    /// Just a track of this width: no label, no value box (for toolbars).
+    compact: Option<f32>,
 }
 
 /// A slider row never grows wider than this: on a wide card a longer track is harder to
@@ -141,6 +143,7 @@ impl<'a> Slider<'a> {
             percent: false,
             tip: "",
             label_width: 120.0,
+            compact: None,
         }
     }
 
@@ -196,6 +199,13 @@ impl<'a> Slider<'a> {
         self
     }
 
+    /// Only the track, `width` points wide: for a toolbar, where the label is an icon next
+    /// to it and the value shows in what it changes. (The label still names it for ids.)
+    pub fn compact(mut self, width: f32) -> Self {
+        self.compact = Some(width);
+        self
+    }
+
     fn position_of(&self, v: f32) -> f32 {
         to_norm(v, self.min, self.max, self.log)
     }
@@ -225,23 +235,27 @@ impl<'a> Slider<'a> {
 
     pub fn show(self, ui: &mut Ui) -> Response {
         let p = palette(ui);
-        let width = ui.available_width().clamp(140.0, SLIDER_MAX_W);
+        let compact = self.compact.is_some();
+        let width = self
+            .compact
+            .unwrap_or_else(|| ui.available_width().clamp(140.0, SLIDER_MAX_W));
         let (row, mut response) = ui.allocate_exact_size(vec2(width, 26.0), Sense::hover());
         let id = ui.id().with(("vox_slider", self.label));
         let enabled = ui.is_enabled();
 
-        let value_w = 64.0;
-        let label_w = if self.label.is_empty() {
+        let value_w = if compact { 0.0 } else { 64.0 };
+        let label_w = if self.label.is_empty() || compact {
             0.0
         } else {
             self.label_width.min(width * 0.42)
         };
         let gap = if label_w > 0.0 { space::S + 2.0 } else { 0.0 };
+        let value_gap = if compact { 0.0 } else { space::S };
         let label_rect = Rect::from_min_max(row.min, pos2(row.left() + label_w, row.bottom()));
         let value_rect = Rect::from_min_max(pos2(row.right() - value_w, row.top()), row.max);
         let track_rect = Rect::from_min_max(
             pos2(label_rect.right() + gap, row.top()),
-            pos2(value_rect.left() - space::S, row.bottom()),
+            pos2(value_rect.left() - value_gap, row.bottom()),
         );
         let span = (track_rect.width() - 2.0 * KNOB).max(1.0);
         let x_of = |t: f32| track_rect.left() + KNOB + t.clamp(0.0, 1.0) * span;
@@ -313,8 +327,16 @@ impl<'a> Slider<'a> {
         // --- the value box -------------------------------------------------------------
         let typing_id = id.with("typing");
         let typing = ui.data(|d| d.get_temp::<Typing>(typing_id));
-        let value_click = ui.interact(value_rect, id.with("value"), Sense::click());
-        if let Some(mut typing) = typing {
+        // (A compact slider has no value box: nothing to click there.)
+        let value_sense = if compact {
+            Sense::hover()
+        } else {
+            Sense::click()
+        };
+        let value_click = ui.interact(value_rect, id.with("value"), value_sense);
+        if compact {
+            // Nothing to type into.
+        } else if let Some(mut typing) = typing {
             let edit = egui::TextEdit::singleline(&mut typing.text)
                 .id(id.with("value_edit"))
                 .horizontal_align(Align::RIGHT)
@@ -396,7 +418,7 @@ impl<'a> Slider<'a> {
             painter.circle_stroke(pos2(x, cy), knob_r, Stroke::new(1.5, ring));
 
             let is_typing = ui.data(|d| d.get_temp::<Typing>(typing_id)).is_some();
-            if !is_typing {
+            if !is_typing && !compact {
                 if value_click.hovered() {
                     painter.rect(
                         value_rect.shrink2(vec2(0.0, 2.0)),
@@ -423,9 +445,11 @@ impl<'a> Slider<'a> {
         track
             .on_hover_cursor(CursorIcon::ResizeHorizontal)
             .on_hover_ui(|ui| slider_tip(ui, tip, default_text.as_deref()));
-        value_click
-            .on_hover_cursor(CursorIcon::Text)
-            .on_hover_text("Click to type a value");
+        if !compact {
+            value_click
+                .on_hover_cursor(CursorIcon::Text)
+                .on_hover_text("Click to type a value");
+        }
         response
     }
 }
@@ -842,6 +866,7 @@ pub fn chip(ui: &mut Ui, icon: &str, text: &str, tone: Tone) -> Response {
 }
 
 /// A small label-like marker ("HOLD", "ON"); not clickable.
+#[allow(dead_code)] // no page lays one out at the moment (pads paint their own)
 pub fn badge(ui: &mut Ui, text: &str, tone: Tone) -> Response {
     pill(
         ui,

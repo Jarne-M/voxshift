@@ -89,8 +89,14 @@ pub fn loaded<'a>(cfg: &'a Config, fx: &Snapshot) -> Option<(&'a Preset, bool)> 
     Some((preset, modified))
 }
 
-/// One preset as a chip.
-fn chip(ui: &mut Ui, name: &str, selected: bool, modified: bool, favorite: bool) -> Response {
+/// One preset as a chip (the soundboard's tabs use the same chip).
+pub(super) fn chip(
+    ui: &mut Ui,
+    name: &str,
+    selected: bool,
+    modified: bool,
+    favorite: bool,
+) -> Response {
     let p = palette(ui);
     let text = if favorite {
         format!("\u{2605} {name}")

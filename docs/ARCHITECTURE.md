@@ -92,7 +92,9 @@ the two sets the added delay.
 
 **Soundboard mixer** (`soundboard::mixer`): up to 16 clips at once, a 4 ms fade-in and a 12 ms
 fade-out on every stop, so clips never click. Clips are mixed after the voice chain, so effects
-and Melody Voice never touch them.
+and Melody Voice never touch them. After every block the engine publishes, per mixer voice, the
+clip's id and how far it has played (two atomics), which is what the pads' progress bars and
+the "Now playing" strip read.
 
 **Safe mode** (the panic button): one atomic flag. On its rising edge the engine stops all
 clips and the melody preview; while it's set, the chain runs as if the voice changer were off,
@@ -111,7 +113,8 @@ src/
                 preview (the "Play melody" synth), cue (switch beeps)
   melody/       note type, built-in tunes, MIDI import (midly), lock-free hand-off to the engine
   soundboard/   decoding (symphonia + rubato), sound list + loader, real-time mixer, global
-                hotkeys, folders/search/sorting (organize), play modes and held keys (playmode)
+                hotkeys, folders/search/sorting (organize), play modes and held keys (playmode),
+                display names tidied from file names (names)
   keymap.rs     who owns which hotkey: conflicts, reserved keys, the Keep/Change logic
   voice_keys.rs the voice changer's hotkeys and the shared switch/beep logic
   ui/           egui panels: devices, effects, Melody Voice, presets, soundboard, hotkeys,

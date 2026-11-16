@@ -95,20 +95,30 @@ to hear what others hear.
 
 **Soundboard**
 
-20. **Playing.** Drop an mp3 on the window and click it: others hear it mixed with your voice.
-    Its hotkey works with a game focused.
-21. **Folders and search.** Make two folders, drag clips by their dots onto the tabs (a slightly
-    moving click on a clip still plays it), rename one, delete
-    it: its clips go to *Unsorted*. Searching "cafe" finds a clip named "Café ...". After a
-    restart the same tab and sort are selected, and stars, colours and *Recent* are kept.
-22. **Missing file.** Rename a clip's file and restart: the clip is grey with *Locate…*.
-    Locating the file keeps its folder, colour and star.
-23. **Hold mode in a game with alt-tab.** Give a long clip the *Hold* mode and a hotkey. In a
+20. **Playing.** Drop an mp3 on the window and click its pad: others hear it mixed with your
+    voice. The pad shows a progress bar and the time left, and the clip appears in *Now
+    playing* at the bottom, where a click on it stops it. Its hotkey works with a game focused.
+21. **Folders and search.** Make two folders, drag clips onto the tabs by the dots that appear
+    on a pad under the pointer (a slightly moving click on a pad still plays it), rename one,
+    delete it: its clips go to *Unsorted*, and *Undo* on the message brings the folder back
+    with them. Searching "cafe" finds a clip named "Café ...". After a restart the same tab,
+    sort, view (grid or list) and pad size are selected, and stars, colours and *Recent* are
+    kept.
+22. **Missing file.** Rename a clip's file and restart: the pad says *File missing*. Clicking
+    it and locating the file keeps its name, folder, colour and star.
+23. **Names, editing and undo.** Drop a file named like
+    `freesound_community-180610-house-fly-close-buzzing-62408.mp3`: the pad is called "House
+    Fly Close Buzzing" and its tooltip shows the file name. The pencil on the pad opens the
+    edit panel: typing a new name renames the pad as you type (the file on disk keeps its
+    name), and volume, hotkey, play mode, colour and folder are there too. Delete the clip
+    (right-click or the panel): it is gone at once, and *Undo* within 8 seconds puts it back
+    in its place with its hotkey, folder and colour.
+24. **Hold mode in a game with alt-tab.** Give a long clip the *Hold* mode and a hotkey. In a
     game, hold the key: it plays only while held and stops with no click. Hold it, alt-tab out
     while still holding, and let go on the desktop: the clip stops. *Loop while held* on a short
     clip loops only while held. Holding a *Hold* clip with the mouse and dragging off the
     window before letting go also stops it.
-24. **Panic during a loud effect and a playing clip.** Set a panic key, apply a strong preset
+25. **Panic during a loud effect and a playing clip.** Set a panic key, apply a strong preset
     with the output gain raised, start two long clips (one held in *Loop while held*), and
     talk. Press the panic key: a falling beep in the headphones, both clips stop without a
     pop, others hear your clean voice, and the banner and tray icon turn red. Clicking clips
@@ -118,20 +128,20 @@ to hear what others hear.
 
 **Melody Voice** (headphones and monitor on)
 
-25. **Play melody** plays the tune in the headphones only; CABLE Output hears nothing of it.
-26. **Talk the song.** With *Sing the Song (per-syllable)* and *Twinkle Twinkle*, say
+26. **Play melody** plays the tune in the headphones only; CABLE Output hears nothing of it.
+27. **Talk the song.** With *Sing the Song (per-syllable)* and *Twinkle Twinkle*, say
     "twin - kle - twin - kle - lit - tle - star" slowly: you hear yourself sing the first line,
     and the lit note moves one step per syllable. "sss" or a whisper passes through unchanged.
-27. **Glitches.** One long "heeelloooo" gives one or two notes, not a run of them.
-28. **Range.** A low voice gets the tune in a low octave and a high voice in a higher one.
+28. **Glitches.** One long "heeelloooo" gives one or two notes, not a run of them.
+29. **Range.** A low voice gets the tune in a low octave and a high voice in a higher one.
     With *Octave-fold* off you hear the melody as written.
-29. **Formants.** *Preserve formants* off sounds chipmunk-like on high notes; on, it still
+30. **Formants.** *Preserve formants* off sounds chipmunk-like on high notes; on, it still
     sounds like you. *Formant shift* at −6 and +6 sounds darker and brighter.
-30. **Tempo-synced and Manual step** move through the tune in time, or one note per *Next
+31. **Tempo-synced and Manual step** move through the tune in time, or one note per *Next
     note* press.
-31. **Hard Tune.** Sliding your voice up and down jumps from note to note.
-32. **MIDI import.** Dropping a `.mid` file names the part it picked; the piano roll looks like
+32. **Hard Tune.** Sliding your voice up and down jumps from note to note.
+33. **MIDI import.** Dropping a `.mid` file names the part it picked; the piano roll looks like
     the tune.
-33. **Soundboard stays clean.** With Melody Voice on, a clip with singing sounds exactly like
+34. **Soundboard stays clean.** With Melody Voice on, a clip with singing sounds exactly like
     the original.
-34. **Latency.** The latency estimate goes up when Melody Voice turns on.
+35. **Latency.** The latency estimate goes up when Melody Voice turns on.

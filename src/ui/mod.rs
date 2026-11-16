@@ -68,6 +68,11 @@ pub struct VoxApp {
     key_conflict: Option<KeyConflict>,
     /// The soundboard search box (not saved).
     search: String,
+    /// What the Soundboard page keeps between frames (the clip being edited).
+    board_page: soundboard::State,
+    /// What a toast's "Undo" button can still bring back, by the toast's token.
+    undo: Vec<(u64, Undo)>,
+    undo_seq: u64,
     /// Board revision last copied into the config (plays happen on the hotkey thread too).
     board_revision: u64,
     capture_watch: Option<CaptureWatch>,
@@ -114,6 +119,20 @@ struct CaptureWatch {
     window_key_at: Option<f64>,
     /// Last "still waiting" line in the troubleshooting log.
     last_log: f64,
+}
+
+/// Something deleted that "Undo" on its toast puts back.
+enum Undo {
+    Clip(crate::soundboard::library::Removed),
+    Folder {
+        folder: organize::Folder,
+        /// Its place among the tabs.
+        index: usize,
+        /// The clips (uids) that were in it.
+        clips: Vec<u64>,
+        /// Its tab was the open one.
+        was_open: bool,
+    },
 }
 
 /// How long a key press in the window may go unreported by the listener.
@@ -372,6 +391,9 @@ impl VoxApp {
             capturing: None,
             key_conflict: None,
             search: String::new(),
+            board_page: soundboard::State::default(),
+            undo: Vec::new(),
+            undo_seq: 0,
             board_revision: 0,
             capture_watch: None,
             preset_bar: presets::BarState::default(),
@@ -874,6 +896,11 @@ impl VoxApp {
                 );
             });
         let open = self.cfg.page;
+        if open == Page::Soundboard {
+            // The "Now playing" strip and the edit panel lie around the page, outside its
+            // scroll area.
+            self.soundboard_side_panels(ui);
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p.bg))
             .show(ui, |ui| match open {
@@ -888,8 +915,12 @@ impl VoxApp {
         self.poll_hotkey_capture(&ctx);
         self.key_conflict_dialog(&ctx);
         self.close_dialog(&ctx);
-        // (No toast has an action button yet, so there are no clicks to handle.)
-        self.toasts.show(&ctx);
+        for token in self.toasts.show(&ctx) {
+            self.undo(&ctx, token);
+        }
+        // An Undo whose toast is gone can no longer be asked for.
+        let toasts = &self.toasts;
+        self.undo.retain(|(token, _)| toasts.has_action(*token));
         ctx.request_repaint_after(Duration::from_millis(33));
     }
 
@@ -1037,7 +1068,18 @@ impl VoxApp {
         }
     }
 
-    fn soundboard_tab(&mut self, ui: &mut Ui) {
+    /// Draws a part of the Soundboard page (`draw` gets a view of the board and the page's
+    /// state) and applies what was clicked there.
+    fn with_board_view(
+        &mut self,
+        ui: &mut Ui,
+        draw: impl FnOnce(
+            &mut Ui,
+            &soundboard::View,
+            &mut soundboard::State,
+            &mut String,
+        ) -> Vec<soundboard::Action>,
+    ) {
         let actions = {
             let board = self.sounds.lock();
             let view = soundboard::View {
@@ -1051,10 +1093,107 @@ impl VoxApp {
                 monitor_sounds_key: self.cfg.voice_keys.monitor_sounds_toggle.as_ref(),
                 settings: &self.cfg.soundboard,
             };
-            soundboard::panel(ui, &view, &mut self.search)
+            draw(ui, &view, &mut self.board_page, &mut self.search)
         };
         for a in actions {
             self.apply_sound_action(ui.ctx(), a);
+        }
+    }
+
+    fn soundboard_tab(&mut self, ui: &mut Ui) {
+        self.with_board_view(ui, |ui, view, state, search| {
+            soundboard::panel(ui, view, state, search)
+        });
+    }
+
+    /// The "Now playing" strip and the edit panel.
+    fn soundboard_side_panels(&mut self, ui: &mut Ui) {
+        self.with_board_view(ui, |ui, view, state, _| {
+            soundboard::side_panels(ui, view, state)
+        });
+    }
+
+    /// Hands out the token for a toast's Undo button and keeps what it brings back.
+    fn offer_undo(&mut self, ctx: &egui::Context, text: String, what: Undo) {
+        self.undo_seq += 1;
+        self.undo.push((self.undo_seq, what));
+        self.toasts
+            .push_action(ctx, toast::Kind::Info, text, "Undo", self.undo_seq);
+    }
+
+    /// "Undo" was clicked on the toast with this token.
+    fn undo(&mut self, ctx: &egui::Context, token: u64) {
+        let Some(at) = self.undo.iter().position(|(t, _)| *t == token) else {
+            return;
+        };
+        match self.undo.remove(at).1 {
+            Undo::Clip(mut removed) => {
+                let name = removed.entry.name.clone();
+                // Its folder may be gone by now, and its hotkey may have been given to
+                // something else: then it comes back without.
+                if removed
+                    .entry
+                    .folder
+                    .is_some_and(|f| self.cfg.soundboard.folder_name(f).is_none())
+                {
+                    removed.entry.folder = None;
+                }
+                let mut key_lost = None;
+                if let Some(key) = removed.entry.hotkey.clone() {
+                    let board = self.sounds.lock();
+                    let sounds = board
+                        .sounds
+                        .iter()
+                        .map(|s| (s.id, s.entry.name.as_str(), s.entry.hotkey.as_ref()));
+                    // (Clip ids start at 1, so 0 is "none of them".)
+                    let taken =
+                        keymap::owner(&key, KeyTarget::Sound(0), &self.cfg.voice_keys, sounds);
+                    if let Some(owner) = taken {
+                        key_lost = Some((key.pretty(), owner.name));
+                        removed.entry.hotkey = None;
+                    }
+                }
+                self.sounds.lock().restore(removed);
+                self.sounds_changed();
+                match key_lost {
+                    Some((key, owner)) => self.toasts.warn(
+                        ctx,
+                        format!(
+                            "\"{name}\" is back, without its hotkey: {key} now belongs to {owner}"
+                        ),
+                    ),
+                    None => self.toasts.success(ctx, format!("\"{name}\" is back")),
+                }
+            }
+            Undo::Folder {
+                folder,
+                index,
+                clips,
+                was_open,
+            } => {
+                let id = self.cfg.soundboard.restore_folder(folder, index);
+                // Only the clips that are still unsorted go back in (you may have moved
+                // some elsewhere since).
+                self.edit_entries(|_, entries| {
+                    for e in entries
+                        .iter_mut()
+                        .filter(|e| e.folder.is_none() && clips.contains(&e.uid))
+                    {
+                        e.folder = Some(id);
+                    }
+                });
+                if was_open {
+                    self.cfg.soundboard.tab = organize::BoardTab::Folder(id);
+                }
+                let name = self
+                    .cfg
+                    .soundboard
+                    .folder_name(id)
+                    .unwrap_or("")
+                    .to_string();
+                self.toasts
+                    .success(ctx, format!("The folder \"{name}\" is back"));
+            }
         }
     }
 
@@ -1104,8 +1243,25 @@ impl VoxApp {
             A::Stop(id) => self.sounds.lock().stop(id),
             A::StopAll => self.sounds.lock().stop_all(),
             A::Remove(id) => {
-                self.sounds.lock().remove(id);
+                if self.capturing == Some(KeyTarget::Sound(id)) {
+                    self.cancel_capture(); // its hotkey was waiting for a key
+                }
+                let removed = self.sounds.lock().take(id);
                 self.sounds_changed();
+                if let Some(removed) = removed {
+                    let text = format!("Deleted \"{}\"", removed.entry.name);
+                    self.offer_undo(ctx, text, Undo::Clip(removed));
+                }
+            }
+            A::Rename(id, name) => {
+                if let Some(name) = crate::soundboard::names::typed_name(&name) {
+                    self.edit_clip(id, |e| e.name = name);
+                }
+            }
+            A::View(view) => self.cfg.soundboard.view = view,
+            A::PadSize(size) => {
+                let range = organize::PAD_SIZE_RANGE;
+                self.cfg.soundboard.pad_size = size.clamp(*range.start(), *range.end());
             }
             A::Volume(id, v) => {
                 self.sounds.lock().set_volume(id, v);
@@ -1167,23 +1323,45 @@ impl VoxApp {
                 self.cfg.soundboard.tab = organize::BoardTab::Folder(id);
                 self.toasts.push(
                     ctx,
-                    "Folder created: right-click its tab to rename it, drag clips onto it",
+                    "Folder created: right-click its tab to rename it, drag clips onto it \
+                     by their grip",
                 );
             }
             A::RenameFolder(id, name) => {
                 self.cfg.soundboard.rename_folder(id, &name);
             }
             A::DeleteFolder(id) => {
-                let name = self
+                let settings = &self.cfg.soundboard;
+                let Some(index) = settings.folders.iter().position(|f| f.id == id) else {
+                    return;
+                };
+                let folder = settings.folders[index].clone();
+                let was_open = settings.tab == organize::BoardTab::Folder(id);
+                let clips: Vec<u64> = self
                     .cfg
-                    .soundboard
-                    .folder_name(id)
-                    .unwrap_or("")
-                    .to_string();
+                    .sounds
+                    .iter()
+                    .filter(|e| e.folder == Some(id))
+                    .map(|e| e.uid)
+                    .collect();
                 self.edit_entries(|s, entries| s.delete_folder(id, entries));
-                self.toasts.push(
+                let text = if clips.is_empty() {
+                    format!("Deleted the folder \"{}\"", folder.name)
+                } else {
+                    format!(
+                        "Deleted the folder \"{}\"; its clips are in Unsorted",
+                        folder.name
+                    )
+                };
+                self.offer_undo(
                     ctx,
-                    format!("Deleted the folder \"{name}\"; its clips are in Unsorted"),
+                    text,
+                    Undo::Folder {
+                        folder,
+                        index,
+                        clips,
+                        was_open,
+                    },
                 );
             }
             A::MoveFolder(id, delta) => self.cfg.soundboard.move_folder(id, delta),
@@ -1205,14 +1383,24 @@ impl VoxApp {
             };
             let mut board = self.sounds.lock();
             for p in &ok {
+                // (The clip's name is the file's name tidied up; the file is left alone.)
                 board.add(SoundEntry {
                     folder,
-                    ..SoundEntry::from_path(p.clone())
+                    ..SoundEntry::imported(p.clone())
                 });
             }
             drop(board);
             self.sounds_changed();
             self.cfg.page = Page::Soundboard;
+            let into = folder
+                .and_then(|f| self.cfg.soundboard.folder_name(f))
+                .map(|name| format!(" to \"{name}\""))
+                .unwrap_or_default();
+            let text = match ok.len() {
+                1 => format!("Added 1 clip{into}"),
+                n => format!("Added {n} clips{into}"),
+            };
+            self.toasts.success(ctx, text);
         }
         if !skipped.is_empty() {
             self.toasts.warn(
@@ -2970,7 +3158,7 @@ pub(crate) mod tests {
             let (mut app, id) = app_with_airhorn_on_f8(&ctx);
             app.key_captured(&ctx, KeyTarget::MonitorToggle, f8());
             let c = app.key_conflict.as_ref().expect("asks");
-            assert_eq!(c.owner.name, "the sound \"airhorn\"", "names the clip");
+            assert_eq!(c.owner.name, "the sound \"Airhorn\"", "names the clip");
             frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]); // dialog shows, Keep focused
             frame(&ctx, &mut app, (1240.0, 800.0), 0.1, events);
             assert!(app.key_conflict.is_none(), "{name} answers the dialog");
@@ -2990,7 +3178,7 @@ pub(crate) mod tests {
             );
             assert!(
                 app.toasts
-                    .contains("Kept: F8 stays with the sound \"airhorn\"")
+                    .contains("Kept: F8 stays with the sound \"Airhorn\"")
             );
         }
     }
@@ -3014,9 +3202,9 @@ pub(crate) mod tests {
         assert!(app.toasts.contains("F8 now goes to stop all sounds"));
         assert!(
             app.toasts
-                .contains("The sound \"airhorn\" is not set any more")
+                .contains("The sound \"Airhorn\" is not set any more")
         );
-        // And the soundboard tab shows it as "Not set".
+        // And the Soundboard page draws the clip without a hotkey.
         app.cfg.page = Page::Soundboard;
         frame(&ctx, &mut app, (1240.0, 800.0), 0.3, vec![]);
     }
@@ -3293,12 +3481,12 @@ pub(crate) mod tests {
 
         // Sorted by name, clip00 is dropped on clip02: the name order is kept as "My order",
         // with clip00 moved to clip02's place.
-        drag(&mut app, "clip00", "clip02");
+        drag(&mut app, "Clip00", "Clip02");
         assert_eq!(app.cfg.soundboard.sort, organize::SortMode::Manual);
-        assert_eq!(first(&app), ["clip01", "clip02", "clip00", "clip03"]);
+        assert_eq!(first(&app), ["Clip01", "Clip02", "Clip00", "Clip03"]);
         // In My order it keeps working, also backwards.
-        drag(&mut app, "clip03", "clip01");
-        assert_eq!(first(&app), ["clip03", "clip01", "clip02", "clip00"]);
+        drag(&mut app, "Clip03", "Clip01");
+        assert_eq!(first(&app), ["Clip03", "Clip01", "Clip02", "Clip00"]);
         assert_eq!(app.cfg.sounds.len(), 30, "no clip lost");
     }
 
@@ -3321,7 +3509,7 @@ pub(crate) mod tests {
                 frame(&ctx, app, size, t, vec![]);
             }
         };
-        draw(&mut app, 0.0); // files are missing: greyed out with "Locate..."
+        draw(&mut app, 0.0); // files are missing: the pads say so
 
         app.apply_sound_action(&ctx, A::NewFolder);
         let memes = app.cfg.soundboard.folders[0].id;
@@ -3353,7 +3541,7 @@ pub(crate) mod tests {
         app.apply_sound_action(&ctx, A::Sort(organize::SortMode::Manual));
         let wow = app.sounds.lock().sounds[3].id;
         app.apply_sound_action(&ctx, A::Reorder(wow, ids[0]));
-        assert_eq!(app.cfg.sounds[0].name, "wow");
+        assert_eq!(app.cfg.sounds[0].name, "Wow");
 
         // Searching shows clips of every folder, accents ignored.
         app.search = "ecou".into();
@@ -3405,7 +3593,7 @@ pub(crate) mod tests {
         app.key_captured(&ctx, KeyTarget::MonitorSoundsToggle, f8());
         assert_eq!(
             app.key_conflict.as_ref().unwrap().owner.name,
-            "the sound \"airhorn\""
+            "the sound \"Airhorn\""
         );
         app.resolve_key_conflict(&ctx, true);
         assert_eq!(
@@ -3418,7 +3606,7 @@ pub(crate) mod tests {
             "F8"
         );
         for size in [(920.0, 600.0), (1920.0, 1080.0)] {
-            frame(&ctx, &mut app, size, 0.1, vec![]); // both keys shown, airhorn "Not set"
+            frame(&ctx, &mut app, size, 0.1, vec![]); // both keys set, the clip without one
         }
         app.apply_sound_action(
             &ctx,
@@ -3452,7 +3640,7 @@ pub(crate) mod tests {
         tap_f24();
         assert!(wait_for(&ctx, &mut app, |a| a.capturing.is_none()));
         let c = app.key_conflict.as_ref().expect("the dialog is open");
-        assert_eq!(c.owner.name, "the sound \"airhorn\"");
+        assert_eq!(c.owner.name, "the sound \"Airhorn\"");
         assert!(app.hotkeys.as_ref().unwrap().paused());
         assert!(app.cfg.voice_keys.toggle.is_none(), "nothing assigned yet");
         app.resolve_key_conflict(&ctx, false);
@@ -3629,9 +3817,355 @@ pub(crate) mod tests {
         );
         assert_eq!(app.cfg.sounds.len(), 2, "the .txt is skipped");
         assert_eq!(app.cfg.page, Page::Soundboard);
+        assert!(app.toasts.contains("Added 2 clips"));
         app.capturing = Some(KeyTarget::Sound(app.sounds.lock().sounds[0].id));
         for (i, size) in [(920.0, 600.0), (1920.0, 1080.0)].into_iter().enumerate() {
             frame(&ctx, &mut app, size, i as f64, vec![]);
         }
+    }
+
+    /// An app on the Soundboard page with these files as clips (the files do not exist, so
+    /// the clips show as missing), and no toasts left from adding them.
+    fn board_app(ctx: &egui::Context, files: &[&str]) -> VoxApp {
+        let mut app = test_app();
+        let files = files
+            .iter()
+            .map(|f| format!("C:/nope/{f}").into())
+            .collect();
+        app.add_sounds(ctx, files);
+        app.toasts = Toasts::default();
+        app
+    }
+
+    /// Like [`board_app`], with real (one second, silent) wav files that are loaded, and an
+    /// engine to play into. Returns the app, the engine and the folder to remove afterwards.
+    fn loaded_board_app(
+        ctx: &egui::Context,
+        dir: &str,
+        files: &[&str],
+    ) -> (VoxApp, crate::audio::engine::Engine, PathBuf) {
+        use crate::soundboard::decode::tests::{temp_dir, write_wav};
+        use crate::soundboard::library::LoadState;
+        let dir = temp_dir(dir);
+        let mut app = test_app();
+        let (engine, link) = crate::audio::engine::Engine::new(app.shared.clone(), 48_000);
+        app.manager.port.set(Some(link.cmds));
+        let paths: Vec<PathBuf> = files.iter().map(|f| dir.join(f)).collect();
+        for p in &paths {
+            write_wav(p, 48_000, 1, &vec![0; 48_000]);
+        }
+        app.add_sounds(ctx, paths);
+        app.toasts = Toasts::default();
+        let start = Instant::now();
+        let loaded = |app: &VoxApp| {
+            app.sounds
+                .lock()
+                .sounds
+                .iter()
+                .all(|s| matches!(s.state, LoadState::Ready(_)))
+        };
+        while !loaded(&app) {
+            assert!(start.elapsed().as_secs() < 10, "the clips never loaded");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for i in 0..3 {
+            frame(ctx, &mut app, (1240.0, 800.0), f64::from(i) * 0.05, vec![]);
+        }
+        (app, engine, dir)
+    }
+
+    /// Lets the audio engine run for `blocks` blocks.
+    fn render(engine: &mut crate::audio::engine::Engine, blocks: usize) {
+        use crate::audio::block::{BLOCK, BlockSource};
+        let mut out = [0.0; BLOCK * 2];
+        for _ in 0..blocks {
+            engine.render(&mut out);
+        }
+    }
+
+    fn clip_names(app: &VoxApp) -> Vec<String> {
+        app.cfg.sounds.iter().map(|e| e.name.clone()).collect()
+    }
+
+    #[test]
+    fn added_clips_get_a_tidy_name_and_renaming_never_touches_the_file() {
+        use soundboard::Action as A;
+        let ctx = egui::Context::default();
+        let file = "freesound_community-180610-house-fly-close-buzzing-62408.mp3";
+        let mut app = board_app(&ctx, &[file, "vine_boom.wav"]);
+        assert_eq!(clip_names(&app), ["House Fly Close Buzzing", "Vine Boom"]);
+        assert_eq!(
+            app.cfg.sounds[0].file_name(),
+            file,
+            "the file keeps its name"
+        );
+        let id = app.sounds.lock().sounds[0].id;
+        app.apply_sound_action(&ctx, A::Rename(id, "  The   fly \n".into()));
+        assert_eq!(app.cfg.sounds[0].name, "The fly");
+        app.apply_sound_action(&ctx, A::Rename(id, "   ".into()));
+        assert_eq!(
+            app.cfg.sounds[0].name, "The fly",
+            "an empty name is ignored"
+        );
+        assert_eq!(app.cfg.sounds[0].file_name(), file);
+        // Its hotkey messages use the new name.
+        app.set_hotkey(KeyTarget::Sound(id), Some(f8()));
+        assert_eq!(
+            app.hotkey_conflict(&f8(), KeyTarget::Mute).as_deref(),
+            Some("the sound \"The fly\"")
+        );
+    }
+
+    #[test]
+    fn a_deleted_clip_comes_back_where_it_was_when_undo_is_clicked() {
+        use soundboard::Action as A;
+        let ctx = egui::Context::default();
+        let mut app = board_app(&ctx, &["a.wav", "b.wav", "c.wav"]);
+        let ids: Vec<SoundId> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+        app.apply_sound_action(&ctx, A::NewFolder);
+        let memes = app.cfg.soundboard.folders[0].id;
+        app.apply_sound_action(&ctx, A::MoveTo(ids[1], Some(memes)));
+        app.apply_sound_action(&ctx, A::ToggleFavorite(ids[1]));
+        app.apply_sound_action(&ctx, A::Color(ids[1], Some(3)));
+        app.set_hotkey(KeyTarget::Sound(ids[1]), Some(f8()));
+        app.apply_sound_action(&ctx, A::Tab(organize::BoardTab::All));
+        app.toasts = Toasts::default();
+        let size = (1240.0, 800.0);
+        frame(&ctx, &mut app, size, 0.0, vec![]);
+
+        // Deleting asks nothing; the toast offers the way back.
+        app.board_page.open(ids[1], "B", false);
+        app.capturing = Some(KeyTarget::Sound(ids[1]));
+        app.apply_sound_action(&ctx, A::Remove(ids[1]));
+        assert_eq!(clip_names(&app), ["A", "C"]);
+        assert!(app.capturing.is_none(), "its key capture is over");
+        assert!(app.toasts.contains("Deleted \"B\""));
+        frame(&ctx, &mut app, size, 0.3, vec![]);
+        frame(&ctx, &mut app, size, 0.4, vec![]);
+        assert!(app.board_page.editing().is_none(), "its edit panel closed");
+        let token = app.undo[0].0;
+        let undo = widgets::rect_of(&ctx, "toast_action", token).center();
+        click(&ctx, &mut app, undo, 1.0);
+        assert_eq!(clip_names(&app), ["A", "B", "C"], "back in its place");
+        let b = &app.cfg.sounds[1];
+        assert_eq!(b.folder, Some(memes));
+        assert!(b.favorite && b.color == Some(3));
+        assert_eq!(b.hotkey.as_ref().unwrap().label, "F8");
+        assert!(app.undo.is_empty(), "undone once");
+        assert!(app.toasts.contains("\"B\" is back"));
+
+        // If its hotkey went to something else in the meantime, it comes back without it.
+        let b = app.sounds.lock().sounds[1].id;
+        app.apply_sound_action(&ctx, A::Remove(b));
+        app.set_hotkey(KeyTarget::Mute, Some(f8()));
+        let token = app.undo[0].0;
+        app.undo(&ctx, token);
+        assert_eq!(clip_names(&app), ["A", "B", "C"]);
+        assert!(app.cfg.sounds[1].hotkey.is_none());
+        assert_eq!(app.cfg.voice_keys.mute.as_ref().unwrap().label, "F8");
+        assert!(
+            app.toasts
+                .contains("without its hotkey: F8 now belongs to mute mic")
+        );
+
+        // When the toast is gone, so is the undo (and the clip stays deleted).
+        frame(&ctx, &mut app, size, 20.0, vec![]);
+        let a = app.sounds.lock().sounds[0].id;
+        app.apply_sound_action(&ctx, A::Remove(a));
+        assert_eq!(app.undo.len(), 1);
+        frame(&ctx, &mut app, size, 20.5, vec![]);
+        assert_eq!(app.undo.len(), 1, "still offered");
+        frame(&ctx, &mut app, size, 20.0 + toast::ACTION_S + 1.0, vec![]);
+        assert!(app.undo.is_empty());
+        assert_eq!(clip_names(&app), ["B", "C"]);
+    }
+
+    #[test]
+    fn a_deleted_folder_comes_back_with_the_clips_that_are_still_unsorted() {
+        use soundboard::Action as A;
+        let ctx = egui::Context::default();
+        let mut app = board_app(&ctx, &["a.wav", "b.wav", "c.wav"]);
+        let ids: Vec<SoundId> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+        app.apply_sound_action(&ctx, A::NewFolder);
+        app.apply_sound_action(&ctx, A::NewFolder);
+        let (memes, other) = (
+            app.cfg.soundboard.folders[0].id,
+            app.cfg.soundboard.folders[1].id,
+        );
+        app.apply_sound_action(&ctx, A::RenameFolder(memes, "Memes".into()));
+        app.apply_sound_action(&ctx, A::MoveTo(ids[0], Some(memes)));
+        app.apply_sound_action(&ctx, A::MoveTo(ids[2], Some(memes)));
+        app.apply_sound_action(&ctx, A::Tab(organize::BoardTab::Folder(memes)));
+        app.toasts = Toasts::default();
+
+        app.apply_sound_action(&ctx, A::DeleteFolder(memes));
+        assert!(app.cfg.sounds.iter().all(|e| e.folder.is_none()));
+        assert_eq!(app.cfg.soundboard.folders.len(), 1);
+        assert!(app.toasts.contains("Deleted the folder \"Memes\""));
+        // One of its clips is put somewhere else before the undo: that one stays there.
+        app.apply_sound_action(&ctx, A::MoveTo(ids[2], Some(other)));
+        let token = app.undo[0].0;
+        app.undo(&ctx, token);
+        let folders = &app.cfg.soundboard.folders;
+        assert_eq!(folders[0].name, "Memes", "back in its place among the tabs");
+        let memes = folders[0].id;
+        let in_folder: Vec<Option<u32>> = app.cfg.sounds.iter().map(|e| e.folder).collect();
+        assert_eq!(in_folder, [Some(memes), None, Some(other)]);
+        assert_eq!(
+            app.cfg.soundboard.tab,
+            organize::BoardTab::Folder(memes),
+            "and open again"
+        );
+        assert!(app.toasts.contains("The folder \"Memes\" is back"));
+        // An undo that is not there any more does nothing.
+        app.undo(&ctx, token);
+        assert_eq!(app.cfg.soundboard.folders.len(), 2);
+    }
+
+    #[test]
+    fn a_playing_clip_shows_in_the_strip_and_its_chip_or_stop_all_stops_it() {
+        use soundboard::tests::{rect_of, try_rect_of};
+        let ctx = egui::Context::default();
+        let (mut app, mut engine, dir) = loaded_board_app(&ctx, "ui-now", &["boom.wav"]);
+        let id = app.sounds.lock().sounds[0].id;
+        assert!(try_rect_of(&ctx, "now", id).is_none(), "nothing plays yet");
+
+        let pad = rect_of(&ctx, "clip", id).center();
+        click(&ctx, &mut app, pad, 1.0);
+        render(&mut engine, 30);
+        assert!(app.shared.is_playing(id), "the click played the clip");
+        let progress = app.shared.progress_of(id).unwrap();
+        assert!(progress > 0.0 && progress < 0.5, "progress {progress}");
+        assert_eq!(app.shared.playing(), [id]);
+        frame(&ctx, &mut app, (1240.0, 800.0), 1.5, vec![]);
+        frame(&ctx, &mut app, (1240.0, 800.0), 1.6, vec![]);
+        let chip = rect_of(&ctx, "now", id);
+        assert!(
+            chip.top() > 800.0 - soundboard::NOW_H,
+            "in the strip: {chip:?}"
+        );
+        click(&ctx, &mut app, chip.center(), 2.0);
+        render(&mut engine, 30);
+        assert!(!app.shared.is_playing(id), "its chip stopped it");
+
+        click(&ctx, &mut app, pad, 3.0);
+        render(&mut engine, 30);
+        assert!(app.shared.is_playing(id));
+        frame(&ctx, &mut app, (1240.0, 800.0), 3.5, vec![]);
+        let stop_all = rect_of(&ctx, "now", "stop_all").center();
+        click(&ctx, &mut app, stop_all, 4.0);
+        render(&mut engine, 30);
+        assert!(!app.shared.is_playing(id), "Stop all stopped it");
+        assert_eq!(app.cfg.sounds[0].plays, 2);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_pencil_opens_the_edit_panel_where_a_clip_is_renamed_and_deleted() {
+        use soundboard::tests::{rect_of, try_rect_of};
+        let ctx = egui::Context::default();
+        let (mut app, _engine, dir) =
+            loaded_board_app(&ctx, "ui-edit", &["airhorn.wav", "bruh.wav"]);
+        let ids: Vec<SoundId> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+        assert!(try_rect_of(&ctx, "edit", "panel").is_none());
+
+        // The pencil lies on the pad, but a click on it is not a click on the pad.
+        let pencil = rect_of(&ctx, "pencil", ids[0]).center();
+        click(&ctx, &mut app, pencil, 1.0);
+        assert_eq!(app.board_page.editing(), Some(ids[0]));
+        assert_eq!(app.cfg.sounds[0].plays, 0, "the pad did not play");
+        let panel = rect_of(&ctx, "edit", "panel");
+        assert!(panel.right() > 1230.0 && panel.width() > 200.0, "{panel:?}");
+        let pad = rect_of(&ctx, "clip", ids[1]);
+        assert!(pad.right() < panel.left(), "the pads make room for it");
+
+        // Typing in the name field renames the clip as you type.
+        let name = rect_of(&ctx, "edit", "name");
+        click(
+            &ctx,
+            &mut app,
+            egui::pos2(name.right() - 8.0, name.center().y),
+            2.0,
+        );
+        let typed = egui::Event::Text("!!".into());
+        frame(&ctx, &mut app, (1240.0, 800.0), 2.5, vec![typed]);
+        frame(&ctx, &mut app, (1240.0, 800.0), 2.6, vec![]);
+        assert_eq!(app.cfg.sounds[0].name, "Airhorn!!");
+
+        // Another pencil moves the panel to that clip; the same one closes it.
+        let other = rect_of(&ctx, "pencil", ids[1]).center();
+        click(&ctx, &mut app, other, 3.0);
+        assert_eq!(app.board_page.editing(), Some(ids[1]));
+        click(&ctx, &mut app, other, 4.0);
+        assert!(app.board_page.editing().is_none());
+        click(&ctx, &mut app, other, 5.0);
+        let close = rect_of(&ctx, "edit", "close").center();
+        click(&ctx, &mut app, close, 6.0);
+        assert!(app.board_page.editing().is_none(), "the X closes it");
+
+        // Delete in the panel: the clip goes (with an Undo) and the panel closes.
+        click(&ctx, &mut app, pencil, 7.0);
+        let delete = rect_of(&ctx, "edit", "delete").center();
+        click(&ctx, &mut app, delete, 8.0);
+        assert_eq!(clip_names(&app), ["Bruh"]);
+        assert!(app.board_page.editing().is_none());
+        assert_eq!(app.undo.len(), 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn grid_and_list_draw_at_every_size_and_the_choice_is_saved() {
+        use soundboard::Action as A;
+        use soundboard::tests::rect_of;
+        let ctx = egui::Context::default();
+        let files: Vec<String> = (0..14).map(|i| format!("clip {i:02}.wav")).collect();
+        let files: Vec<&str> = files.iter().map(String::as_str).collect();
+        let mut app = board_app(&ctx, &files);
+        let ids: Vec<SoundId> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+        app.apply_sound_action(&ctx, A::ToggleFavorite(ids[0]));
+        app.apply_sound_action(&ctx, A::Color(ids[0], Some(6)));
+        app.apply_sound_action(&ctx, A::PlayMode(ids[0], playmode::PlayMode::Hold));
+        app.set_hotkey(KeyTarget::Sound(ids[0]), Some(f8()));
+        app.board_page.open(ids[1], "Clip 01", true);
+        let mut t = 0.0;
+        for view in [organize::BoardView::Grid, organize::BoardView::List] {
+            app.apply_sound_action(&ctx, A::View(view));
+            for pad in [110.0, 150.0, 260.0] {
+                app.apply_sound_action(&ctx, A::PadSize(pad));
+                for size in [(920.0, 600.0), (1280.0, 720.0), (2560.0, 1080.0)] {
+                    frame(&ctx, &mut app, size, t, vec![]);
+                    t += 0.05;
+                }
+            }
+        }
+        // In the list every clip is a row of its own height; in the grid they sit side by side.
+        frame(&ctx, &mut app, (1240.0, 800.0), t, vec![]);
+        let (a, b) = (rect_of(&ctx, "clip", ids[0]), rect_of(&ctx, "clip", ids[1]));
+        assert!(a.height() < 50.0 && b.top() > a.bottom(), "{a:?} {b:?}");
+        app.apply_sound_action(&ctx, A::View(organize::BoardView::Grid));
+        frame(&ctx, &mut app, (1240.0, 800.0), t + 0.1, vec![]);
+        let (a, b) = (rect_of(&ctx, "clip", ids[0]), rect_of(&ctx, "clip", ids[1]));
+        assert!(a.top() == b.top() && b.left() > a.right(), "{a:?} {b:?}");
+        assert!(a.width() >= 260.0, "as wide as asked, or a little wider");
+
+        app.apply_sound_action(&ctx, A::PadSize(9999.0));
+        assert_eq!(app.cfg.soundboard.pad_size, 260.0, "kept in range");
+        app.apply_sound_action(&ctx, A::View(organize::BoardView::List));
+        let json = serde_json::to_string(&app.cfg).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.soundboard.view, organize::BoardView::List);
+        assert_eq!(back.soundboard.pad_size, 260.0);
+    }
+
+    #[test]
+    fn an_empty_board_is_one_big_drop_zone() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.cfg.page = Page::Soundboard;
+        for size in [(920.0, 600.0), (1920.0, 1080.0)] {
+            frame(&ctx, &mut app, size, 0.0, vec![]);
+        }
+        let zone = soundboard::tests::rect_of(&ctx, "drop_zone", 0);
+        assert!(zone.width() > 800.0 && zone.height() > 200.0, "{zone:?}");
     }
 }
