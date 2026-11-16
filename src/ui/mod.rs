@@ -12,6 +12,7 @@ pub mod meters;
 pub mod nav;
 pub mod presets;
 pub mod settings;
+pub mod shortcuts;
 #[cfg(test)]
 pub mod snapshot;
 pub mod soundboard;
@@ -72,6 +73,8 @@ pub struct VoxApp {
     hotkey_filter: String,
     /// What the Soundboard page keeps between frames (the clip being edited).
     board_page: soundboard::State,
+    /// The `?` overlay with the in-window keyboard shortcuts is open.
+    shortcuts_open: bool,
     /// What a toast's "Undo" button can still bring back, by the toast's token.
     undo: Vec<(u64, Undo)>,
     undo_seq: u64,
@@ -395,6 +398,7 @@ impl VoxApp {
             search: String::new(),
             hotkey_filter: String::new(),
             board_page: soundboard::State::default(),
+            shortcuts_open: false,
             undo: Vec::new(),
             undo_seq: 0,
             board_revision: 0,
@@ -927,6 +931,15 @@ impl VoxApp {
         let p = theme::palette(ui);
         let window_width = ui.available_width();
 
+        // Before the pages, so a key that is a shortcut doesn't also reach a focused button.
+        let blocked = self.capturing.is_some()
+            || self.key_conflict.is_some()
+            || self.close_dialog.is_some()
+            || self.shortcuts_open;
+        for shortcut in shortcuts::read(&ctx, self.cfg.page, blocked) {
+            self.apply_shortcut(&ctx, shortcut);
+        }
+
         egui::Panel::top("header")
             .exact_size(header::HEIGHT)
             .frame(
@@ -945,12 +958,14 @@ impl VoxApp {
                     .inner_margin(nav::margin()),
             )
             .show(ui, |ui| {
-                nav::show(
+                if nav::show(
                     ui,
                     &mut self.cfg.page,
                     &mut self.cfg.nav_collapsed,
                     window_width,
-                );
+                ) {
+                    self.shortcuts_open = true;
+                }
             });
         let open = self.cfg.page;
         if open == Page::Soundboard {
@@ -972,6 +987,7 @@ impl VoxApp {
         self.poll_hotkey_capture(&ctx);
         self.key_conflict_dialog(&ctx);
         self.close_dialog(&ctx);
+        shortcuts::overlay(&ctx, &mut self.shortcuts_open);
         for token in self.toasts.show(&ctx) {
             self.undo(&ctx, token);
         }
@@ -979,6 +995,24 @@ impl VoxApp {
         let toasts = &self.toasts;
         self.undo.retain(|(token, _)| toasts.has_action(*token));
         ctx.request_repaint_after(Duration::from_millis(33));
+    }
+
+    fn apply_shortcut(&mut self, ctx: &egui::Context, shortcut: shortcuts::Shortcut) {
+        use shortcuts::Shortcut;
+        match shortcut {
+            Shortcut::Page(page) => self.cfg.page = page,
+            Shortcut::Search => {
+                self.cfg.page = Page::Soundboard;
+                ctx.memory_mut(|m| m.request_focus(soundboard::search_id()));
+            }
+            Shortcut::ToggleVoice => self.apply_header_action(header::Action::ToggleVoice),
+            Shortcut::DeleteClip => {
+                if let Some(id) = self.board_page.editing() {
+                    self.apply_sound_action(ctx, soundboard::Action::Remove(id));
+                }
+            }
+            Shortcut::Help => self.shortcuts_open = true,
+        }
     }
 
     /// Presets, Melody Voice and the effect chain.
@@ -4177,6 +4211,117 @@ pub(crate) mod tests {
         render(&mut engine, 30);
         assert!(!app.shared.is_playing(id), "Stop all stopped it");
         assert_eq!(app.cfg.sounds[0].plays, 2);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn in_window_shortcuts_switch_pages_the_voice_and_delete_the_edited_clip() {
+        use soundboard::tests::rect_of;
+        let ctx = egui::Context::default();
+        let (mut app, _engine, dir) =
+            loaded_board_app(&ctx, "ui-shortcuts", &["airhorn.wav", "bruh.wav"]);
+        let size = (1240.0, 800.0);
+        let press = |key, modifiers| key_event(key, modifiers);
+
+        frame(
+            &ctx,
+            &mut app,
+            size,
+            1.0,
+            vec![press(egui::Key::Num1, egui::Modifiers::COMMAND)],
+        );
+        assert_eq!(app.cfg.page, Page::Voice);
+        let was_on = app.shared.voice_on.load(Relaxed);
+        frame(
+            &ctx,
+            &mut app,
+            size,
+            1.2,
+            vec![press(egui::Key::Space, egui::Modifiers::NONE)],
+        );
+        assert_ne!(
+            app.shared.voice_on.load(Relaxed),
+            was_on,
+            "Space switched it"
+        );
+        assert_eq!(app.cfg.voice_on, !was_on);
+
+        // Ctrl+F from the Voice page opens the soundboard with its search box focused, and a
+        // space typed there stays a space.
+        frame(
+            &ctx,
+            &mut app,
+            size,
+            1.4,
+            vec![press(egui::Key::F, egui::Modifiers::COMMAND)],
+        );
+        assert_eq!(app.cfg.page, Page::Soundboard);
+        frame(&ctx, &mut app, size, 1.5, vec![]);
+        frame(
+            &ctx,
+            &mut app,
+            size,
+            1.6,
+            vec![
+                press(egui::Key::Space, egui::Modifiers::NONE),
+                egui::Event::Text(" ".into()),
+            ],
+        );
+        assert_eq!(
+            app.shared.voice_on.load(Relaxed),
+            !was_on,
+            "typing, not a shortcut"
+        );
+        assert_eq!(app.search, " ");
+        app.search.clear();
+        ctx.memory_mut(|m| m.stop_text_input());
+
+        // Delete removes the clip in the edit panel, with an Undo.
+        let ids: Vec<SoundId> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+        frame(&ctx, &mut app, size, 2.0, vec![]);
+        let pencil = rect_of(&ctx, "pencil", ids[0]).center();
+        click(&ctx, &mut app, pencil, 2.5);
+        assert_eq!(app.board_page.editing(), Some(ids[0]));
+        frame(
+            &ctx,
+            &mut app,
+            size,
+            3.0,
+            vec![press(egui::Key::Delete, egui::Modifiers::NONE)],
+        );
+        assert_eq!(clip_names(&app), ["Bruh"]);
+        assert_eq!(app.undo.len(), 1);
+
+        // ? opens the overlay, and while it is open Space does nothing.
+        frame(
+            &ctx,
+            &mut app,
+            size,
+            3.5,
+            vec![egui::Event::Text("?".into())],
+        );
+        assert!(app.shortcuts_open);
+        let on = app.shared.voice_on.load(Relaxed);
+        frame(
+            &ctx,
+            &mut app,
+            size,
+            3.7,
+            vec![press(egui::Key::Space, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.shared.voice_on.load(Relaxed), on);
+        frame(
+            &ctx,
+            &mut app,
+            size,
+            4.0,
+            vec![press(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert!(!app.shortcuts_open, "Esc closes it");
+        // The rail's ? button opens it too.
+        let help = rect_of(&ctx, "nav", "help").center();
+        click(&ctx, &mut app, help, 5.0);
+        assert!(app.shortcuts_open);
         std::fs::remove_dir_all(dir).ok();
     }
 

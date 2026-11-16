@@ -108,8 +108,10 @@ fn item(ui: &mut Ui, icon: &str, label: &str, selected: bool, open: f32) -> Resp
 }
 
 /// Draws the rail. Clicking an entry changes `page`; the button at the bottom flips
-/// `collapsed` (it is hidden while the window itself is too narrow for labels).
-pub fn show(ui: &mut Ui, page: &mut Page, collapsed: &mut bool, window_width: f32) {
+/// `collapsed` (it is hidden while the window itself is too narrow for labels). Returns true
+/// when the keyboard-shortcuts button was clicked.
+pub fn show(ui: &mut Ui, page: &mut Page, collapsed: &mut bool, window_width: f32) -> bool {
+    let mut help = false;
     let p = palette(ui);
     let forced = window_width < NARROW_WINDOW;
     let open = ((ui.available_width() + 2.0 * MARGIN - WIDTH_COLLAPSED)
@@ -132,7 +134,20 @@ pub fn show(ui: &mut Ui, page: &mut Page, collapsed: &mut bool, window_width: f3
     }
     ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
         ui.add_space(space::S);
-        if !forced {
+        let mut help_button = |ui: &mut Ui| {
+            let r = widgets::icon_button(ui, icons::HELP, "Keyboard shortcuts (?)");
+            #[cfg(test)]
+            widgets::remember(ui.ctx(), "nav", "help", r.rect);
+            if r.clicked() {
+                help = true;
+            }
+        };
+        if forced {
+            ui.horizontal(|ui| {
+                ui.add_space((WIDTH_COLLAPSED - 2.0 * MARGIN - 28.0) / 2.0);
+                help_button(ui);
+            });
+        } else {
             let tip = if *collapsed {
                 "Show the page names"
             } else {
@@ -143,6 +158,10 @@ pub fn show(ui: &mut Ui, page: &mut Page, collapsed: &mut bool, window_width: f3
                 if widgets::icon_button(ui, icons::NAV_COLLAPSE, tip).clicked() {
                     *collapsed = !*collapsed;
                 }
+                // (Collapsed, the rail only has room for one button per row.)
+                if open > 0.5 {
+                    help_button(ui);
+                }
                 if open > 0.8 {
                     ui.label(
                         RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
@@ -151,8 +170,15 @@ pub fn show(ui: &mut Ui, page: &mut Page, collapsed: &mut bool, window_width: f3
                     );
                 }
             });
+            if open <= 0.5 {
+                ui.horizontal(|ui| {
+                    ui.add_space((WIDTH_COLLAPSED - 2.0 * MARGIN - 28.0) / 2.0);
+                    help_button(ui);
+                });
+            }
         }
     });
+    help
 }
 
 /// The inner margin of the rail's panel.

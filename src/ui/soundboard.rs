@@ -27,6 +27,11 @@ use egui::{
 };
 use std::sync::atomic::Ordering::Relaxed;
 
+/// The search box's widget id (Ctrl+F on another page focuses it).
+pub fn search_id() -> Id {
+    Id::new("soundboard_search")
+}
+
 pub enum Action {
     AddFiles,
     Play(SoundId),
@@ -271,7 +276,7 @@ fn toolbar_left(
     if add.clicked() {
         actions.push(Action::AddFiles);
     }
-    let id = Id::new("soundboard_search");
+    let id = search_id();
     let r = ui.add(
         egui::TextEdit::singleline(search)
             .id(id)

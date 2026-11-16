@@ -775,6 +775,25 @@ mod tests {
         );
     }
 
+    /// The QoL extras: the shortcuts overlay, cue, mic check, A/B, trim and the wizard.
+    /// `VOXSHIFT_SHOT` (a name or part of one) picks a few, so a change can be checked alone.
+    #[test]
+    #[ignore = "writes pictures to VOXSHIFT_SHOTS; run with --ignored"]
+    fn shots_of_the_extras() {
+        let Some(dir) = out_dir() else {
+            eprintln!("VOXSHIFT_SHOTS is not set: nothing to do");
+            return;
+        };
+        let only = std::env::var("VOXSHIFT_SHOT").unwrap_or_default();
+        let wanted = |name: &str| name.contains(&only);
+        let dark = ThemeChoice::Dark;
+        if wanted("extra-shortcuts") {
+            app_shot(&dir, "extra-shortcuts", (1280, 720), dark, 1.0, |app, _| {
+                app.shortcuts_open = true;
+            });
+        }
+    }
+
     use crate::audio::device_manager::{DeviceStatus, Endpoint, LinkState, ManagerHandle};
     use crate::audio::shared::{ActiveMic, Shared};
     use crate::config::{Config, Page};
