@@ -10,17 +10,47 @@ use crate::dsp::params::EffectSettings;
 use crate::melody::MelodySource;
 use crate::soundboard::library::SoundEntry;
 use crate::soundboard::organize::BoardSettings;
+use crate::ui::theme::ThemeChoice;
 use crate::voice_keys::VoiceHotkeys;
 use presets::Preset;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Which page of the main area is open (remembered between runs).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Tab {
+/// Which page is open (remembered between runs).
+///
+/// Versions before the navigation rail saved this as `tab`, with the values `Effects` and
+/// `Soundboard`; both still load (`Effects` is now the Voice page).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Page {
+    /// Presets, the effect chain and Melody Voice.
     #[default]
-    Effects,
+    #[serde(alias = "Effects")]
+    Voice,
     Soundboard,
+    /// Virtual mic, microphones, monitor and latency.
+    Audio,
+    Hotkeys,
+    Settings,
+}
+
+impl Page {
+    pub const ALL: [Page; 5] = [
+        Page::Voice,
+        Page::Soundboard,
+        Page::Audio,
+        Page::Hotkeys,
+        Page::Settings,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Page::Voice => "Voice",
+            Page::Soundboard => "Soundboard",
+            Page::Audio => "Audio setup",
+            Page::Hotkeys => "Hotkeys",
+            Page::Settings => "Settings",
+        }
+    }
 }
 
 /// What the window's close button (X / Alt+F4) does.
@@ -91,7 +121,11 @@ impl MelodySettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    pub tab: Tab,
+    /// The page that was open last (`tab` in older files).
+    #[serde(alias = "tab")]
+    pub page: Page,
+    /// The navigation rail shows icons only.
+    pub nav_collapsed: bool,
     pub voice_keys: VoiceHotkeys,
     pub feedback: FeedbackSettings,
     pub start_voice: StartVoice,
@@ -114,12 +148,15 @@ pub struct Config {
     /// Soundboard folders, recents, the open tab and the sort order.
     pub soundboard: BoardSettings,
     pub melody: MelodySettings,
+    /// Dark, light, or the same as Windows.
+    pub theme: ThemeChoice,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            tab: Tab::Effects,
+            page: Page::Voice,
+            nav_collapsed: false,
             voice_keys: VoiceHotkeys::default(),
             feedback: FeedbackSettings::default(),
             start_voice: StartVoice::RememberLast,
@@ -137,6 +174,7 @@ impl Default for Config {
             sounds: Vec::new(),
             soundboard: BoardSettings::default(),
             melody: MelodySettings::default(),
+            theme: ThemeChoice::default(),
         }
     }
 }
@@ -222,6 +260,7 @@ mod tests {
                 path: "C:/music/my song.mid".into(),
                 part: Some(1),
             }),
+            favorite: true,
         });
         cfg.melody.source = MelodySource::BuiltIn("Greensleeves".into());
         cfg.melody.remember_file(Path::new("C:/music/b.mid"));
@@ -380,6 +419,45 @@ mod tests {
         let (old, _) = load_from(&path);
         assert_eq!(old.close_behavior, CloseBehavior::Ask);
         assert!(!old.start_minimized);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_open_page_migrates_from_the_old_tab_setting() {
+        let dir = temp_dir("config-page");
+        let path = dir.join("config.json");
+        // Before the navigation rail there were two tabs, saved as "tab".
+        for (old, page) in [("Effects", Page::Voice), ("Soundboard", Page::Soundboard)] {
+            std::fs::write(&path, format!(r#"{{ "tab": "{old}", "voice_on": false }}"#)).unwrap();
+            let (cfg, warning) = load_from(&path);
+            assert!(warning.is_none(), "{warning:?}");
+            assert_eq!(cfg.page, page, "tab {old}");
+            assert!(!cfg.voice_on, "the rest of the file loads too");
+            assert!(!cfg.nav_collapsed);
+            assert_eq!(cfg.theme, ThemeChoice::Dark);
+        }
+        // It is saved under the new name, and every page round-trips.
+        for page in Page::ALL {
+            let cfg = Config {
+                page,
+                nav_collapsed: true,
+                theme: ThemeChoice::Light,
+                ..Config::default()
+            };
+            save_to(&path, &cfg).unwrap();
+            let json: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert!(json.get("page").is_some(), "saved as \"page\"");
+            // (The soundboard's own open tab is a different, nested setting.)
+            assert!(json.get("tab").is_none(), "the old name is not written");
+            assert!(json["soundboard"].get("tab").is_some());
+            let (loaded, warning) = load_from(&path);
+            assert!(warning.is_none());
+            assert_eq!(loaded, cfg);
+        }
+        // A file without either starts on the Voice page.
+        std::fs::write(&path, "{}").unwrap();
+        assert_eq!(load_from(&path).0.page, Page::Voice);
         std::fs::remove_dir_all(dir).ok();
     }
 

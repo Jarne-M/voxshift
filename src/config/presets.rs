@@ -13,6 +13,14 @@ pub struct Preset {
     /// presets saved without Melody Voice or before it existed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub melody: Option<MelodySource>,
+    /// One of your favourites: shown first in the preset bar (and offered in the tray menu).
+    /// Yours alone: a shared `.voxpack` does not carry it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub favorite: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn make(name: &str, changes: &[(P, f32)]) -> Preset {
@@ -24,10 +32,45 @@ fn make(name: &str, changes: &[(P, f32)]) -> Preset {
         name: name.to_string(),
         effects: s.to_settings(),
         melody: None,
+        favorite: false,
     }
 }
 
+/// The built-in presets (a copy; see [`builtin_presets`] for the list itself).
 pub fn builtin() -> Vec<Preset> {
+    builtin_presets().to_vec()
+}
+
+/// The built-in presets, built once.
+pub fn builtin_presets() -> &'static [Preset] {
+    static PRESETS: std::sync::OnceLock<Vec<Preset>> = std::sync::OnceLock::new();
+    PRESETS.get_or_init(make_builtin)
+}
+
+/// Your own presets in the order they are shown: favourites first, otherwise as saved.
+pub fn favorites_first(own: &[Preset]) -> Vec<&Preset> {
+    let (mut favorites, rest): (Vec<&Preset>, Vec<&Preset>) = own.iter().partition(|p| p.favorite);
+    favorites.extend(rest);
+    favorites
+}
+
+/// Whether `name` can be the name of one of your presets: not empty, not a built-in's name
+/// and not taken by another preset of yours (`except` = the one being renamed).
+pub fn name_problem(name: &str, own: &[Preset], except: Option<&str>) -> Option<&'static str> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Some("Type a name");
+    }
+    if is_builtin(name) {
+        return Some("That is the name of a built-in preset");
+    }
+    let taken = own
+        .iter()
+        .any(|p| Some(p.name.as_str()) != except && p.name.eq_ignore_ascii_case(name));
+    (taken && except.is_some()).then_some("Another preset of yours has that name")
+}
+
+fn make_builtin() -> Vec<Preset> {
     use P::*;
     vec![
         make("Clean", &[]),
@@ -164,7 +207,9 @@ pub fn builtin() -> Vec<Preset> {
 }
 
 pub fn is_builtin(name: &str) -> bool {
-    builtin().iter().any(|p| p.name.eq_ignore_ascii_case(name))
+    builtin_presets()
+        .iter()
+        .any(|p| p.name.eq_ignore_ascii_case(name))
 }
 
 /// The values a preset produces when applied on top of `current`: everything comes from the
@@ -264,6 +309,7 @@ mod tests {
             name: "Mine".into(),
             effects: sing.effects.clone(),
             melody: Some(MelodySource::BuiltIn("Ode to Joy".into())),
+            favorite: false,
         };
         let fx = apply(&mine, &Snapshot::defaults());
         assert!(matches(
@@ -286,16 +332,51 @@ mod tests {
                 path: "C:/music/song.mid".into(),
                 part: Some(2),
             }),
+            favorite: true,
         };
         let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"favorite\":true"));
         assert_eq!(serde_json::from_str::<Preset>(&json).unwrap(), p);
-        // A preset saved before Melody Voice existed still loads.
+        // A preset saved before Melody Voice and favourites existed still loads.
         let old: Preset = serde_json::from_str(r#"{"name":"Old","effects":{}}"#).unwrap();
         assert_eq!(old.melody, None);
+        assert!(!old.favorite);
         let plain = serde_json::to_string(&builtin()[0]).unwrap();
         assert!(
-            !plain.contains("melody\":"),
-            "no melody field when there is none"
+            !plain.contains("melody\":") && !plain.contains("favorite"),
+            "no melody or favourite field when there is none"
         );
+    }
+
+    #[test]
+    fn favourites_come_first_and_names_are_checked() {
+        let own: Vec<Preset> = [("Bee", false), ("Ant", true), ("Cat", false), ("Dog", true)]
+            .into_iter()
+            .map(|(name, favorite)| Preset {
+                favorite,
+                ..make(name, &[])
+            })
+            .collect();
+        let order: Vec<&str> = favorites_first(&own)
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(
+            order,
+            ["Ant", "Dog", "Bee", "Cat"],
+            "favourites, then as saved"
+        );
+
+        assert_eq!(name_problem("  ", &own, None), Some("Type a name"));
+        assert!(
+            name_problem("deep voice", &own, None).is_some(),
+            "a built-in"
+        );
+        assert_eq!(name_problem("New one", &own, None), None);
+        // Saving under a name of your own replaces that preset; renaming onto one is refused.
+        assert_eq!(name_problem("Bee", &own, None), None);
+        assert!(name_problem("bee", &own, Some("Cat")).is_some());
+        assert_eq!(name_problem("Cat", &own, Some("Cat")), None, "unchanged");
+        assert_eq!(builtin(), builtin_presets(), "one list");
     }
 }

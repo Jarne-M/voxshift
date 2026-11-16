@@ -1,7 +1,9 @@
 //! "Voice changer hotkeys" settings: toggle / hold key, mute key, preset keys, feedback and
 //! the start state.
 
-use super::theme::{ACCENT, WARN, card};
+use super::icons;
+use super::theme::WARN;
+use super::widgets::{self, KeySlot, card};
 use crate::config::{Config, StartVoice};
 use crate::soundboard::hotkeys::Hotkey;
 use crate::voice_keys::{KeyTarget, PresetHotkey, VoiceKeyMode};
@@ -18,7 +20,6 @@ pub enum Action {
 pub struct View {
     pub capturing: Option<KeyTarget>,
     pub hotkeys_available: bool,
-    pub monitor_on: bool,
     pub preset_names: Vec<String>,
 }
 
@@ -30,8 +31,7 @@ fn key_button(
     actions: &mut Vec<Action>,
 ) {
     if v.capturing == Some(target) {
-        if ui
-            .button(RichText::new("Press a key... (Esc)").color(ACCENT))
+        if widgets::hotkey_button(ui, KeySlot::Capturing)
             .on_hover_text("Press the key or combination (Ctrl/Alt/Shift + key). Click to cancel.")
             .clicked()
         {
@@ -39,21 +39,25 @@ fn key_button(
         }
         return;
     }
-    let (text, hover) = match key {
-        Some(k) => (
-            k.label.clone(),
+    let parts = key.map(Hotkey::parts);
+    let (slot, hover) = match &parts {
+        Some(p) => (
+            KeySlot::Set(p),
             "Click, then press another key or combination",
         ),
         None => (
-            "Not set".to_string(),
+            KeySlot::Empty,
             "No hotkey. Click, then press the key or combination to use",
         ),
     };
-    if ui
-        .add_enabled(v.hotkeys_available, egui::Button::new(text))
-        .on_hover_text(hover)
-        .clicked()
-    {
+    let clicked = ui
+        .add_enabled_ui(v.hotkeys_available, |ui| {
+            widgets::hotkey_button(ui, slot)
+                .on_hover_text(hover)
+                .clicked()
+        })
+        .inner;
+    if clicked {
         actions.push(Action::Capture(target));
     }
     if key.is_some() && ui.small_button("Clear").clicked() {
@@ -61,10 +65,11 @@ fn key_button(
     }
 }
 
-pub fn panel(ui: &mut Ui, cfg: &mut Config, v: &View) -> Vec<Action> {
+/// Every voice changer hotkey. Shown on the Hotkeys page.
+pub fn keys_panel(ui: &mut Ui, cfg: &mut Config, v: &View) -> Vec<Action> {
     let mut actions = Vec::new();
     card(ui, |ui| {
-        ui.heading("Voice changer hotkeys");
+        widgets::section_title(ui, icons::KEYBOARD, "Voice changer hotkeys");
         ui.label(
             RichText::new("Work in the background and in games; the game still gets the key.")
                 .small(),
@@ -213,9 +218,15 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, v: &View) -> Vec<Action> {
             }
             ui.add_space(4.0);
         }
+    });
+    actions
+}
 
-        ui.separator();
-        ui.label(RichText::new("When it switches").strong());
+/// "When it switches": the beeps and the on-screen banner, and the state at start. Shown on
+/// the Settings page.
+pub fn feedback_panel(ui: &mut Ui, cfg: &mut Config, monitor_on: bool) {
+    card(ui, |ui| {
+        widgets::section_title(ui, icons::FEEDBACK, "When the voice changer switches");
         let f = &mut cfg.feedback;
         ui.checkbox(
             &mut f.cues,
@@ -225,13 +236,19 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, v: &View) -> Vec<Action> {
             "The \"Hear myself\" hotkey beeps too: one high beep for on, one low for off",
         );
         ui.add_enabled_ui(f.cues, |ui| {
-            ui.add(egui::Slider::new(&mut f.cue_volume, 0.05..=1.0).text("beep volume"));
+            widgets::Slider::new(&mut f.cue_volume, 0.05..=1.0)
+                .label("Beep volume")
+                .percent(true)
+                .default_value(0.5)
+                .tip("How loud the switch beeps are in your headphones.")
+                .show(ui);
         });
-        if f.cues && !v.monitor_on {
+        if f.cues && !monitor_on {
             ui.label(
                 RichText::new(
-                    "Beeps play on the monitor output: turn the monitor on above (untick \
-                     \"my voice\" there to hear only the beeps). They never go into your mic.",
+                    "Beeps play on the monitor output: turn the monitor on under Audio setup \
+                     (untick \"my voice\" there to hear only the beeps). They never go into \
+                     your mic.",
                 )
                 .small()
                 .color(WARN),
@@ -259,7 +276,6 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, v: &View) -> Vec<Action> {
                 });
         });
     });
-    actions
 }
 
 /// A new preset-key row, defaulting to the first preset that has none yet.

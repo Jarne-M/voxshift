@@ -7,6 +7,7 @@
 //! A worker thread turns the raw events into "combination pressed" and plays matching sounds.
 
 use super::library::Board;
+use crate::keynames;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -54,7 +55,9 @@ pub struct Hotkey {
     pub shift: bool,
     pub alt: bool,
     pub win: bool,
-    /// Human-readable, e.g. "Ctrl+Num 1" (captured once, when the key is assigned).
+    /// The name saved when the key was assigned, e.g. "Ctrl + Num 1". Older versions saved
+    /// Windows' own (translated) key name here; for showing a hotkey use [`Hotkey::pretty`],
+    /// which only falls back to this for keys it cannot name itself.
     pub label: String,
 }
 
@@ -79,6 +82,27 @@ impl Hotkey {
     pub fn same_keys(&self, o: &Hotkey) -> bool {
         (self.vk, self.ctrl, self.shift, self.alt, self.win)
             == (o.vk, o.ctrl, o.shift, o.alt, o.win)
+    }
+
+    /// The combination as its keys, modifiers first: `["Ctrl", "Shift", "F8"]`. The key is
+    /// named from its code (see [`crate::keynames`]), so a label saved by a Windows in another
+    /// language ("7 (PAVE NUM.)") still shows as "Num 7"; only a key the table does not know
+    /// keeps its saved name.
+    pub fn parts(&self) -> Vec<String> {
+        let key = keynames::key_name(self.vk).unwrap_or_else(|| {
+            let saved = keynames::strip_modifiers(&self.label);
+            if saved.is_empty() {
+                format!("Key 0x{:02X}", self.vk)
+            } else {
+                saved.to_string()
+            }
+        });
+        keynames::parts(self.ctrl, self.shift, self.alt, self.win, key)
+    }
+
+    /// How the combination is shown everywhere: "Ctrl + Shift + F8".
+    pub fn pretty(&self) -> String {
+        self.parts().join(keynames::JOIN)
     }
 }
 
@@ -138,21 +162,10 @@ impl KeyTracker {
         if is_modifier(k.vk) || !self.held.insert(k.vk) {
             return None;
         }
-        let mut label = String::new();
-        for (on, text) in [
-            (k.ctrl, "Ctrl+"),
-            (k.shift, "Shift+"),
-            (k.alt, "Alt+"),
-            (k.win, "Win+"),
-        ] {
-            if on {
-                label.push_str(text);
-            }
-        }
-        label.push_str(&name(&k));
-        Some(KeyEvent::Pressed(Hotkey::new(
-            k.vk, k.ctrl, k.shift, k.alt, k.win, &label,
-        )))
+        // `name` (what Windows calls the key) is only kept for keys our own table lacks.
+        let mut key = Hotkey::new(k.vk, k.ctrl, k.shift, k.alt, k.win, &name(&k));
+        key.label = key.pretty();
+        Some(KeyEvent::Pressed(key))
     }
 
     /// Forgets that `vk` is down (its key-up was missed), so its next press counts.
@@ -628,10 +641,11 @@ pub(crate) mod tests {
     #[test]
     fn tracker_reports_each_press_once_and_ignores_bare_modifiers() {
         let mut t = KeyTracker::default();
-        let name = |_: &RawKey| "F5".to_string();
+        // Windows' own name for the key is ignored when the key code is known.
+        let name = |_: &RawKey| "F5 (localised)".to_string();
         assert!(t.feed(key(0x11, true, true), name).is_none(), "Ctrl alone");
         let hk = t.feed(key(0x74, true, true), name).unwrap();
-        assert_eq!(hk.label, "Ctrl+F5");
+        assert_eq!(hk.label, "Ctrl + F5");
         assert!(hk.ctrl && hk.vk == 0x74);
         assert!(t.feed(key(0x74, true, true), name).is_none(), "auto-repeat");
         t.feed(key(0x74, false, true), name);
@@ -765,6 +779,30 @@ pub(crate) mod tests {
             Some(KeyEvent::Released(0x70))
         );
         assert!(t.none_held());
+    }
+
+    #[test]
+    fn hotkeys_show_the_same_in_every_windows_language() {
+        // Saved by a French Windows: the label is ignored, the key code names the key.
+        let num7 = Hotkey::new(0x67, false, false, false, false, "7 (PAVE NUM.)");
+        assert_eq!(num7.pretty(), "Num 7");
+        let combo = Hotkey::new(0x77, true, true, false, false, "Ctrl+Shift+F8");
+        assert_eq!(combo.pretty(), "Ctrl + Shift + F8");
+        assert_eq!(combo.parts(), ["Ctrl", "Shift", "F8"]);
+        // A key the table does not know keeps the name it was saved with, without the
+        // modifiers the old label carried.
+        let odd = Hotkey::new(0xFF, true, false, false, false, "Ctrl+Fn Lock");
+        assert_eq!(odd.pretty(), "Ctrl + Fn Lock");
+        let nameless = Hotkey::new(0xFF, false, false, false, false, "");
+        assert_eq!(nameless.pretty(), "Key 0xFF");
+        // A freshly captured key is labelled the same way.
+        let mut t = KeyTracker::default();
+        let pressed = t
+            .feed(key(0x67, true, true), |_| "7 (PAVE NUM.)".to_string())
+            .unwrap();
+        assert_eq!(pressed.label, "Ctrl + Num 7");
+        let unknown = t.feed(key(0xFF, true, false), |_| "Fn Lock".to_string());
+        assert_eq!(unknown.unwrap().label, "Fn Lock");
     }
 
     #[test]

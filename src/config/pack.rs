@@ -71,6 +71,7 @@ pub fn export(presets: &[Preset], files: &[PathBuf]) -> (Pack, Vec<String>) {
         .iter()
         .map(|p| {
             let mut p = p.clone();
+            p.favorite = false; // your favourites are yours, not the receiver's
             if let Some(MelodySource::File { path, part }) = &p.melody {
                 p.melody = packed_as.get(path).map(|name| MelodySource::File {
                     path: PathBuf::from(name),
@@ -149,6 +150,7 @@ pub fn import(pack: &Pack, existing: &[Preset], dir: &Path) -> Result<Imported, 
     }
     for p in &pack.presets {
         let mut p = p.clone();
+        p.favorite = false;
         if let Some(MelodySource::File { path, part }) = &p.melody {
             p.melody =
                 written
@@ -261,7 +263,25 @@ mod tests {
             name: name.into(),
             effects: presets::builtin()[1].effects.clone(),
             melody,
+            favorite: false,
         }
+    }
+
+    #[test]
+    fn favourites_stay_at_home() {
+        let dir = temp_dir("pack-favourite");
+        let mine = Preset {
+            favorite: true,
+            ..preset("Loud", None)
+        };
+        let (pack, _) = export(&[mine], &[]);
+        assert!(!pack.presets[0].favorite, "not written into the pack");
+        // A pack made by hand (or by a future version) cannot star itself on import either.
+        let mut pushy = pack.clone();
+        pushy.presets[0].favorite = true;
+        let got = import(&pushy, &[], &dir).unwrap();
+        assert!(!got.presets[0].favorite);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

@@ -1,6 +1,8 @@
 //! "Window & startup" settings: what the close button does, start with Windows, start hidden.
 
-use super::theme::{WARN, card};
+use super::icons;
+use super::theme::{self, ThemeChoice, WARN};
+use super::widgets::{card, section_title};
 use crate::config::{CloseBehavior, Config};
 use egui::{RichText, Ui};
 
@@ -16,7 +18,21 @@ pub struct View {
 pub fn panel(ui: &mut Ui, cfg: &mut Config, v: &View) -> Option<bool> {
     let mut autostart_toggle = None;
     card(ui, |ui| {
-        ui.heading("Window & startup");
+        section_title(ui, icons::WINDOW, "Window & startup");
+        ui.horizontal(|ui| {
+            ui.label("Theme");
+            let before = cfg.theme;
+            egui::ComboBox::from_id_salt("theme")
+                .selected_text(cfg.theme.label())
+                .show_ui(ui, |ui| {
+                    for t in ThemeChoice::ALL {
+                        ui.selectable_value(&mut cfg.theme, t, t.label());
+                    }
+                });
+            if cfg.theme != before {
+                theme::set_choice(ui.ctx(), cfg.theme);
+            }
+        });
         ui.label("When I close the window:");
         let label = |b: CloseBehavior| match b {
             CloseBehavior::Ask => "Ask every time",

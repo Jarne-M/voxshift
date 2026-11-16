@@ -200,7 +200,7 @@ pub fn dedupe(voice: &mut VoiceHotkeys, sounds: &mut [SoundKey]) -> Vec<String> 
         for (target, name, h) in &list {
             let Some(h) = h else { continue };
             if seen.iter().any(|s| s.same_keys(h)) {
-                losers.push((*target, format!("{} ({name})", h.label)));
+                losers.push((*target, format!("{} ({name})", h.pretty())));
             } else {
                 seen.push(h);
             }

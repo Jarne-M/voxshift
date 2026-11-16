@@ -1,7 +1,9 @@
 //! Device selection: virtual mic, the two mics with fallback, monitor and buffer size.
 
+use super::icons;
 use super::meters::{MIC_FLOOR_DB, level_bar};
-use super::theme::{BAD, OFF, ON, WARN, card};
+use super::theme::{BAD, OFF, ON, WARN};
+use super::widgets::{card, section_title};
 use crate::audio::device_manager::{DeviceStatus, Endpoint, LinkState};
 use crate::audio::matching::best_match;
 use crate::audio::mic_select::MicMode;
@@ -107,7 +109,7 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, status: &DeviceStatus, shared: &Shar
 
     card(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.heading("Virtual mic (output)");
+            section_title(ui, icons::VIRTUAL_MIC, "Virtual mic (output)");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ch.rescan |= ui
                     .small_button("Rescan")
@@ -125,7 +127,7 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, status: &DeviceStatus, shared: &Shar
     ui.add_space(6.0);
 
     card(ui, |ui| {
-        ui.heading("Microphones");
+        section_title(ui, icons::MIC, "Microphones");
         for (slot, label) in [(0, "Primary mic"), (1, "Fallback mic")] {
             ui.label(RichText::new(label).strong());
             let name = if slot == 0 {
@@ -209,7 +211,7 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, status: &DeviceStatus, shared: &Shar
 
     card(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.heading("Monitor");
+            section_title(ui, icons::HEADPHONES, "Monitor");
             ch.devices |= ui.checkbox(&mut d.monitor_enabled, "on").changed();
         });
         ui.label(RichText::new("Hear the result on your headphones.").small());
@@ -226,7 +228,7 @@ pub fn panel(ui: &mut Ui, cfg: &mut Config, status: &DeviceStatus, shared: &Shar
     ui.add_space(6.0);
 
     card(ui, |ui| {
-        ui.heading("Latency");
+        section_title(ui, icons::LATENCY, "Latency");
         ui.horizontal(|ui| {
             ui.label("Buffer");
             let label = |n: u32| {

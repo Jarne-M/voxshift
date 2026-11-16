@@ -1,7 +1,8 @@
 //! Soundboard: tabs (All, Favorites, Recent, Unsorted and your folders), search, sorting and
 //! the clip grid. Drawing only reads the board; changes come back as actions.
 
-use super::theme::{ACCENT, BAD, CARD};
+use super::theme::{ACCENT, BAD, palette, text_on};
+use super::widgets;
 use crate::audio::shared::Shared;
 use crate::soundboard::hotkeys::Hotkey;
 use crate::soundboard::library::{Board, LoadState, SoundEntry};
@@ -65,16 +66,6 @@ pub const PALETTE: [(&str, Color32); 10] = [
     ("Grey", Color32::from_rgb(140, 140, 150)),
 ];
 
-/// Black or white, whichever reads better on `bg` (in any theme).
-pub fn text_on(bg: Color32) -> Color32 {
-    let l = 0.2126 * f32::from(bg.r()) + 0.7152 * f32::from(bg.g()) + 0.0722 * f32::from(bg.b());
-    if l > 150.0 {
-        Color32::BLACK
-    } else {
-        Color32::WHITE
-    }
-}
-
 /// What is dragged between clips and tabs.
 #[derive(Clone, Copy)]
 struct ClipDrag(SoundId);
@@ -122,8 +113,8 @@ fn action_key(
     }
     let (label, tip) = match key {
         Some(k) => (
-            k.label.clone(),
-            format!("Hotkey for {what}: {}. Click to change.", k.label),
+            k.pretty(),
+            format!("Hotkey for {what}: {}. Click to change.", k.pretty()),
         ),
         None => (
             "Not set".to_string(),
@@ -155,10 +146,7 @@ fn top_row(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) {
         {
             actions.push(Action::AddFiles);
         }
-        if ui
-            .add(egui::Button::new(RichText::new("Stop all").color(Color32::WHITE)).fill(BAD))
-            .clicked()
-        {
+        if widgets::danger_button(ui, "Stop all").clicked() {
             actions.push(Action::StopAll);
         }
         action_key(
@@ -444,7 +432,7 @@ pub fn panel(ui: &mut Ui, v: &View, search: &mut String) -> Vec<Action> {
             // keeps normal clicks, so a slightly moving click still plays the clip.
             let card = ui.allocate_ui_with_layout(vec2(CELL, 150.0), layout, |ui| {
                 egui::Frame::new()
-                    .fill(CARD)
+                    .fill(palette(ui).surface)
                     .corner_radius(8)
                     .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
@@ -717,11 +705,10 @@ fn cell(
         }
         let badge = e.play_mode.badge();
         if !badge.is_empty() {
-            ui.label(RichText::new(badge).small().strong().color(ACCENT))
-                .on_hover_text(format!(
-                    "Play mode: {}. Right-click to change.",
-                    e.play_mode.label()
-                ));
+            widgets::badge(ui, badge, widgets::Tone::Accent).on_hover_text(format!(
+                "Play mode: {}. Right-click to change.",
+                e.play_mode.label()
+            ));
         }
         if v.capturing_sound() == Some(id) {
             if ui
@@ -734,8 +721,8 @@ fn cell(
         } else {
             let (label, tip) = match &e.hotkey {
                 Some(h) => (
-                    h.label.clone(),
-                    format!("Hotkey: {}. Click to change.", h.label),
+                    h.pretty(),
+                    format!("Hotkey: {}. Click to change.", h.pretty()),
                 ),
                 None => (
                     "Not set".to_string(),

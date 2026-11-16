@@ -1,17 +1,24 @@
-//! The window: master toggle and meters on top, devices on the left, effects and soundboard in
-//! the middle.
+//! The window: a header that shows the state at a glance (voice changer, active mic, meters,
+//! problems, Mute and PANIC), a navigation rail on the left, and one page at a time in the
+//! middle: Voice, Soundboard, Audio setup, Hotkeys and Settings.
 
 pub mod devices;
 pub mod effects;
+pub mod header;
 pub mod hotkey_settings;
+pub mod icons;
 pub mod melody;
 pub mod meters;
+pub mod nav;
 pub mod presets;
 pub mod settings;
+#[cfg(test)]
+pub mod snapshot;
 pub mod soundboard;
 pub mod theme;
 pub mod toast;
 pub mod tray_status;
+pub mod widgets;
 
 use crate::audio::device_manager::{DeviceStatus, Event, ManagerCmd, ManagerHandle};
 use crate::audio::shared::{ActiveMic, Shared};
@@ -33,13 +40,12 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
-use theme::{ACCENT, BAD, OFF, ON, PANIC, WARN};
 use toast::Toasts;
 
 /// How long the clip lamp stays lit after a clip.
 const CLIP_HOLD_S: f64 = 1.5;
 
-pub use crate::config::Tab;
+pub use crate::config::Page;
 
 pub struct VoxApp {
     pub cfg: Config,
@@ -71,7 +77,8 @@ pub struct VoxApp {
     tray_poster: Arc<OnceLock<TrayPoster>>,
     voice_keys: Option<Arc<VoiceKeys>>,
     voice_requests: Option<mpsc::Receiver<VoiceRequest>>,
-    preset_name: String,
+    /// The preset bar's name dialog.
+    preset_bar: presets::BarState,
     /// Where settings are saved (None in tests).
     config_path: Option<PathBuf>,
     saved: Config,
@@ -367,7 +374,7 @@ impl VoxApp {
             search: String::new(),
             board_revision: 0,
             capture_watch: None,
-            preset_name: String::new(),
+            preset_bar: presets::BarState::default(),
             config_path: None,
             saved: loaded,
             changed_at: None,
@@ -439,7 +446,7 @@ impl VoxApp {
         match self.select_melody(source, true) {
             Ok(warning) => {
                 if let Some(w) = warning {
-                    self.toasts.push(ctx, w);
+                    self.toasts.warn(ctx, w);
                 }
                 let msg = match &self.melody {
                     Some(Loaded {
@@ -455,12 +462,12 @@ impl VoxApp {
                     ),
                     _ => "Melody imported".to_string(),
                 };
-                self.toasts.push(ctx, msg);
-                self.cfg.tab = Tab::Effects;
+                self.toasts.success(ctx, msg);
+                self.cfg.page = Page::Voice;
             }
             Err(e) => self
                 .toasts
-                .push(ctx, format!("Could not use that MIDI file: {e}")),
+                .error(ctx, format!("Could not use that MIDI file: {e}")),
         }
     }
 
@@ -491,8 +498,8 @@ impl VoxApp {
             match action {
                 melody::Action::Select(source) => match self.select_melody(source, true) {
                     Ok(None) => {}
-                    Ok(Some(warning)) => self.toasts.push(ui.ctx(), warning),
-                    Err(e) => self.toasts.push(ui.ctx(), format!("Melody: {e}")),
+                    Ok(Some(warning)) => self.toasts.warn(ui.ctx(), warning),
+                    Err(e) => self.toasts.error(ui.ctx(), format!("Melody: {e}")),
                 },
                 melody::Action::Import => {
                     if let Some(path) = rfd::FileDialog::new()
@@ -582,7 +589,7 @@ impl VoxApp {
             }
         }
         if let Some(n) = self.startup_notice.take() {
-            self.toasts.push(ctx, n);
+            self.toasts.warn(ctx, n);
         }
         self.autosave(self.clock.elapsed().as_secs_f64());
         self.sync_mirror();
@@ -601,9 +608,11 @@ impl VoxApp {
                         ActiveMic::None => "No microphone available - sending silence".to_string(),
                     };
                     // Hidden in the tray, a toast would go unseen: use a tray balloon.
-                    match (&self.tray, self.hidden) {
-                        (Some(t), true) => t.notify("VoxShift", &text),
-                        _ => self.toasts.push(ctx, text),
+                    match (&self.tray, self.hidden, to) {
+                        (Some(t), true, _) => t.notify("VoxShift", &text),
+                        (_, _, ActiveMic::Primary) => self.toasts.success(ctx, text),
+                        (_, _, ActiveMic::Fallback) => self.toasts.warn(ctx, text),
+                        (_, _, ActiveMic::None) => self.toasts.error(ctx, text),
                     }
                 }
             }
@@ -783,17 +792,12 @@ impl VoxApp {
             );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let minimize = egui::Button::new(
-                    RichText::new(if tray_ok {
-                        "Minimize to tray"
-                    } else {
-                        "Minimize"
-                    })
-                    .strong()
-                    .color(Color32::WHITE),
-                )
-                .fill(ACCENT);
-                let r = ui.add(minimize);
+                let minimize = if tray_ok {
+                    "Minimize to tray"
+                } else {
+                    "Minimize"
+                };
+                let r = widgets::primary_button(ui, minimize);
                 if std::mem::take(&mut dialog.focus_pending) {
                     r.request_focus(); // Enter picks the default
                 }
@@ -841,76 +845,140 @@ impl VoxApp {
     pub fn draw(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.frames_drawn += 1;
-        egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
-        egui::Panel::left("devices")
-            .resizable(true)
-            .default_size(340.0)
-            .min_size(280.0)
+        let p = theme::palette(ui);
+        let window_width = ui.available_width();
+
+        egui::Panel::top("header")
+            .exact_size(header::HEIGHT)
+            .frame(
+                egui::Frame::new()
+                    .fill(header::fill(p, self.feedback.safe_mode()))
+                    .inner_margin(egui::Margin::symmetric(16, 0)),
+            )
+            .show(ui, |ui| self.header(ui));
+        let nav_width = nav::width(ui, self.cfg.nav_collapsed, window_width);
+        egui::Panel::left("nav")
+            .exact_size(nav_width)
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(p.surface)
+                    .inner_margin(nav::margin()),
+            )
             .show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let ch = devices::panel(ui, &mut self.cfg, &self.status, &self.shared);
-                    if ch.devices {
-                        self.manager
-                            .send(ManagerCmd::Devices(self.cfg.devices.clone()));
-                    }
-                    if ch.mic {
-                        self.manager.send(ManagerCmd::Mic(self.cfg.mic.clone()));
-                    }
-                    if ch.monitor {
-                        apply_to_shared(&self.cfg, &self.shared);
-                    }
-                    if ch.rescan {
-                        self.manager.send(ManagerCmd::Rescan);
-                    }
-                    ui.add_space(6.0);
-                    let view = settings::View {
-                        autostart: self.autostart,
-                        autostart_elsewhere: self.autostart_elsewhere,
-                        tray_available: self.tray.is_some(),
-                    };
-                    if let Some(on) = settings::panel(ui, &mut self.cfg, &view) {
-                        self.set_autostart(&ctx, on);
-                    }
-                    ui.add_space(6.0);
-                    self.hotkey_settings(ui);
-                });
-            });
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(
-                    &mut self.cfg.tab,
-                    Tab::Effects,
-                    RichText::new("Effects").heading(),
-                );
-                ui.selectable_value(
-                    &mut self.cfg.tab,
-                    Tab::Soundboard,
-                    RichText::new("Soundboard").heading(),
+                nav::show(
+                    ui,
+                    &mut self.cfg.page,
+                    &mut self.cfg.nav_collapsed,
+                    window_width,
                 );
             });
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| match self.cfg.tab {
-                Tab::Effects => {
-                    if let Some(a) = presets::bar(ui, &self.cfg, &self.fx, &mut self.preset_name) {
-                        self.apply_preset_action(ui.ctx(), a);
-                    }
-                    ui.add_space(6.0);
-                    self.melody_panel(ui);
-                    ui.add_space(8.0);
-                    if effects::panel(ui, &mut self.fx) {
-                        self.effects_changed();
-                    }
-                }
-                Tab::Soundboard => self.soundboard_tab(ui),
+        let open = self.cfg.page;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(p.bg))
+            .show(ui, |ui| match open {
+                Page::Voice => page(ui, 1280.0, |ui| self.voice_page(ui)),
+                Page::Soundboard => page(ui, 1600.0, |ui| self.soundboard_page(ui)),
+                Page::Audio => page(ui, 760.0, |ui| self.audio_page(ui)),
+                Page::Hotkeys => page(ui, 760.0, |ui| self.hotkeys_page(ui)),
+                Page::Settings => page(ui, 760.0, |ui| self.settings_page(ui)),
             });
-        });
 
         self.handle_dropped_files(&ctx);
         self.poll_hotkey_capture(&ctx);
         self.key_conflict_dialog(&ctx);
         self.close_dialog(&ctx);
+        // (No toast has an action button yet, so there are no clicks to handle.)
         self.toasts.show(&ctx);
         ctx.request_repaint_after(Duration::from_millis(33));
+    }
+
+    /// Presets, Melody Voice and the effect chain.
+    fn voice_page(&mut self, ui: &mut Ui) {
+        widgets::page_title(ui, "Voice", "Presets, Melody Voice and the effect chain");
+        for action in presets::bar(ui, &self.cfg, &self.fx, &mut self.preset_bar) {
+            self.apply_preset_action(ui.ctx(), action);
+        }
+        ui.add_space(theme::space::M);
+        self.melody_panel(ui);
+        ui.add_space(theme::space::L);
+        let voice_on = self.shared.voice_on.load(Relaxed) && !self.feedback.safe_mode();
+        let chain = effects::chain(ui, &mut self.fx, voice_on);
+        if chain.changed {
+            self.effects_changed();
+        }
+        if chain.reset_all {
+            self.reset_all_effects(ui.ctx());
+        }
+    }
+
+    /// "Reset all effects": everything back to the defaults, which is the Clean preset (it
+    /// keeps the input gain, which belongs to the mic).
+    fn reset_all_effects(&mut self, ctx: &egui::Context) {
+        if let Some(clean) = config::presets::builtin_presets()
+            .iter()
+            .find(|p| p.name == "Clean")
+        {
+            self.apply_preset(ctx, clean);
+            self.toasts
+                .push(ctx, "All effects are back to their defaults");
+        }
+    }
+
+    fn soundboard_page(&mut self, ui: &mut Ui) {
+        widgets::page_title(
+            ui,
+            "Soundboard",
+            "Clips play into your virtual mic, mixed with your voice",
+        );
+        self.soundboard_tab(ui);
+    }
+
+    /// Virtual mic, microphones, monitor and latency.
+    fn audio_page(&mut self, ui: &mut Ui) {
+        widgets::page_title(
+            ui,
+            "Audio setup",
+            "Where your voice comes from and where it goes",
+        );
+        let ch = devices::panel(ui, &mut self.cfg, &self.status, &self.shared);
+        if ch.devices {
+            self.manager
+                .send(ManagerCmd::Devices(self.cfg.devices.clone()));
+        }
+        if ch.mic {
+            self.manager.send(ManagerCmd::Mic(self.cfg.mic.clone()));
+        }
+        if ch.monitor {
+            apply_to_shared(&self.cfg, &self.shared);
+        }
+        if ch.rescan {
+            self.manager.send(ManagerCmd::Rescan);
+        }
+    }
+
+    fn hotkeys_page(&mut self, ui: &mut Ui) {
+        widgets::page_title(
+            ui,
+            "Hotkeys",
+            "They work in the background and in games; the game still gets the key",
+        );
+        self.hotkey_settings(ui);
+    }
+
+    fn settings_page(&mut self, ui: &mut Ui) {
+        widgets::page_title(ui, "Settings", "Window, startup and feedback");
+        let view = settings::View {
+            autostart: self.autostart,
+            autostart_elsewhere: self.autostart_elsewhere,
+            tray_available: self.tray.is_some(),
+        };
+        if let Some(on) = settings::panel(ui, &mut self.cfg, &view) {
+            self.set_autostart(ui.ctx(), on);
+        }
+        ui.add_space(theme::space::M);
+        let monitor_on = self.cfg.devices.monitor_enabled;
+        hotkey_settings::feedback_panel(ui, &mut self.cfg, monitor_on);
     }
 
     fn preset_names(&self) -> Vec<String> {
@@ -925,10 +993,9 @@ impl VoxApp {
         let view = hotkey_settings::View {
             capturing: self.capturing,
             hotkeys_available: self.hotkeys.as_ref().is_some_and(|h| h.available()),
-            monitor_on: self.cfg.devices.monitor_enabled,
             preset_names: self.preset_names(),
         };
-        for action in hotkey_settings::panel(ui, &mut self.cfg, &view) {
+        for action in hotkey_settings::keys_panel(ui, &mut self.cfg, &view) {
             match action {
                 hotkey_settings::Action::Capture(t) => self.begin_capture(t),
                 hotkey_settings::Action::CancelCapture => self.cancel_capture(),
@@ -962,11 +1029,11 @@ impl VoxApp {
                 } else {
                     "VoxShift will no longer start with Windows"
                 };
-                self.toasts.push(ctx, msg);
+                self.toasts.success(ctx, msg);
             }
             Err(e) => self
                 .toasts
-                .push(ctx, format!("Could not change startup: {e}")),
+                .error(ctx, format!("Could not change startup: {e}")),
         }
     }
 
@@ -1026,7 +1093,7 @@ impl VoxApp {
                 // the mouse button goes up.
                 if !self.sounds.lock().press(id, playmode::MOUSE) {
                     self.toasts
-                        .push(ctx, "Cannot play: no virtual mic output is running");
+                        .error(ctx, "Cannot play: no virtual mic output is running");
                 }
             }
             A::MouseUp => self.sounds.lock().release(playmode::MOUSE),
@@ -1145,10 +1212,10 @@ impl VoxApp {
             }
             drop(board);
             self.sounds_changed();
-            self.cfg.tab = Tab::Soundboard;
+            self.cfg.page = Page::Soundboard;
         }
         if !skipped.is_empty() {
-            self.toasts.push(
+            self.toasts.warn(
                 ctx,
                 format!(
                     "Skipped {} file(s): only wav, mp3, ogg and flac",
@@ -1295,16 +1362,16 @@ impl VoxApp {
             hotkeys::diag::log("window: got 'cancelled' (Esc)");
             return;
         };
-        hotkeys::diag::log(format!("window: got key {} -> checking", key.label));
+        hotkeys::diag::log(format!("window: got key {} -> checking", key.pretty()));
         self.key_captured(ctx, target, key);
     }
 
     /// A key was pressed for `target`: assign it, refuse it, or ask (see [`keymap`]).
     fn key_captured(&mut self, ctx: &egui::Context, target: KeyTarget, key: hotkeys::Hotkey) {
-        let label = key.label.clone();
+        let label = key.pretty();
         match self.hotkey_check(&key, target) {
             (keymap::Check::Reserved(why), _) => {
-                self.toasts.push(
+                self.toasts.warn(
                     ctx,
                     format!("{label} can't be a hotkey: {why}. Pick another key."),
                 );
@@ -1314,7 +1381,7 @@ impl VoxApp {
             }
             (keymap::Check::Assign, _) => {
                 self.set_hotkey(target, Some(key));
-                self.toasts.push(ctx, format!("Hotkey {label} assigned"));
+                self.toasts.success(ctx, format!("Hotkey {label} assigned"));
             }
             (keymap::Check::Conflict(owner), name) => {
                 // Ask. Until answered, no hotkey triggers anything (Tab, Enter and Esc in the
@@ -1341,11 +1408,11 @@ impl VoxApp {
         if let Some(h) = &self.hotkeys {
             h.set_paused(false);
         }
-        let label = c.key.label.clone();
+        let label = c.key.pretty();
         if change {
             let (key, target, owner) = (c.key, c.target, c.owner.target);
             self.with_keymap(|voice, sounds| keymap::change(voice, sounds, key, target, owner));
-            self.toasts.push(
+            self.toasts.success(
                 ctx,
                 format!(
                     "{label} now goes to {}. {} is not set any more.",
@@ -1369,10 +1436,10 @@ impl VoxApp {
             ui.set_width(420.0);
             ui.heading("Key already in use");
             ui.add_space(4.0);
-            ui.label(format!(
-                "{} is already used for {}.",
-                c.key.label, c.owner.name
-            ));
+            ui.horizontal_wrapped(|ui| {
+                widgets::keycaps(ui, &c.key.parts());
+                ui.label(format!("is already used for {}.", c.owner.name));
+            });
             ui.label(
                 RichText::new(format!(
                     "Change moves it to {}; {} is then not set.",
@@ -1383,10 +1450,7 @@ impl VoxApp {
             );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let keep = egui::Button::new(RichText::new("Keep").strong().color(Color32::WHITE))
-                    .fill(ACCENT);
-                let r = ui
-                    .add(keep)
+                let r = widgets::primary_button(ui, "Keep")
                     .on_hover_text("Leave both hotkeys as they were (Esc)");
                 if std::mem::take(&mut c.focus_pending) {
                     r.request_focus(); // Enter picks the default; Tab moves to Change
@@ -1396,7 +1460,7 @@ impl VoxApp {
                 }
                 if ui
                     .button("Change")
-                    .on_hover_text(format!("Use {} here instead", c.key.label))
+                    .on_hover_text(format!("Use {} here instead", c.key.pretty()))
                     .clicked()
                 {
                     choice = Some(true);
@@ -1458,9 +1522,9 @@ impl VoxApp {
                 if !skipped.is_empty() {
                     msg += &format!(". Left out: {}", skipped.join(", "));
                 }
-                self.toasts.push(ctx, msg);
+                self.toasts.success(ctx, msg);
             }
-            Err(e) => self.toasts.push(ctx, format!("Could not share: {e}")),
+            Err(e) => self.toasts.error(ctx, format!("Could not share: {e}")),
         }
     }
 
@@ -1487,10 +1551,10 @@ impl VoxApp {
                 if got.already_had > 0 {
                     msg += &format!("; {} you already had", got.already_had);
                 }
-                self.toasts.push(ctx, msg);
-                self.cfg.tab = Tab::Effects;
+                self.toasts.success(ctx, msg);
+                self.cfg.page = Page::Voice;
             }
-            Err(e) => self.toasts.push(ctx, format!("Could not import: {e}")),
+            Err(e) => self.toasts.error(ctx, format!("Could not import: {e}")),
         }
     }
 
@@ -1515,6 +1579,7 @@ impl VoxApp {
                 }
             }
             presets::Action::Save(name) => {
+                let existing = self.cfg.user_presets.iter_mut().find(|p| p.name == name);
                 let preset = config::presets::Preset {
                     name: name.clone(),
                     effects: self.fx.to_settings(),
@@ -1522,14 +1587,15 @@ impl VoxApp {
                         .fx
                         .on(P::MelodyOn)
                         .then(|| self.cfg.melody.source.clone()),
+                    // Saving over a favourite keeps it one.
+                    favorite: existing.as_ref().is_some_and(|p| p.favorite),
                 };
-                match self.cfg.user_presets.iter_mut().find(|p| p.name == name) {
+                match existing {
                     Some(existing) => *existing = preset,
                     None => self.cfg.user_presets.push(preset),
                 }
                 self.cfg.preset = Some(name.clone());
-                self.preset_name.clear();
-                self.toasts.push(ctx, format!("Saved preset \"{name}\""));
+                self.toasts.success(ctx, format!("Saved preset \"{name}\""));
             }
             presets::Action::Delete(name) => {
                 self.cfg.user_presets.retain(|p| p.name != name);
@@ -1537,6 +1603,38 @@ impl VoxApp {
                     self.cfg.preset = None;
                 }
                 self.toasts.push(ctx, format!("Deleted preset \"{name}\""));
+            }
+            presets::Action::Revert => {
+                if let Some((preset, _)) = presets::loaded(&self.cfg, &self.fx) {
+                    let preset = preset.clone();
+                    self.apply_preset(ctx, &preset);
+                }
+            }
+            presets::Action::Rename { from, to } => {
+                let own = &mut self.cfg.user_presets;
+                if own.iter().any(|p| p.name == to) {
+                    return; // taken (the dialog refuses this already)
+                }
+                let Some(preset) = own.iter_mut().find(|p| p.name == from) else {
+                    return;
+                };
+                preset.name = to.clone();
+                if self.cfg.preset.as_ref() == Some(&from) {
+                    self.cfg.preset = Some(to.clone());
+                }
+                // Hotkeys find their preset by name: they follow the rename.
+                for key in &mut self.cfg.voice_keys.presets {
+                    if key.preset == from {
+                        key.preset = to.clone();
+                    }
+                }
+                self.toasts
+                    .success(ctx, format!("Renamed \"{from}\" to \"{to}\""));
+            }
+            presets::Action::Favorite(name, on) => {
+                if let Some(p) = self.cfg.user_presets.iter_mut().find(|p| p.name == name) {
+                    p.favorite = on;
+                }
             }
         }
     }
@@ -1602,7 +1700,7 @@ impl VoxApp {
             h.cancel_capture();
             self.capturing = None;
             self.capture_watch = None;
-            self.toasts.push(
+            self.toasts.error(
                 ctx,
                 "VoxShift did not receive that key press, so hotkeys can't be set right now. \
                  Restart VoxShift and try again.",
@@ -1615,201 +1713,104 @@ impl VoxApp {
         self.cfg.effects = self.fx.to_settings();
     }
 
-    fn top_bar(&mut self, ui: &mut Ui) {
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            // The shared state is the truth: the tray and hotkeys change it too.
-            let on = self.shared.voice_on.load(Relaxed);
-            let (text, fill) = if on {
-                ("Voice changer ON", ON)
-            } else {
-                ("Voice changer OFF", OFF)
-            };
-            let button = egui::Button::new(
-                RichText::new(text)
-                    .size(20.0)
-                    .strong()
-                    .color(Color32::WHITE),
-            )
-            .fill(fill)
-            .min_size(egui::vec2(230.0, 44.0));
-            let tip = match &self.cfg.voice_keys.toggle {
-                Some(k) => format!(
-                    "Off = your clean voice passes straight through. Hotkey: {}",
-                    k.label
-                ),
-                None => "Off = your clean voice passes straight through".to_string(),
-            };
-            // In safe mode the switch keeps the state Restore goes back to: leave it alone.
-            let safe = self.feedback.safe_mode();
-            let r = ui
-                .add_enabled(!safe, button)
-                .on_hover_text(tip)
-                .on_disabled_hover_text("Safe mode: the clean mic is sent. Restore first.");
-            if r.clicked() {
-                self.feedback.toggle_voice();
-                self.cfg.voice_on = !on;
-                self.refresh_tray();
-            }
-            let muted = self.shared.mic_muted.load(Relaxed);
-            let (text, fill) = if muted {
-                ("Mic muted", BAD)
-            } else {
-                ("Mute mic", Color32::from_gray(52))
-            };
-            let mute = egui::Button::new(RichText::new(text).strong().color(Color32::WHITE))
-                .fill(fill)
-                .min_size(egui::vec2(110.0, 44.0));
-            if ui
-                .add(mute)
-                .on_hover_text("Silences your mic; the soundboard still plays")
-                .clicked()
-            {
-                self.shared.mic_muted.store(!muted, Relaxed);
-                self.refresh_tray();
-            }
-            ui.add_space(12.0);
-            ui.vertical(|ui| {
-                self.active_mic_label(ui);
-                self.meter_row(ui);
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                self.panic_button(ui);
-            });
-        });
-        if self.feedback.safe_mode() {
-            self.safe_banner(ui);
-        }
-        ui.add_space(6.0);
-    }
-
-    /// The panic button: one click (or its hotkey, or the tray) and only your clean voice goes
-    /// out. Clicking it again is Restore.
-    fn panic_button(&mut self, ui: &mut Ui) {
-        let safe = self.feedback.safe_mode();
-        let (text, fill) = if safe {
-            ("Restore", ON)
-        } else {
-            ("PANIC", PANIC)
+    /// The loaded preset's name, and whether the sliders moved since it was loaded.
+    fn preset_state(&self) -> (Option<String>, bool) {
+        let Some(name) = &self.cfg.preset else {
+            return (None, false);
         };
-        let button = egui::Button::new(
-            RichText::new(text)
-                .size(20.0)
-                .strong()
-                .color(Color32::WHITE),
-        )
-        .fill(fill)
-        .min_size(egui::vec2(130.0, 44.0));
-        let key = match &self.cfg.voice_keys.panic {
-            Some(k) => format!(" Hotkey: {}.", k.label),
-            None => String::new(),
-        };
-        let tip = if safe {
-            format!("Turn everything back on exactly as it was.{key}")
-        } else {
-            format!(
-                "Safe mode: stops all sounds and sends only your clean mic (voice changer, \
-                 effects and Melody Voice off). Your settings are not changed; press again to \
-                 restore.{key}"
-            )
-        };
-        if ui.add(button).on_hover_text(tip).clicked() {
-            self.feedback.toggle_safe();
-            self.refresh_tray();
+        let builtin = config::presets::builtin();
+        let loaded = builtin
+            .iter()
+            .chain(&self.cfg.user_presets)
+            .find(|p| &p.name == name);
+        match loaded {
+            Some(p) => (
+                Some(p.name.clone()),
+                !config::presets::matches(p, &self.fx, &self.cfg.melody.source),
+            ),
+            None => (None, false),
         }
     }
 
-    fn safe_banner(&mut self, ui: &mut Ui) {
-        egui::Frame::new()
-            .fill(PANIC)
-            .corner_radius(4.0)
-            .inner_margin(egui::Margin::symmetric(10, 6))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("SAFE MODE")
-                            .size(18.0)
-                            .strong()
-                            .color(Color32::WHITE),
-                    );
-                    let monitor = if self.cfg.feedback.panic_mutes_monitor {
-                        ", headphones muted"
-                    } else {
-                        ""
-                    };
-                    ui.label(
-                        RichText::new(format!(
-                            "Only your clean mic is sent: no effects, no Melody Voice, no \
-                             sounds{monitor}. Nothing was changed."
-                        ))
-                        .color(Color32::WHITE),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let restore = egui::Button::new(
-                            RichText::new("Restore").strong().color(Color32::BLACK),
-                        )
-                        .fill(Color32::WHITE);
-                        if ui.add(restore).clicked() {
-                            self.feedback.set_safe(false);
-                            self.refresh_tray();
-                        }
-                    });
-                });
-            });
-    }
-
-    fn active_mic_label(&self, ui: &mut Ui) {
-        let s = &self.status;
-        let device = |slot: usize| s.mics[slot].device.clone().unwrap_or_default();
-        let (text, color) = match s.active {
-            ActiveMic::Primary | ActiveMic::Fallback if self.shared.mic_muted.load(Relaxed) => {
-                ("Mic muted - only the soundboard is sent".to_string(), BAD)
-            }
-            ActiveMic::Primary if s.reason.is_empty() => {
-                (format!("Active: Primary mic - {}", device(0)), ON)
-            }
-            ActiveMic::Primary => (
-                format!("Active: Primary mic ({}) - {}", s.reason, device(0)),
-                ON,
-            ),
-            ActiveMic::Fallback => (
-                format!("Active: Fallback mic ({}) - {}", s.reason, device(1)),
-                WARN,
-            ),
-            ActiveMic::None if !s.scanned => ("Starting audio...".to_string(), OFF),
-            ActiveMic::None if s.output.device.is_none() => (
-                "No virtual mic output selected - nothing is being sent".to_string(),
-                BAD,
-            ),
-            ActiveMic::None => (
-                "No microphone available - sending silence, still looking...".to_string(),
-                BAD,
-            ),
-        };
-        ui.label(RichText::new(text).strong().color(color));
-    }
-
-    fn meter_row(&mut self, ui: &mut Ui) {
+    /// The header: the voice changer pill, the active mic, meters, problem chips, Mute and
+    /// PANIC (see [`header`]). The shared state is the truth for the switches: the tray and
+    /// the hotkeys change it too.
+    fn header(&mut self, ui: &mut Ui) {
         let now = ui.input(|i| i.time);
         let clips = self.shared.clip_count.load(Relaxed);
         if clips != self.clip_seen {
             self.clip_seen = clips;
             self.clip_until = now + CLIP_HOLD_S;
         }
-        ui.horizontal(|ui| {
-            ui.label("In");
-            let floor = meters::PROGRAM_FLOOR_DB;
-            meters::level_bar(ui, self.shared.input_level.get(), 180.0, floor, None);
-            ui.label("Out");
-            meters::level_bar(ui, self.shared.output_level.get(), 180.0, floor, None);
-            meters::clip_lamp(ui, now < self.clip_until)
-                .on_hover_text("Lights when the output exceeds full scale. Lower the output gain.");
-            if let Some(ms) = self.status.latency_ms {
-                ui.label(RichText::new(format!("~{ms:.0} ms")).small());
-            }
-        });
+        let (preset, modified) = self.preset_state();
+        let key = |k: &Option<hotkeys::Hotkey>| k.as_ref().map(hotkeys::Hotkey::pretty);
+        let view = header::View {
+            voice_on: self.shared.voice_on.load(Relaxed),
+            safe: self.feedback.safe_mode(),
+            muted: self.shared.mic_muted.load(Relaxed),
+            preset: preset.as_deref(),
+            modified,
+            status: &self.status,
+            input_level: self.shared.input_level.get(),
+            output_level: self.shared.output_level.get(),
+            clipping: now < self.clip_until,
+            // (No listener at all, as in tests, is not a problem to report.)
+            hotkeys_available: self.hotkeys.as_ref().is_none_or(|h| h.available()),
+            panic_mutes_monitor: self.cfg.feedback.panic_mutes_monitor,
+            toggle_key: key(&self.cfg.voice_keys.toggle),
+            mute_key: key(&self.cfg.voice_keys.mute),
+            panic_key: key(&self.cfg.voice_keys.panic),
+        };
+        for action in header::show(ui, &view) {
+            self.apply_header_action(action);
+        }
     }
+
+    fn apply_header_action(&mut self, action: header::Action) {
+        match action {
+            header::Action::ToggleVoice => {
+                self.feedback.toggle_voice();
+                self.cfg.voice_on = self.shared.voice_on.load(Relaxed);
+            }
+            header::Action::ToggleMute => self.feedback.toggle_mute(),
+            // Panic: one click (or its hotkey, or the tray) and only the clean voice goes out.
+            header::Action::Panic => self.feedback.set_safe(true),
+            header::Action::Restore => self.feedback.set_safe(false),
+            header::Action::Goto(page) => self.cfg.page = page,
+        }
+        self.refresh_tray();
+    }
+}
+
+/// A page of the main area: it scrolls, and its content is centred and never wider than
+/// `max_width`, so nothing stretches across a very wide window.
+fn page(ui: &mut Ui, max_width: f32, add: impl FnOnce(&mut Ui)) {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let available = ui.available_width();
+            let margin = if available < 700.0 {
+                theme::space::L
+            } else {
+                theme::space::XL
+            };
+            let width = (available - 2.0 * margin).min(max_width).max(240.0);
+            let side = ((available - width) / 2.0).max(0.0);
+            ui.add_space(theme::space::L);
+            let spacing = ui.spacing().item_spacing;
+            ui.horizontal_top(|ui| {
+                // (No gap between the side margin and the column; the column gets the
+                // normal spacing back.)
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(side);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing = spacing;
+                    ui.set_width(width);
+                    add(ui);
+                });
+            });
+            ui.add_space(margin);
+        });
 }
 
 impl eframe::App for VoxApp {
@@ -2014,11 +2015,12 @@ pub(crate) mod tests {
     fn draws_at_many_sizes_and_applies_first_run_defaults() {
         let mut app = test_app();
         let ctx = egui::Context::default();
-        theme::apply(&ctx);
+        theme::apply(&ctx, theme::ThemeChoice::Dark);
         let mut t = 0.0;
-        for tab in [Tab::Effects, Tab::Soundboard] {
-            app.cfg.tab = tab;
+        for page in Page::ALL {
+            app.cfg.page = page;
             for size in [
+                (613.0, 400.0), // the smallest window at 150 % UI scale
                 (920.0, 600.0),
                 (1240.0, 800.0),
                 (1920.0, 1080.0),
@@ -2027,6 +2029,13 @@ pub(crate) mod tests {
                 frame(&ctx, &mut app, size, t, vec![]);
                 t += 0.1;
             }
+        }
+        // Safe mode and a collapsed rail draw too.
+        app.feedback.set_safe(true);
+        app.cfg.nav_collapsed = true;
+        for size in [(613.0, 400.0), (1240.0, 800.0)] {
+            frame(&ctx, &mut app, size, t, vec![]);
+            t += 0.1;
         }
         assert_eq!(app.cfg.devices.primary, "Microphone (USB PnP Audio Device)");
         assert!(
@@ -2040,7 +2049,7 @@ pub(crate) mod tests {
         use crate::dsp::params::P;
         let mut app = test_app();
         let ctx = egui::Context::default();
-        theme::apply(&ctx);
+        theme::apply(&ctx, theme::ThemeChoice::Dark);
         app.fx.set(P::MelodyOn, 1.0);
         app.shared.melody_detected.set(57.2);
         app.shared.melody_target.set(60.0);
@@ -2529,6 +2538,225 @@ pub(crate) mod tests {
         frame(ctx, app, size, t + 0.15, vec![]);
     }
 
+    /// Lets animations (a card opening) finish: half a second of frames from `t`.
+    fn settle(ctx: &egui::Context, app: &mut VoxApp, t: f64) {
+        for i in 0..16 {
+            frame(ctx, app, (1240.0, 800.0), t + f64::from(i) * 0.033, vec![]);
+        }
+    }
+
+    #[test]
+    fn preset_chips_load_presets_and_save_and_revert_only_show_when_something_changed() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        settle(&ctx, &mut app, 0.0);
+        let shown = |what: &str| widgets::try_rect_of(&ctx, "preset", what);
+        assert!(shown("save").is_none() && shown("revert").is_none());
+
+        // A chip loads its preset.
+        let robot = widgets::rect_of(&ctx, "preset_chip", "Robot").center();
+        click(&ctx, &mut app, robot, 1.0);
+        assert_eq!(app.cfg.preset.as_deref(), Some("Robot"));
+        assert!(app.fx.on(P::RobotOn));
+        assert!(
+            app.shared.params.get(P::RobotOn) >= 0.5,
+            "reaches the audio thread"
+        );
+        assert!(shown("save").is_none(), "nothing to save yet");
+
+        // Move a slider: the preset is modified, and now Save and Revert are there.
+        app.fx.set(P::RobotFreq, 120.0);
+        app.effects_changed();
+        settle(&ctx, &mut app, 2.0);
+        assert_eq!(
+            presets::loaded(&app.cfg, &app.fx).map(|(_, m)| m),
+            Some(true)
+        );
+        let revert = shown("revert").expect("Revert is offered").center();
+        click(&ctx, &mut app, revert, 3.0);
+        assert_eq!(
+            app.fx.get(P::RobotFreq),
+            50.0,
+            "back to the preset's own value"
+        );
+        assert!(shown("save").is_none(), "and nothing is left to save");
+
+        // A built-in preset cannot be overwritten: Save asks for a name of your own.
+        app.fx.set(P::RobotFreq, 120.0);
+        app.effects_changed();
+        settle(&ctx, &mut app, 4.0);
+        let save = shown("save").expect("Save is offered").center();
+        click(&ctx, &mut app, save, 5.0);
+        assert!(app.preset_bar.dialog_open(), "asks for a name");
+        assert!(app.cfg.user_presets.is_empty());
+        app.preset_bar.type_name("Robot"); // a built-in's name is refused
+        settle(&ctx, &mut app, 6.0);
+        let enter = || vec![key_event(egui::Key::Enter, egui::Modifiers::NONE)];
+        frame(&ctx, &mut app, (1240.0, 800.0), 7.0, enter());
+        assert!(app.cfg.user_presets.is_empty() && app.preset_bar.dialog_open());
+        app.preset_bar.type_name("My robot");
+        frame(&ctx, &mut app, (1240.0, 800.0), 7.5, vec![]);
+        frame(&ctx, &mut app, (1240.0, 800.0), 7.6, enter());
+        settle(&ctx, &mut app, 7.7);
+        assert!(!app.preset_bar.dialog_open());
+        assert_eq!(app.cfg.user_presets.len(), 1);
+        assert_eq!(app.cfg.preset.as_deref(), Some("My robot"));
+        assert_eq!(app.cfg.user_presets[0].effects["robot_freq"], 120.0);
+
+        // Your own preset: Save writes the changes straight into it.
+        app.fx.set(P::RobotFreq, 200.0);
+        app.effects_changed();
+        settle(&ctx, &mut app, 9.0);
+        let save = shown("save").expect("Save is offered").center();
+        click(&ctx, &mut app, save, 10.0);
+        assert!(!app.preset_bar.dialog_open(), "no question asked");
+        assert_eq!(app.cfg.user_presets[0].effects["robot_freq"], 200.0);
+        // Its chip is there and loads it.
+        let clean = widgets::rect_of(&ctx, "preset_chip", "Clean").center();
+        click(&ctx, &mut app, clean, 11.0);
+        assert_eq!(app.cfg.preset.as_deref(), Some("Clean"));
+        settle(&ctx, &mut app, 12.0);
+        let mine = widgets::rect_of(&ctx, "preset_chip", "My robot").center();
+        click(&ctx, &mut app, mine, 13.0);
+        assert_eq!(app.cfg.preset.as_deref(), Some("My robot"));
+        assert_eq!(app.fx.get(P::RobotFreq), 200.0);
+    }
+
+    #[test]
+    fn own_presets_can_be_renamed_starred_and_keep_their_hotkey() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        for name in ["Bee", "Ant"] {
+            app.apply_preset_action(&ctx, presets::Action::Save(name.into()));
+        }
+        app.cfg
+            .voice_keys
+            .presets
+            .push(crate::voice_keys::PresetHotkey {
+                preset: "Bee".into(),
+                hotkey: Some(hotkeys::Hotkey::new(0x61, false, false, false, false, "")),
+            });
+        app.apply_preset_action(&ctx, presets::Action::Favorite("Ant".into(), true));
+        let order: Vec<String> = config::presets::favorites_first(&app.cfg.user_presets)
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        assert_eq!(order, ["Ant", "Bee"], "the favourite comes first");
+        // Saving over a favourite keeps the star.
+        app.apply_preset_action(&ctx, presets::Action::Save("Ant".into()));
+        assert!(
+            app.cfg
+                .user_presets
+                .iter()
+                .any(|p| p.name == "Ant" && p.favorite)
+        );
+
+        app.cfg.preset = Some("Bee".into());
+        let rename = presets::Action::Rename {
+            from: "Bee".into(),
+            to: "Wasp".into(),
+        };
+        app.apply_preset_action(&ctx, rename);
+        assert!(app.cfg.user_presets.iter().any(|p| p.name == "Wasp"));
+        assert_eq!(
+            app.cfg.preset.as_deref(),
+            Some("Wasp"),
+            "still the loaded one"
+        );
+        assert_eq!(
+            app.cfg.voice_keys.presets[0].preset, "Wasp",
+            "its hotkey follows"
+        );
+        // Renaming onto another preset of yours changes nothing.
+        let clash = presets::Action::Rename {
+            from: "Wasp".into(),
+            to: "Ant".into(),
+        };
+        app.apply_preset_action(&ctx, clash);
+        assert_eq!(app.cfg.user_presets.len(), 2);
+        assert!(app.cfg.user_presets.iter().any(|p| p.name == "Wasp"));
+        settle(&ctx, &mut app, 0.0); // the bar draws with a star and a divider
+    }
+
+    #[test]
+    fn effect_cards_open_when_switched_on_and_a_click_on_the_header_opens_them_by_hand() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        settle(&ctx, &mut app, 0.0);
+        let height = |name: &str| widgets::rect_of(&ctx, "fx_card", name).height();
+        let closed = height("Echo");
+        assert!(
+            closed < 60.0,
+            "an effect that is off is just its header: {closed}"
+        );
+        assert!(height("Gain") > closed + 60.0, "Gain is always on, so open");
+
+        // The switch turns the effect on and opens its sliders.
+        let switch = widgets::rect_of(&ctx, "fx_toggle", "Echo").center();
+        click(&ctx, &mut app, switch, 1.0);
+        assert!(app.fx.on(P::EchoOn));
+        assert!(
+            app.shared.params.get(P::EchoOn) >= 0.5,
+            "reaches the audio thread"
+        );
+        settle(&ctx, &mut app, 2.0);
+        assert!(height("Echo") > closed + 60.0, "open: {}", height("Echo"));
+        // And off again closes it.
+        let switch = widgets::rect_of(&ctx, "fx_toggle", "Echo").center();
+        click(&ctx, &mut app, switch, 3.0);
+        assert!(!app.fx.on(P::EchoOn));
+        settle(&ctx, &mut app, 4.0);
+        assert!(height("Echo") < closed + 2.0);
+
+        // A click on the header opens a card whose effect is off, without switching it on.
+        let card = widgets::rect_of(&ctx, "fx_card", "Reverb");
+        let name = card.left_top() + egui::vec2(120.0, 24.0);
+        click(&ctx, &mut app, name, 5.0);
+        settle(&ctx, &mut app, 6.0);
+        assert!(!app.fx.on(P::ReverbOn), "still off");
+        assert!(height("Reverb") > closed + 60.0, "but open");
+        // No card moved to another column because of all this: at this width there are two
+        // columns, the first five effects of the chain in the left one.
+        let column = |name: &str| widgets::rect_of(&ctx, "fx_card", name).left();
+        assert_eq!(column("Gain"), column("Distortion"));
+        assert_eq!(column("Robot"), column("Reverb"));
+        assert!(column("Robot") > column("Gain"));
+        let top = |name: &str| widgets::rect_of(&ctx, "fx_card", name).top();
+        assert!(top("Noise gate") > top("Gain") && top("Echo") > top("Chorus"));
+
+        // "Reset all effects" is the Clean preset, with the input gain kept.
+        app.fx.set(P::InputGain, 6.0);
+        app.fx.set(P::PitchOn, 1.0);
+        app.effects_changed();
+        app.reset_all_effects(&ctx);
+        assert!(!app.fx.on(P::PitchOn));
+        assert_eq!(app.fx.get(P::InputGain), 6.0);
+        assert_eq!(app.cfg.preset.as_deref(), Some("Clean"));
+    }
+
+    #[test]
+    fn melody_voice_is_one_line_until_it_is_switched_on() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        settle(&ctx, &mut app, 0.0);
+        let height = || widgets::rect_of(&ctx, "melody", "card").height();
+        let closed = height();
+        assert!(closed < 60.0, "off: one line ({closed})");
+        let switch = widgets::rect_of(&ctx, "melody", "toggle").center();
+        click(&ctx, &mut app, switch, 1.0);
+        assert!(app.fx.on(P::MelodyOn));
+        assert!(app.shared.params.get(P::MelodyOn) >= 0.5);
+        settle(&ctx, &mut app, 2.0);
+        assert!(
+            height() > 300.0,
+            "on: the controls and the piano roll ({})",
+            height()
+        );
+        // With the voice changer off the chain is dimmed and says so; everything still draws.
+        app.shared.voice_on.store(false, Relaxed);
+        settle(&ctx, &mut app, 3.0);
+    }
+
     #[test]
     fn the_panic_button_turns_safe_mode_on_and_restore_puts_everything_back() {
         let mut app = test_app();
@@ -2536,8 +2764,8 @@ pub(crate) mod tests {
         app.shared.cue_enabled.store(true, Relaxed);
         frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
         let (cfg, fx) = (app.cfg.clone(), app.fx);
-        // The panic button sits at the right end of the top bar (130 x 44).
-        let panic = egui::pos2(1240.0 - 8.0 - 65.0, 6.0 + 22.0 + 2.0);
+        let panic = widgets::rect_of(&ctx, "header", "panic").center();
+        let voice = widgets::rect_of(&ctx, "header", "voice").center();
         click(&ctx, &mut app, panic, 1.0);
         assert!(app.shared.safe_mode.load(Relaxed), "PANIC clicked");
         assert_eq!(
@@ -2549,8 +2777,10 @@ pub(crate) mod tests {
         let tray = tray_status::compute(&dev, true, false, true, true);
         assert_eq!(tray.health, crate::shell::Health::Safe);
 
-        // The voice changer switch is locked while safe (it holds what Restore goes back to).
-        click(&ctx, &mut app, egui::pos2(8.0 + 115.0, 30.0), 2.0);
+        // The voice changer switch is out of reach while safe (it holds what Restore goes
+        // back to): the header is the red banner, and a click where the switch was does
+        // nothing.
+        click(&ctx, &mut app, voice, 2.0);
         assert!(app.shared.voice_on.load(Relaxed) && app.cfg.voice_on);
         // A hotkey or tray press while safe and a frame or two later: still safe.
         frame(&ctx, &mut app, (1240.0, 800.0), 3.0, vec![]);
@@ -2559,8 +2789,9 @@ pub(crate) mod tests {
             "never restores by itself"
         );
 
-        // The same button now says Restore.
-        click(&ctx, &mut app, panic, 4.0);
+        // Where PANIC was, the banner has Restore.
+        let restore = widgets::rect_of(&ctx, "header", "panic").center();
+        click(&ctx, &mut app, restore, 4.0);
         assert!(!app.shared.safe_mode.load(Relaxed), "restored");
         assert_eq!(
             app.shared.take_cue(),
@@ -2605,7 +2836,7 @@ pub(crate) mod tests {
         assert!(app.cfg.voice_on && app.cfg.monitor_sounds);
 
         // "Also play in my headphones" works the same way, on the Soundboard tab too.
-        app.cfg.tab = Tab::Soundboard;
+        app.cfg.page = Page::Soundboard;
         assert!(!app.feedback.toggle_monitor_sounds());
         frame(&ctx, &mut app, (1240.0, 800.0), 0.4, vec![]);
         assert!(!app.cfg.monitor_sounds, "the checkbox follows");
@@ -2660,8 +2891,9 @@ pub(crate) mod tests {
             Some("the monitor (hear myself) toggle"),
             "a clip cannot take it either"
         );
-        // The settings panel draws while one of them waits for a key.
+        // The Hotkeys page draws while one of them waits for a key.
         app.capturing = Some(KeyTarget::StopSounds);
+        app.cfg.page = Page::Hotkeys;
         frame(&ctx, &mut app, (920.0, 600.0), 0.0, vec![]);
         app.clear_hotkey(KeyTarget::MonitorToggle);
         assert!(app.cfg.voice_keys.monitor_toggle.is_none());
@@ -2714,7 +2946,7 @@ pub(crate) mod tests {
             KeyTarget::Sound(id),
             Some(hotkeys::Hotkey::new(0x77, false, false, false, false, "F8")),
         );
-        app.cfg.tab = Tab::Effects;
+        app.cfg.page = Page::Voice;
         (app, id)
     }
 
@@ -2785,7 +3017,7 @@ pub(crate) mod tests {
                 .contains("The sound \"airhorn\" is not set any more")
         );
         // And the soundboard tab shows it as "Not set".
-        app.cfg.tab = Tab::Soundboard;
+        app.cfg.page = Page::Soundboard;
         frame(&ctx, &mut app, (1240.0, 800.0), 0.3, vec![]);
     }
 
@@ -2815,7 +3047,7 @@ pub(crate) mod tests {
         let win_r = hotkeys::Hotkey::new(0x52, false, false, false, true, "Win+R");
         app.key_captured(&ctx, KeyTarget::Mute, win_r);
         assert!(app.key_conflict.is_none() && app.cfg.voice_keys.mute.is_none());
-        assert!(app.toasts.contains("Win+R can't be a hotkey"));
+        assert!(app.toasts.contains("Win + R can't be a hotkey"));
         // A free key is simply assigned.
         let f9 = hotkeys::Hotkey::new(0x78, false, false, false, false, "F9");
         app.key_captured(&ctx, KeyTarget::Mute, f9);
@@ -2931,7 +3163,7 @@ pub(crate) mod tests {
         app.apply_sound_action(&ctx, A::NewFolder);
         let memes = app.cfg.soundboard.folders[0].id;
         app.apply_sound_action(&ctx, A::Tab(organize::BoardTab::All));
-        app.cfg.tab = Tab::Soundboard;
+        app.cfg.page = Page::Soundboard;
         let size = (1240.0, 800.0);
         let start = std::time::Instant::now();
         let mut t = 0.0;
@@ -3014,7 +3246,7 @@ pub(crate) mod tests {
             .collect();
         app.add_sounds(&ctx, files);
         app.cfg.soundboard.sort = organize::SortMode::Name;
-        app.cfg.tab = Tab::Soundboard;
+        app.cfg.page = Page::Soundboard;
         let size = (1240.0, 800.0);
         let mut t = 0.0;
         let mut step = |app: &mut VoxApp, events: Vec<egui::Event>| {
@@ -3156,7 +3388,7 @@ pub(crate) mod tests {
     fn stop_all_and_hear_soundboard_keys_can_be_set_on_the_soundboard_tab() {
         let ctx = egui::Context::default();
         let (mut app, _) = app_with_airhorn_on_f8(&ctx);
-        app.cfg.tab = Tab::Soundboard;
+        app.cfg.page = Page::Soundboard;
         // The buttons start a capture for the same targets as the settings rows...
         app.apply_sound_action(
             &ctx,
@@ -3247,9 +3479,114 @@ pub(crate) mod tests {
                 hotkey: None,
             });
         app.capturing = Some(KeyTarget::Preset(0));
+        app.cfg.page = Page::Hotkeys;
         for size in [(920.0, 600.0), (1920.0, 1080.0)] {
             frame(&ctx, &mut app, size, 0.0, vec![]);
         }
+    }
+
+    #[test]
+    fn the_header_switches_voice_and_mute_and_shows_the_same_state_as_the_tray() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.shared.cue_enabled.store(true, Relaxed);
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
+        let at = |what: &str| widgets::rect_of(&ctx, "header", what).center();
+
+        // The pill is the voice changer switch.
+        assert!(app.shared.voice_on.load(Relaxed));
+        click(&ctx, &mut app, at("voice"), 1.0);
+        assert!(
+            !app.shared.voice_on.load(Relaxed) && !app.cfg.voice_on,
+            "OFF"
+        );
+        assert_eq!(
+            app.shared.take_cue(),
+            Some(crate::dsp::cue::CueKind::VoiceOff),
+            "announced like the hotkey does"
+        );
+        click(&ctx, &mut app, at("voice"), 2.0);
+        assert!(
+            app.shared.voice_on.load(Relaxed) && app.cfg.voice_on,
+            "ON again"
+        );
+
+        // Mute, and the "Mic muted" chip that appears is the way back.
+        click(&ctx, &mut app, at("mute"), 3.0);
+        assert!(app.shared.mic_muted.load(Relaxed));
+        let chip = widgets::rect_of(&ctx, "header_chip", "Muted").center();
+        click(&ctx, &mut app, chip, 4.0);
+        assert!(!app.shared.mic_muted.load(Relaxed), "the chip unmutes");
+
+        // The tray or a hotkey switches it: the header follows (it reads the shared state).
+        app.shared.voice_on.store(false, Relaxed);
+        frame(&ctx, &mut app, (1240.0, 800.0), 5.0, vec![]);
+        assert!(!app.cfg.voice_on);
+    }
+
+    #[test]
+    fn problem_chips_jump_to_the_page_with_the_fix() {
+        // The test setup has no VB-CABLE and runs on the fallback mic.
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.cfg.page = Page::Voice;
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
+        assert_eq!(
+            header::problems(&app.status, false, true),
+            [header::Problem::CableMissing, header::Problem::Fallback]
+        );
+        let chip = widgets::rect_of(&ctx, "header_chip", "CableMissing").center();
+        click(&ctx, &mut app, chip, 1.0);
+        assert_eq!(app.cfg.page, Page::Audio, "VB-CABLE not found: Audio setup");
+        app.cfg.page = Page::Soundboard;
+        frame(&ctx, &mut app, (1240.0, 800.0), 2.0, vec![]);
+        let chip = widgets::rect_of(&ctx, "header_chip", "Fallback").center();
+        click(&ctx, &mut app, chip, 3.0);
+        assert_eq!(app.cfg.page, Page::Audio);
+    }
+
+    #[test]
+    fn the_nav_rail_opens_every_page_and_the_last_one_is_remembered() {
+        let dir = crate::soundboard::decode::tests::temp_dir("nav-pages");
+        let path = dir.join("config.json");
+        let mut app = test_app();
+        app.config_path = Some(path.clone());
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.0, vec![]);
+        assert_eq!(app.cfg.page, Page::Voice, "starts on the Voice page");
+        let mut t = 1.0;
+        for page in [
+            Page::Soundboard,
+            Page::Audio,
+            Page::Hotkeys,
+            Page::Settings,
+            Page::Voice,
+            Page::Hotkeys,
+        ] {
+            let entry = widgets::rect_of(&ctx, "nav", format!("{page:?}")).center();
+            click(&ctx, &mut app, entry, t);
+            assert_eq!(app.cfg.page, page);
+            t += 1.0;
+        }
+        // Saved with everything else, so the next start opens the same page.
+        app.autosave(100.0);
+        app.autosave(102.0);
+        let (loaded, warning) = config::load_from(&path);
+        assert!(warning.is_none());
+        assert_eq!(loaded.page, Page::Hotkeys);
+
+        // On a narrow window the rail shows icons only, and still works.
+        let narrow = (700.0, 600.0);
+        for i in 0..20 {
+            frame(&ctx, &mut app, narrow, 200.0 + f64::from(i) * 0.05, vec![]);
+        }
+        let entry = widgets::rect_of(&ctx, "nav", "Settings");
+        assert!(
+            entry.width() < nav::WIDTH_COLLAPSED,
+            "icons only: {entry:?}"
+        );
+        assert!(!app.cfg.nav_collapsed, "the setting itself is untouched");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -3291,7 +3628,7 @@ pub(crate) mod tests {
             ],
         );
         assert_eq!(app.cfg.sounds.len(), 2, "the .txt is skipped");
-        assert_eq!(app.cfg.tab, Tab::Soundboard);
+        assert_eq!(app.cfg.page, Page::Soundboard);
         app.capturing = Some(KeyTarget::Sound(app.sounds.lock().sounds[0].id));
         for (i, size) in [(920.0, 600.0), (1920.0, 1080.0)].into_iter().enumerate() {
             frame(&ctx, &mut app, size, i as f64, vec![]);

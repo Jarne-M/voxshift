@@ -7,6 +7,7 @@ mod audio;
 mod config;
 mod dsp;
 mod keymap;
+mod keynames;
 mod melody;
 mod shell;
 mod soundboard;
@@ -178,7 +179,7 @@ fn main() -> eframe::Result {
         "VoxShift",
         options,
         Box::new(move |cc| {
-            ui::theme::apply(&cc.egui_ctx);
+            ui::theme::apply(&cc.egui_ctx, cfg.theme);
             let app = ui::VoxApp::new(config_path, cfg, notice, cc.egui_ctx.clone());
             Ok(Box::new(app))
         }),
