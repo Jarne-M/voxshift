@@ -204,6 +204,7 @@ fn apply_to_shared(cfg: &Config, shared: &Shared) {
     shared.monitor_volume.set(cfg.monitor_volume);
     shared.monitor_voice.store(cfg.monitor_voice, Relaxed);
     shared.monitor_sounds.store(cfg.monitor_sounds, Relaxed);
+    shared.sound_volume.set(cfg.soundboard.master_volume);
     shared.params.store(&Snapshot::from_settings(&cfg.effects));
     apply_feedback(cfg, shared);
 }
@@ -1420,6 +1421,10 @@ impl VoxApp {
             A::Volume(id, v) => {
                 self.sounds.lock().set_volume(id, v);
                 self.sounds_changed();
+            }
+            A::MasterVolume(v) => {
+                self.cfg.soundboard.master_volume = v.clamp(0.0, 1.0);
+                apply_to_shared(&self.cfg, &self.shared);
             }
             A::BeginHotkey(id) => self.begin_capture(KeyTarget::Sound(id)),
             A::CancelHotkey => self.cancel_capture(),
@@ -4211,6 +4216,32 @@ pub(crate) mod tests {
         render(&mut engine, 30);
         assert!(!app.shared.is_playing(id), "Stop all stopped it");
         assert_eq!(app.cfg.sounds[0].plays, 2);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_master_volume_slider_reaches_the_engine_and_is_saved() {
+        use soundboard::tests::rect_of;
+        let ctx = egui::Context::default();
+        let (mut app, _engine, dir) = loaded_board_app(&ctx, "ui-master", &["airhorn.wav"]);
+        assert_eq!(app.cfg.soundboard.master_volume, 1.0);
+        assert_eq!(app.shared.sound_volume.get(), 1.0);
+        // A click on the left end of the track turns it (almost) all the way down.
+        let track = rect_of(&ctx, "now", "master");
+        click(
+            &ctx,
+            &mut app,
+            egui::pos2(track.left() + 2.0, track.center().y),
+            1.0,
+        );
+        let v = app.cfg.soundboard.master_volume;
+        assert!(v < 0.1, "{v}");
+        assert_eq!(app.shared.sound_volume.get(), v);
+        app.apply_sound_action(&ctx, soundboard::Action::MasterVolume(1.7));
+        assert_eq!(app.shared.sound_volume.get(), 1.0, "clamped");
+        // A config from before the setting existed gets full volume.
+        let old: organize::BoardSettings = serde_json::from_str(r#"{"pad_size": 140.0}"#).unwrap();
+        assert_eq!(old.master_volume, 1.0);
         std::fs::remove_dir_all(dir).ok();
     }
 

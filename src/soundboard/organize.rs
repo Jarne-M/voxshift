@@ -84,6 +84,8 @@ pub struct BoardSettings {
     pub view: BoardView,
     /// Pad width in the grid view.
     pub pad_size: f32,
+    /// Master volume of every clip (0..1), on top of each clip's own volume.
+    pub master_volume: f32,
 }
 
 impl Default for BoardSettings {
@@ -95,6 +97,7 @@ impl Default for BoardSettings {
             sort: SortMode::default(),
             view: BoardView::default(),
             pad_size: PAD_SIZE_DEFAULT,
+            master_volume: 1.0,
         }
     }
 }

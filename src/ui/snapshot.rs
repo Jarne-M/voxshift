@@ -792,6 +792,15 @@ mod tests {
                 app.shortcuts_open = true;
             });
         }
+        if wanted("extra-master") {
+            app_shot(&dir, "extra-master", (1280, 720), dark, 1.0, |app, ctx| {
+                app.cfg.page = Page::Soundboard;
+                let ids: Vec<u64> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+                app.shared.playing_ids[0].store(ids[1], Relaxed);
+                app.shared.playing_progress[0].set(0.4);
+                app.apply_sound_action(ctx, crate::ui::soundboard::Action::MasterVolume(0.7));
+            });
+        }
     }
 
     use crate::audio::device_manager::{DeviceStatus, Endpoint, LinkState, ManagerHandle};

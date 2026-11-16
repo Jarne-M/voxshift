@@ -12,7 +12,7 @@ use crate::dsp::chain::VoiceChain;
 use crate::dsp::cue::Cue;
 use crate::dsp::params::P;
 use crate::dsp::preview::Preview;
-use crate::dsp::smooth::Ramp;
+use crate::dsp::smooth::{Ramp, Smoother};
 use crate::dsp::{Block, VoiceProcessor};
 use crate::soundboard::mixer::{SoundCmd, SoundMixer, SoundRetired};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
@@ -65,7 +65,12 @@ pub struct Engine {
     monitor_gain: [Ramp; 2],
     /// Safe mode as of the last block (to act on the moment it starts).
     was_safe: bool,
+    /// The master soundboard volume, glided so moving its slider never crackles.
+    sound_volume: Smoother,
 }
+
+/// How fast the master soundboard volume follows its slider.
+const SOUND_VOLUME_S: f32 = 0.02;
 
 /// How long the monitor takes to fade your voice (or the soundboard) in or out.
 pub const MONITOR_RAMP_S: f32 = 0.02;
@@ -87,7 +92,9 @@ impl Engine {
         let gain =
             |b: &AtomicBool| Ramp::new(sr, MONITOR_RAMP_S, if b.load(Relaxed) { 1.0 } else { 0.0 });
         let monitor_gain = [gain(&shared.monitor_voice), gain(&shared.monitor_sounds)];
+        let sound_volume = Smoother::new(sr, SOUND_VOLUME_S, shared.sound_volume.get());
         let engine = Self {
+            sound_volume,
             cmds: cmd_rx,
             garbage: garbage_tx,
             shared,
@@ -249,6 +256,12 @@ impl BlockSource for Engine {
         let mut sfx = [0.0; BLOCK * 2];
         for done in self.sounds.mix(&mut sfx).into_iter().flatten() {
             self.retire(Garbage::Sound(done));
+        }
+        let master = self.shared.sound_volume.get().clamp(0.0, 1.0);
+        for frame in sfx.as_chunks_mut::<2>().0 {
+            let g = self.sound_volume.next(master);
+            frame[0] *= g;
+            frame[1] *= g;
         }
         self.shared
             .sounds_playing
@@ -645,6 +658,48 @@ mod tests {
         );
         assert!(!shared_a.is_playing(5) && shared_a.sounds_playing.load(Relaxed) == 0);
         assert!(shared_a.voice_on.load(Relaxed) && shared_a.monitor_voice.load(Relaxed));
+    }
+
+    #[test]
+    fn the_master_sound_volume_scales_clips_on_both_outputs_and_glides() {
+        use crate::soundboard::mixer::{SoundCmd, SoundData};
+        // A silent mic and a steady 0.4 clip: what comes out is the clip alone.
+        let (shared, mut e, mut tx, mut mon) = rig();
+        shared.monitor_volume.set(1.0);
+        e.apply(EngineCmd::Sound(SoundCmd::Play {
+            id: 3,
+            data: Arc::new(SoundData {
+                frames: vec![0.4; 48_000 * 10 * 2],
+                sample_rate: 48_000,
+            }),
+            volume: 1.0,
+            looped: false,
+        }));
+        let (out, m) = talk(&mut e, &mut tx, &mut mon, 0, 100, |_| 0.0);
+        assert!((out.last().unwrap() - 0.4).abs() < 1e-4);
+        assert!((m.last().unwrap() - 0.4).abs() < 1e-4);
+
+        shared.sound_volume.set(0.25);
+        let (out, m) = talk(&mut e, &mut tx, &mut mon, 100 * BLOCK, 100, |_| 0.0);
+        let step = out
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(step < 0.002, "glides, no jump: {step}");
+        assert!(
+            (out.last().unwrap() - 0.1).abs() < 1e-3,
+            "{}",
+            out.last().unwrap()
+        );
+        assert!(
+            (m.last().unwrap() - 0.1).abs() < 1e-3,
+            "the headphones follow"
+        );
+        // At 0 the clip is silent while it keeps playing.
+        shared.sound_volume.set(0.0);
+        let (out, _) = talk(&mut e, &mut tx, &mut mon, 200 * BLOCK, 100, |_| 0.0);
+        assert!(out.last().unwrap().abs() < 1e-3);
+        assert!(shared.is_playing(3));
     }
 
     #[test]

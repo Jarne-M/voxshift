@@ -40,6 +40,8 @@ pub enum Action {
     /// Takes the clip off the board (the app offers an Undo).
     Remove(SoundId),
     Volume(SoundId, f32),
+    /// The master volume of every clip (0..1).
+    MasterVolume(f32),
     /// A new display name; the file keeps its own.
     Rename(SoundId, String),
     BeginHotkey(SoundId),
@@ -1532,6 +1534,34 @@ fn now_playing(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) {
                     if stop.clicked() {
                         actions.push(Action::StopAll);
                     }
+                    ui.add_space(space::S);
+                    let mut master = v.settings.master_volume;
+                    let r = widgets::Slider::new(&mut master, 0.0..=1.0)
+                        .label("Master")
+                        .percent(true)
+                        .default_value(1.0)
+                        .tip(
+                            "Volume of every clip, for others and in your headphones (each \
+                             clip's own volume comes on top)",
+                        )
+                        .compact(if ui.available_width() > 640.0 {
+                            120.0
+                        } else {
+                            80.0
+                        })
+                        .show(ui);
+                    #[cfg(test)]
+                    tests::remember(ui, ("now", "master".into()), r.rect);
+                    if r.changed() {
+                        actions.push(Action::MasterVolume(master));
+                    }
+                    // (Right to left: this lands left of the track.)
+                    ui.label(
+                        RichText::new(format!("Master {:.0} %", master * 100.0))
+                            .size(font::SMALL)
+                            .color(p.text_muted),
+                    );
+                    ui.add_space(space::S);
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         if playing.is_empty() {
                             ui.label(RichText::new("Nothing is playing").color(p.text_faint));
