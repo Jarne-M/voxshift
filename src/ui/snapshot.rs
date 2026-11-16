@@ -733,6 +733,48 @@ mod tests {
         );
     }
 
+    #[test]
+    #[ignore = "writes pictures to VOXSHIFT_SHOTS; run with --ignored"]
+    fn shots_of_the_setup_pages() {
+        let Some(dir) = out_dir() else {
+            eprintln!("VOXSHIFT_SHOTS is not set: nothing to do");
+            return;
+        };
+        let dark = ThemeChoice::Dark;
+        app_shot(&dir, "setup-audio", (1280, 1240), dark, 1.0, |app, _| {
+            app.cfg.page = Page::Audio;
+        });
+        app_shot(&dir, "setup-hotkeys", (1280, 900), dark, 1.0, |app, _| {
+            use crate::soundboard::hotkeys::Hotkey;
+            use crate::voice_keys::{KeyTarget, PresetHotkey};
+            app.cfg.page = Page::Hotkeys;
+            app.cfg.voice_keys.presets.push(PresetHotkey {
+                preset: "Robot".into(),
+                hotkey: Some(Hotkey::new(0x70, false, true, false, false, "")),
+            });
+            let ids: Vec<u64> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+            app.set_hotkey(
+                KeyTarget::Sound(ids[0]),
+                Some(Hotkey::new(0x61, false, false, false, false, "")),
+            );
+            app.set_hotkey(
+                KeyTarget::Sound(ids[2]),
+                Some(Hotkey::new(0x62, true, false, false, false, "")),
+            );
+        });
+        app_shot(
+            &dir,
+            "setup-settings",
+            (1280, 1000),
+            ThemeChoice::Light,
+            1.0,
+            |app, _| {
+                app.cfg.page = Page::Settings;
+                app.config_path = Some(r"C:\Users\you\AppData\Roaming\VoxShift\config.json".into());
+            },
+        );
+    }
+
     use crate::audio::device_manager::{DeviceStatus, Endpoint, LinkState, ManagerHandle};
     use crate::audio::shared::{ActiveMic, Shared};
     use crate::config::{Config, Page};
@@ -766,6 +808,11 @@ mod tests {
             active: ActiveMic::Primary,
             reason: String::new(),
             latency_ms: Some(38.0),
+            latency_parts: Some(crate::audio::device_manager::LatencyParts {
+                windows: 20.0,
+                buffering: 6.5,
+                chain: 11.5,
+            }),
         }
     }
 

@@ -2,10 +2,10 @@
 //! problems, Mute and PANIC), a navigation rail on the left, and one page at a time in the
 //! middle: Voice, Soundboard, Audio setup, Hotkeys and Settings.
 
-pub mod devices;
+pub mod audio_setup;
 pub mod effects;
 pub mod header;
-pub mod hotkey_settings;
+pub mod hotkeys_page;
 pub mod icons;
 pub mod melody;
 pub mod meters;
@@ -68,6 +68,8 @@ pub struct VoxApp {
     key_conflict: Option<KeyConflict>,
     /// The soundboard search box (not saved).
     search: String,
+    /// The Hotkeys page's filter (not saved).
+    hotkey_filter: String,
     /// What the Soundboard page keeps between frames (the clip being edited).
     board_page: soundboard::State,
     /// What a toast's "Undo" button can still bring back, by the toast's token.
@@ -391,6 +393,7 @@ impl VoxApp {
             capturing: None,
             key_conflict: None,
             search: String::new(),
+            hotkey_filter: String::new(),
             board_page: soundboard::State::default(),
             undo: Vec::new(),
             undo_seq: 0,
@@ -613,10 +616,53 @@ impl VoxApp {
         if let Some(n) = self.startup_notice.take() {
             self.toasts.warn(ctx, n);
         }
+        self.remember_window(ctx);
         self.autosave(self.clock.elapsed().as_secs_f64());
         self.sync_mirror();
         if self.hidden {
             ctx.request_repaint_after(HIDDEN_TICK);
+        }
+    }
+
+    /// Keeps the UI scale (Ctrl + / Ctrl - change it too) and the window's place and size in
+    /// the config, so the next start opens the window the same way.
+    fn remember_window(&mut self, ctx: &egui::Context) {
+        let zoom = ctx.zoom_factor();
+        if (zoom - self.cfg.ui_scale).abs() > 0.001 {
+            self.cfg.ui_scale = zoom;
+        }
+        if self.hidden || self.start_hidden_pending {
+            return; // off-screen or in the tray: not a place to come back to
+        }
+        let (outer, inner, maximized, minimized) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.outer_rect, v.inner_rect, v.maximized, v.minimized)
+        });
+        let (Some(outer), Some(inner)) = (outer, inner) else {
+            return; // (headless: no window)
+        };
+        if minimized == Some(true) {
+            return;
+        }
+        let maximized = maximized == Some(true);
+        // Viewport rects are in UI points; the window is placed in logical pixels.
+        let now = config::WindowPlacement {
+            x: (outer.left() * zoom).round(),
+            y: (outer.top() * zoom).round(),
+            width: (inner.width() * zoom).round(),
+            height: (inner.height() * zoom).round(),
+            maximized,
+        };
+        let placement = match (maximized, self.cfg.window) {
+            // Maximized: keep the size and place it goes back to.
+            (true, Some(before)) => config::WindowPlacement {
+                maximized: true,
+                ..before
+            },
+            _ => now,
+        };
+        if self.cfg.window != Some(placement) {
+            self.cfg.window = Some(placement);
         }
     }
 
@@ -753,13 +799,24 @@ impl VoxApp {
 
     fn show_window(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.recenter_on_show) {
-            // Started off-screen ("start minimized"): bring it to the middle of the monitor.
-            let monitor = ctx
-                .input(|i| i.viewport().monitor_size)
-                .unwrap_or(egui::vec2(1920.0, 1080.0));
-            let size = egui::Vec2::from(WINDOW_SIZE);
-            let pos = ((monitor - size) / 2.0).max(egui::Vec2::ZERO);
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos.to_pos2()));
+            // Started off-screen ("start minimized"): bring it where it was last time, or to
+            // the middle of the monitor.
+            let zoom = ctx.zoom_factor();
+            let remembered = self
+                .cfg
+                .window
+                .filter(|w| crate::shell::virtual_screen().is_some_and(|s| w.fits(s)));
+            let pos = match remembered {
+                Some(w) => egui::pos2(w.x, w.y) / zoom,
+                None => {
+                    let monitor = ctx
+                        .input(|i| i.viewport().monitor_size)
+                        .unwrap_or(egui::vec2(1920.0, 1080.0));
+                    let size = egui::Vec2::from(WINDOW_SIZE) / zoom;
+                    ((monitor - size) / 2.0).max(egui::Vec2::ZERO).to_pos2()
+                }
+            };
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
         }
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
@@ -972,7 +1029,14 @@ impl VoxApp {
             "Audio setup",
             "Where your voice comes from and where it goes",
         );
-        let ch = devices::panel(ui, &mut self.cfg, &self.status, &self.shared);
+        let preset = presets::loaded(&self.cfg, &self.fx).map(|(p, _)| p.name.clone());
+        let view = audio_setup::View {
+            status: &self.status,
+            shared: &self.shared,
+            preset: preset.as_deref(),
+            melody_on: self.fx.on(P::MelodyOn),
+        };
+        let ch = audio_setup::page(ui, &mut self.cfg, &view);
         if ch.devices {
             self.manager
                 .send(ManagerCmd::Devices(self.cfg.devices.clone()));
@@ -998,18 +1062,61 @@ impl VoxApp {
     }
 
     fn settings_page(&mut self, ui: &mut Ui) {
-        widgets::page_title(ui, "Settings", "Window, startup and feedback");
+        widgets::page_title(
+            ui,
+            "Settings",
+            "Appearance, window and startup, feedback, and about VoxShift",
+        );
         let view = settings::View {
             autostart: self.autostart,
             autostart_elsewhere: self.autostart_elsewhere,
             tray_available: self.tray.is_some(),
+            monitor_on: self.cfg.devices.monitor_enabled,
+            config_path: self.config_path.as_deref(),
         };
-        if let Some(on) = settings::panel(ui, &mut self.cfg, &view) {
-            self.set_autostart(ui.ctx(), on);
+        for action in settings::page(ui, &mut self.cfg, &view) {
+            match action {
+                settings::Action::Autostart(on) => self.set_autostart(ui.ctx(), on),
+                settings::Action::Scale(scale) => {
+                    self.cfg.ui_scale = scale;
+                    ui.ctx().set_zoom_factor(scale);
+                }
+                settings::Action::OpenConfigFolder => {
+                    if let Some(dir) = self.config_path.as_deref().and_then(|p| p.parent()) {
+                        let _ = std::fs::create_dir_all(dir);
+                        if let Err(e) = std::process::Command::new("explorer").arg(dir).spawn() {
+                            self.toasts
+                                .error(ui.ctx(), format!("Could not open the folder: {e}"));
+                        }
+                    }
+                }
+                settings::Action::Reset => self.reset_settings(ui.ctx()),
+            }
         }
-        ui.add_space(theme::space::M);
-        let monitor_on = self.cfg.devices.monitor_enabled;
-        hotkey_settings::feedback_panel(ui, &mut self.cfg, monitor_on);
+    }
+
+    /// "Reset settings": everything but what you made yourself back to the defaults, and
+    /// applied at once (devices, effects, hotkeys, theme, scale).
+    fn reset_settings(&mut self, ctx: &egui::Context) {
+        if self.capturing.is_some() {
+            self.cancel_capture();
+        }
+        self.cfg = settings::reset(&self.cfg);
+        self.fx = Snapshot::from_settings(&self.cfg.effects);
+        self.effects_changed();
+        let _ = self.select_melody(self.cfg.melody.source.clone(), false);
+        apply_to_shared(&self.cfg, &self.shared);
+        self.feedback.set_voice(self.cfg.voice_on, false);
+        self.manager
+            .send(ManagerCmd::Devices(self.cfg.devices.clone()));
+        self.manager.send(ManagerCmd::Mic(self.cfg.mic.clone()));
+        theme::set_choice(ctx, self.cfg.theme);
+        ctx.set_zoom_factor(self.cfg.ui_scale());
+        self.refresh_tray();
+        self.toasts.success(
+            ctx,
+            "Settings are back to their defaults; your clips and presets are kept",
+        );
     }
 
     fn preset_names(&self) -> Vec<String> {
@@ -1021,24 +1128,37 @@ impl VoxApp {
     }
 
     fn hotkey_settings(&mut self, ui: &mut Ui) {
-        let view = hotkey_settings::View {
+        let clips = self
+            .sounds
+            .lock()
+            .sounds
+            .iter()
+            .map(|s| hotkeys_page::Clip {
+                id: s.id,
+                name: s.entry.name.clone(),
+                hotkey: s.entry.hotkey.clone(),
+            })
+            .collect();
+        let view = hotkeys_page::View {
             capturing: self.capturing,
             hotkeys_available: self.hotkeys.as_ref().is_some_and(|h| h.available()),
             preset_names: self.preset_names(),
+            clips,
         };
-        for action in hotkey_settings::keys_panel(ui, &mut self.cfg, &view) {
+        let actions = hotkeys_page::page(ui, &mut self.cfg, &view, &mut self.hotkey_filter);
+        for action in actions {
             match action {
-                hotkey_settings::Action::Capture(t) => self.begin_capture(t),
-                hotkey_settings::Action::CancelCapture => self.cancel_capture(),
-                hotkey_settings::Action::Clear(t) => self.clear_hotkey(t),
-                hotkey_settings::Action::AddPresetKey => {
-                    let row = hotkey_settings::new_preset_key(
+                hotkeys_page::Action::Capture(t) => self.begin_capture(t),
+                hotkeys_page::Action::CancelCapture => self.cancel_capture(),
+                hotkeys_page::Action::Clear(t) => self.clear_hotkey(t),
+                hotkeys_page::Action::AddPresetKey => {
+                    let row = hotkeys_page::new_preset_key(
                         &self.cfg.voice_keys.presets,
                         &view.preset_names,
                     );
                     self.cfg.voice_keys.presets.push(row);
                 }
-                hotkey_settings::Action::RemovePresetKey(i) => {
+                hotkeys_page::Action::RemovePresetKey(i) => {
                     if matches!(self.capturing, Some(KeyTarget::Preset(_))) {
                         self.cancel_capture(); // indexes are about to shift
                     }
@@ -4155,6 +4275,74 @@ pub(crate) mod tests {
         let back: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(back.soundboard.view, organize::BoardView::List);
         assert_eq!(back.soundboard.pad_size, 260.0);
+    }
+
+    #[test]
+    fn the_hotkeys_page_lists_clip_keys_and_assigns_and_clears_them() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = app_with_airhorn_on_f8(&ctx);
+        // (No listener in tests: pretend the hotkeys work, so the buttons are enabled.)
+        app.cfg.page = Page::Hotkeys;
+        app.cfg.voice_keys.presets.push(voice_keys::PresetHotkey {
+            preset: "Robot".into(),
+            hotkey: None,
+        });
+        for (i, size) in [(920.0, 600.0), (1920.0, 1080.0)].into_iter().enumerate() {
+            frame(&ctx, &mut app, size, i as f64 * 0.1, vec![]);
+        }
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.3, vec![]);
+        let clip_key = widgets::rect_of(&ctx, "hotkey", format!("{:?}", KeyTarget::Sound(id)));
+        assert!(clip_key.width() > 10.0, "the clip's key is on the page");
+        // Filtering hides the rest.
+        app.hotkey_filter = "zzz".into();
+        widgets::forget(&ctx, "hotkey", format!("{:?}", KeyTarget::Sound(id)));
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.4, vec![]);
+        assert!(
+            widgets::try_rect_of(&ctx, "hotkey", format!("{:?}", KeyTarget::Sound(id))).is_none()
+        );
+        app.hotkey_filter = "air".into();
+        frame(&ctx, &mut app, (1240.0, 800.0), 0.5, vec![]);
+        assert!(
+            widgets::try_rect_of(&ctx, "hotkey", format!("{:?}", KeyTarget::Sound(id))).is_some()
+        );
+        // Assigning from here goes through the same Keep / Change check.
+        app.key_captured(&ctx, KeyTarget::Sound(id), f8());
+        assert!(app.key_conflict.is_none(), "its own key: nothing to ask");
+        app.key_captured(&ctx, KeyTarget::Mute, f8());
+        assert_eq!(
+            app.key_conflict.as_ref().unwrap().owner.name,
+            "the sound \"Airhorn\""
+        );
+        app.resolve_key_conflict(&ctx, false);
+        app.clear_hotkey(KeyTarget::Sound(id));
+        assert!(app.cfg.sounds[0].hotkey.is_none());
+    }
+
+    #[test]
+    fn audio_setup_and_settings_draw_and_reset_keeps_clips() {
+        let ctx = egui::Context::default();
+        let mut app = board_app(&ctx, &["airhorn.wav"]);
+        app.status = fake_status();
+        app.status.latency_parts = Some(crate::audio::device_manager::LatencyParts {
+            windows: 20.0,
+            buffering: 6.0,
+            chain: 15.0,
+        });
+        app.cfg.devices.monitor_enabled = true;
+        for page in [Page::Audio, Page::Settings] {
+            app.cfg.page = page;
+            for (i, size) in [(920.0, 600.0), (2560.0, 1080.0)].into_iter().enumerate() {
+                frame(&ctx, &mut app, size, 1.0 + i as f64 * 0.1, vec![]);
+            }
+        }
+        app.cfg.devices.buffer_frames = 256;
+        app.cfg.ui_scale = 1.25;
+        app.reset_settings(&ctx);
+        assert_eq!(app.cfg.devices.buffer_frames, 0);
+        assert_eq!(ctx.zoom_factor(), 1.0);
+        assert_eq!(app.cfg.sounds.len(), 1, "clips are kept");
+        assert_eq!(app.sounds.lock().sounds.len(), 1);
+        assert_eq!(app.cfg.page, Page::Settings, "you stay where you were");
     }
 
     #[test]

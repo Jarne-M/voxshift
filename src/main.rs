@@ -166,10 +166,21 @@ fn main() -> eframe::Result {
         .with_icon(icon)
         .with_inner_size(ui::WINDOW_SIZE)
         .with_min_inner_size([920.0, 600.0]);
+    // Where it was last time, if that place is still on a screen (a monitor may be gone).
+    let placement = cfg
+        .window
+        .filter(|w| shell::virtual_screen().is_some_and(|s| w.fits(s)));
+    if let Some(w) = placement {
+        viewport = viewport
+            .with_inner_size([w.width, w.height])
+            .with_maximized(w.maximized);
+    }
     if cfg.start_minimized {
         // eframe always shows the window once its first frame is painted; the app hides it
         // right after. Off-screen and without focus, that moment is invisible.
         viewport = viewport.with_position(ui::OFFSCREEN).with_active(false);
+    } else if let Some(w) = placement {
+        viewport = viewport.with_position([w.x, w.y]);
     }
     let options = eframe::NativeOptions {
         viewport,
@@ -180,6 +191,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             ui::theme::apply(&cc.egui_ctx, cfg.theme);
+            cc.egui_ctx.set_zoom_factor(cfg.ui_scale());
             let app = ui::VoxApp::new(config_path, cfg, notice, cc.egui_ctx.clone());
             Ok(Box::new(app))
         }),

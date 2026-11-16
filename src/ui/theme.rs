@@ -260,13 +260,6 @@ pub fn set_choice(ctx: &Context, choice: ThemeChoice) {
     });
 }
 
-// The fixed colours of the layout before the redesign; the pages that still use them move to
-// [`palette`] one by one.
-pub const ON: Color32 = Color32::from_rgb(40, 170, 100);
-pub const OFF: Color32 = Color32::from_rgb(90, 90, 96);
-pub const WARN: Color32 = DARK.warning;
-pub const BAD: Color32 = DARK.danger;
-
 #[cfg(test)]
 mod tests {
     use super::*;

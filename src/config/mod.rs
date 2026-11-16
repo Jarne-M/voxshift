@@ -150,6 +150,52 @@ pub struct Config {
     pub melody: MelodySettings,
     /// Dark, light, or the same as Windows.
     pub theme: ThemeChoice,
+    /// UI scale (1 = 100 %).
+    pub ui_scale: f32,
+    /// Where the window was and how big, to open it there again.
+    pub window: Option<WindowPlacement>,
+}
+
+/// The window's last place and size, in Windows' logical pixels (as at 100 % UI scale).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowPlacement {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
+}
+
+/// The UI scale a config may hold.
+pub const UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
+
+impl Config {
+    /// The UI scale, kept in range (a hand-edited or broken value gives 100 %).
+    pub fn ui_scale(&self) -> f32 {
+        if self.ui_scale.is_finite() {
+            self.ui_scale
+                .clamp(*UI_SCALE_RANGE.start(), *UI_SCALE_RANGE.end())
+        } else {
+            1.0
+        }
+    }
+}
+
+impl WindowPlacement {
+    /// Whether the window would be reachable at this place on a screen covering `screen`
+    /// (x, y, width, height): big enough, and its title bar on the screen.
+    pub fn fits(&self, screen: [f32; 4]) -> bool {
+        let [sx, sy, sw, sh] = screen;
+        let sane = [self.x, self.y, self.width, self.height]
+            .iter()
+            .all(|v| v.is_finite())
+            && self.width >= 200.0
+            && self.height >= 150.0;
+        // A strip of the title bar must be grabbable: 100 px wide, its top 8 px down.
+        let bar_left = self.x.max(sx);
+        let bar_right = (self.x + self.width).min(sx + sw);
+        sane && bar_right - bar_left >= 100.0 && self.y >= sy - 8.0 && self.y + 8.0 <= sy + sh
+    }
 }
 
 impl Default for Config {
@@ -175,6 +221,8 @@ impl Default for Config {
             soundboard: BoardSettings::default(),
             melody: MelodySettings::default(),
             theme: ThemeChoice::default(),
+            ui_scale: 1.0,
+            window: None,
         }
     }
 }
@@ -459,6 +507,36 @@ mod tests {
         std::fs::write(&path, "{}").unwrap();
         assert_eq!(load_from(&path).0.page, Page::Voice);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn ui_scale_and_window_place_load_safely() {
+        // Older files have neither.
+        let cfg: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!((cfg.ui_scale(), cfg.window), (1.0, None));
+        let cfg: Config = serde_json::from_str(r#"{ "ui_scale": 40.0 }"#).unwrap();
+        assert_eq!(cfg.ui_scale(), 3.0, "kept in range");
+        let w = |x, y| WindowPlacement {
+            x,
+            y,
+            width: 1240.0,
+            height: 800.0,
+            maximized: false,
+        };
+        let screen = [0.0, 0.0, 1920.0, 1080.0];
+        assert!(w(100.0, 80.0).fits(screen));
+        assert!(
+            w(-1000.0, 10.0).fits(screen),
+            "partly off the left edge is fine"
+        );
+        assert!(
+            !w(-1200.0, 10.0).fits(screen),
+            "the title bar would be off screen"
+        );
+        assert!(!w(3000.0, 10.0).fits(screen), "a monitor that is gone");
+        assert!(!w(100.0, 1100.0).fits(screen));
+        assert!(!w(-32000.0, -32000.0).fits(screen), "minimized");
+        assert!(w(2000.0, 10.0).fits([-1920.0, 0.0, 3840.0 + 1920.0, 1080.0]));
     }
 
     #[test]

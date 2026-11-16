@@ -633,6 +633,19 @@ pub fn notice(ui: &mut Ui, icon: &str, text: &str, tone: Tone) -> Response {
         .response
 }
 
+/// A label in a column of fixed width, left-aligned and cut short with "…" if it is longer.
+pub fn column_label(ui: &mut Ui, width: f32, height: f32, text: RichText) -> Response {
+    ui.allocate_ui_with_layout(
+        vec2(width, height),
+        egui::Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.set_min_size(vec2(width, height));
+            ui.add(egui::Label::new(text).truncate())
+        },
+    )
+    .inner
+}
+
 /// A short explanation under a title or next to a control.
 pub fn hint(ui: &mut Ui, text: &str) -> Response {
     let p = palette(ui);
@@ -866,7 +879,6 @@ pub fn chip(ui: &mut Ui, icon: &str, text: &str, tone: Tone) -> Response {
 }
 
 /// A small label-like marker ("HOLD", "ON"); not clickable.
-#[allow(dead_code)] // no page lays one out at the moment (pads paint their own)
 pub fn badge(ui: &mut Ui, text: &str, tone: Tone) -> Response {
     pill(
         ui,
@@ -876,6 +888,54 @@ pub fn badge(ui: &mut Ui, text: &str, tone: Tone) -> Response {
         vec2(6.0, 2.0),
         Sense::hover(),
     )
+}
+
+/// A row of mutually exclusive choices drawn as one segmented control. Returns true when
+/// the choice changed.
+pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &str)]) -> bool {
+    let p = palette(ui);
+    let mut changed = false;
+    Frame::new()
+        .fill(p.sunken)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(RADIUS_S + 1))
+        .inner_margin(Margin::same(2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for &(option, label) in options {
+                    let on = *value == option;
+                    let text = RichText::new(label).color(if on { p.on_accent } else { p.text });
+                    let fill = if on { p.accent } else { Color32::TRANSPARENT };
+                    let r = ui.add(
+                        egui::Button::new(text)
+                            .fill(fill)
+                            .frame_when_inactive(on)
+                            .corner_radius(CornerRadius::same(RADIUS_S))
+                            .min_size(vec2(0.0, 26.0)),
+                    );
+                    if r.clicked() && !on {
+                        *value = option;
+                        changed = true;
+                    }
+                }
+            });
+        });
+    changed
+}
+
+/// A coloured status dot (green / orange / red ...), `size` points across.
+pub fn status_dot(ui: &mut Ui, tone: Tone, size: f32) -> Response {
+    let (rect, r) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    let c = tone.color(palette(ui));
+    ui.painter()
+        .circle_filled(rect.center(), size / 2.0 - 1.0, c);
+    ui.painter().circle_stroke(
+        rect.center(),
+        size / 2.0 + 1.5,
+        Stroke::new(2.0, mix(palette(ui).surface, c, 0.35)),
+    );
+    r
 }
 
 // ------------------------------------------------------------------------------------------

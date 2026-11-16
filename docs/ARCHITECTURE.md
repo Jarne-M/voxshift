@@ -117,8 +117,9 @@ src/
                 display names tidied from file names (names)
   keymap.rs     who owns which hotkey: conflicts, reserved keys, the Keep/Change logic
   voice_keys.rs the voice changer's hotkeys and the shared switch/beep logic
-  ui/           egui panels: devices, effects, Melody Voice, presets, soundboard, hotkeys,
-                meters, toasts, tray status
+  ui/           egui: header, nav rail and the pages (Voice: presets, effects, Melody Voice;
+                soundboard; audio_setup; hotkeys_page; settings), theme, widgets, meters,
+                toasts, tray status
   shell/        tray icon thread, icon drawing, single instance, start with Windows (Win32)
   config/       settings file, presets, .voxpack import/export
 ```

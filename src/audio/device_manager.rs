@@ -90,6 +90,26 @@ pub struct DeviceStatus {
     pub reason: String,
     /// Estimated mic-to-virtual-mic latency.
     pub latency_ms: Option<f32>,
+    /// What that latency is made of (the parts add up to `latency_ms`).
+    pub latency_parts: Option<LatencyParts>,
+}
+
+/// The parts of the estimated latency, in ms. VB-CABLE's own buffer is not in here: it can't
+/// be measured from outside the driver.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LatencyParts {
+    /// The mic's and the output's Windows buffers.
+    pub windows: f32,
+    /// VoxShift's own buffering: the mic ring and one processing block.
+    pub buffering: f32,
+    /// What the voice chain adds (the pitch shifter, or Melody Voice).
+    pub chain: f32,
+}
+
+impl LatencyParts {
+    pub fn total(&self) -> f32 {
+        self.windows + self.buffering + self.chain
+    }
 }
 
 pub enum Event {
@@ -737,19 +757,17 @@ impl Manager {
         }
     }
 
-    fn latency_ms(&self) -> Option<f32> {
+    fn latency_parts(&self) -> Option<LatencyParts> {
         let slot = self.active.slot()?;
         let mic = self.mics[slot].live.as_ref()?;
         let out = self.output.as_ref()?;
         let ms = |frames: u32, rate: u32| frames as f32 * 1000.0 / rate.max(1) as f32;
         let (o, m) = (&out.live.opened, &mic.opened);
-        Some(
-            ms(m.period, m.rate)
-                + self.shared.mic_fill_ms[slot].get()
-                + ms(BLOCK as u32 + 2, o.rate)
-                + self.shared.chain_latency_ms.get()
-                + ms(o.period, o.rate),
-        )
+        Some(LatencyParts {
+            windows: ms(m.period, m.rate) + ms(o.period, o.rate),
+            buffering: self.shared.mic_fill_ms[slot].get() + ms(BLOCK as u32 + 2, o.rate),
+            chain: self.shared.chain_latency_ms.get(),
+        })
     }
 
     fn publish(&self) {
@@ -766,6 +784,7 @@ impl Manager {
             period: self.output.as_ref().map_or(0, |o| o.live.opened.period),
         };
         let outputs = names(&self.outputs);
+        let latency_parts = self.latency_parts();
         let status = DeviceStatus {
             scanned: self.scanned,
             inputs: names(&self.inputs),
@@ -777,7 +796,8 @@ impl Manager {
             mics: [endpoint(&self.mics[0]), endpoint(&self.mics[1])],
             active: self.active,
             reason: self.reason.clone(),
-            latency_ms: self.latency_ms(),
+            latency_ms: latency_parts.map(|l| l.total()),
+            latency_parts,
         };
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) = status;
     }

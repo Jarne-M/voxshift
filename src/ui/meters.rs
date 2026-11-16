@@ -197,17 +197,6 @@ fn meter_in(
     resp.on_hover_ui(|ui| scale_tip(ui, db, peak_db, floor_db, marker_db))
 }
 
-/// A meter 12 points high (the size used next to device pickers).
-pub fn level_bar(
-    ui: &mut Ui,
-    level: f32,
-    width: f32,
-    floor_db: f32,
-    marker_db: Option<f32>,
-) -> Response {
-    level_meter(ui, level, vec2(width, 12.0), floor_db, marker_db)
-}
-
 /// A small "CLIP" lamp: red while lit, an outline otherwise.
 pub fn clip_lamp(ui: &mut Ui, lit: bool) -> Response {
     let p = palette(ui);

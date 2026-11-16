@@ -51,6 +51,24 @@ pub enum TrayAction {
 /// Class name of the tray's hidden window; a second instance finds the first one by it.
 pub const WINDOW_CLASS: &str = "VoxShift.TrayWindow";
 
+/// The area all monitors together cover (x, y, width, height), in the pixels this process
+/// sees. Used to check a remembered window place before opening the window there.
+pub fn virtual_screen() -> Option<[f32; 4]> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN,
+    };
+    // SAFETY: GetSystemMetrics only reads system values.
+    let m = |i| unsafe { GetSystemMetrics(i) } as f32;
+    let screen = [
+        m(SM_XVIRTUALSCREEN),
+        m(SM_YVIRTUALSCREEN),
+        m(SM_CXVIRTUALSCREEN),
+        m(SM_CYVIRTUALSCREEN),
+    ];
+    (screen[2] > 0.0 && screen[3] > 0.0).then_some(screen)
+}
+
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }

@@ -74,9 +74,23 @@ pub const PAD_SIZE: &str = ph::ARROWS_OUT_SIMPLE;
 pub const COLOR: &str = ph::PALETTE;
 pub const PLAY_MODE: &str = ph::REPEAT_ONCE;
 
+// Audio setup, Hotkeys and Settings
+pub const USERS: &str = ph::USERS;
+pub const SAFETY: &str = ph::SIREN;
+pub const APPEARANCE: &str = ph::PAINT_BRUSH;
+pub const FILE: &str = ph::FILE_TEXT;
+pub const ABOUT: &str = ph::INFO;
+pub const LINK: &str = ph::ARROW_SQUARE_OUT;
+
 /// Every icon above, for the test that checks the font has them all.
 #[cfg(test)]
-pub const ALL: [&str; 56] = [
+pub const ALL: [&str; 62] = [
+    USERS,
+    SAFETY,
+    APPEARANCE,
+    FILE,
+    ABOUT,
+    LINK,
     SEARCH,
     VIEW_GRID,
     VIEW_LIST,
