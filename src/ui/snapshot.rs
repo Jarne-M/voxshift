@@ -801,6 +801,16 @@ mod tests {
                 app.apply_sound_action(ctx, crate::ui::soundboard::Action::MasterVolume(0.7));
             });
         }
+        if wanted("extra-preview") {
+            app_shot(&dir, "extra-preview", (1280, 720), dark, 1.0, |app, _| {
+                app.cfg.page = Page::Soundboard;
+                let ids: Vec<u64> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+                app.shared.playing_ids[0].store(ids[1], Relaxed);
+                app.shared.playing_progress[0].set(0.4);
+                app.shared.listen_id.store(ids[3], Relaxed);
+                app.shared.listen_progress.set(0.65);
+            });
+        }
     }
 
     use crate::audio::device_manager::{DeviceStatus, Endpoint, LinkState, ManagerHandle};

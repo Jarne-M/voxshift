@@ -47,6 +47,10 @@ pub const LIST: &[Entry] = &[
         what: "Delete the clip open in the edit panel (Undo brings it back)",
     },
     Entry {
+        keys: &[&["Shift", "click"]],
+        what: "Preview a clip in your headphones only (others don't hear it)",
+    },
+    Entry {
         keys: &[&["?"], &["F1"]],
         what: "Show this list",
     },

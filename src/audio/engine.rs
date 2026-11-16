@@ -29,6 +29,8 @@ pub enum EngineCmd {
     AttachMic(usize, Option<Box<AdaptiveReader>>),
     AttachMonitor(Option<Producer<f32>>),
     Sound(SoundCmd),
+    /// A clip for your headphones only ("preview"): it never reaches the virtual mic.
+    Listen(SoundCmd),
 }
 
 /// Things the audio thread is done with, to be dropped elsewhere. The payloads are never read:
@@ -49,6 +51,8 @@ pub struct Engine {
     mic_gain: [Ramp; 2],
     chain: VoiceChain,
     sounds: SoundMixer,
+    /// Clips previewed in the headphones only.
+    listen: SoundMixer,
     monitor: Option<Producer<f32>>,
     cue: Cue,
     in_meter: PeakMeter,
@@ -103,6 +107,7 @@ impl Engine {
             mic_gain: [Ramp::new(sr, MIC_FADE_S, 0.0); 2],
             chain: VoiceChain::new(sr),
             sounds: SoundMixer::with_rate(sample_rate),
+            listen: SoundMixer::with_rate(sample_rate),
             monitor: None,
             cue: Cue::new(sr),
             in_meter: PeakMeter::new(sr, 0.3),
@@ -146,6 +151,7 @@ impl Engine {
                 }
             }
             EngineCmd::Sound(SoundCmd::Play { data, .. })
+            | EngineCmd::Listen(SoundCmd::Play { data, .. })
                 if self.shared.safe_mode.load(Relaxed) =>
             {
                 // Safe mode plays no clip, whoever asks.
@@ -153,6 +159,11 @@ impl Engine {
             }
             EngineCmd::Sound(cmd) => {
                 if let Some(done) = self.sounds.apply(cmd) {
+                    self.retire(Garbage::Sound(done));
+                }
+            }
+            EngineCmd::Listen(cmd) => {
+                if let Some(done) = self.listen.apply(cmd) {
                     self.retire(Garbage::Sound(done));
                 }
             }
@@ -194,6 +205,9 @@ impl BlockSource for Engine {
         let safe = self.shared.safe_mode.load(Relaxed);
         if safe && !self.was_safe {
             if let Some(done) = self.sounds.apply(SoundCmd::StopAll) {
+                self.retire(Garbage::Sound(done));
+            }
+            if let Some(done) = self.listen.apply(SoundCmd::StopAll) {
                 self.retire(Garbage::Sound(done));
             }
             self.preview.stop();
@@ -257,12 +271,27 @@ impl BlockSource for Engine {
         for done in self.sounds.mix(&mut sfx).into_iter().flatten() {
             self.retire(Garbage::Sound(done));
         }
-        let master = self.shared.sound_volume.get().clamp(0.0, 1.0);
-        for frame in sfx.as_chunks_mut::<2>().0 {
-            let g = self.sound_volume.next(master);
-            frame[0] *= g;
-            frame[1] *= g;
+        let mut heard = [0.0; BLOCK * 2];
+        for done in self.listen.mix(&mut heard).into_iter().flatten() {
+            self.retire(Garbage::Sound(done));
         }
+        let master = self.shared.sound_volume.get().clamp(0.0, 1.0);
+        for (frame, h) in sfx
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(heard.as_chunks_mut::<2>().0)
+        {
+            let g = self.sound_volume.next(master);
+            for c in 0..2 {
+                frame[c] *= g;
+                h[c] *= g;
+            }
+        }
+        let listen_id = self.listen.ids().into_iter().find(|&id| id != 0);
+        self.shared.listen_id.store(listen_id.unwrap_or(0), Relaxed);
+        let listen_progress = self.listen.progress().into_iter().fold(0.0, f32::max);
+        self.shared.listen_progress.set(listen_progress);
         self.shared
             .sounds_playing
             .store(self.sounds.playing() as u32, Relaxed);
@@ -357,7 +386,8 @@ impl BlockSource for Engine {
         {
             let it = (0..BLOCK * 2).map(|j| {
                 let i = j / 2;
-                (voice[i] * gv[i] + sfx[j] * gs[i] + cue[i]).clamp(-1.0, 1.0)
+                // (A preview is heard even with "hear clips myself" off: that is its point.)
+                (voice[i] * gv[i] + sfx[j] * gs[i] + heard[j] * vol + cue[i]).clamp(-1.0, 1.0)
             });
             chunk.fill_from_iter(it);
         }
@@ -700,6 +730,65 @@ mod tests {
         let (out, _) = talk(&mut e, &mut tx, &mut mon, 200 * BLOCK, 100, |_| 0.0);
         assert!(out.last().unwrap().abs() < 1e-3);
         assert!(shared.is_playing(3));
+    }
+
+    #[test]
+    fn a_preview_is_heard_in_the_headphones_only() {
+        use crate::soundboard::mixer::{SoundCmd, SoundData};
+        let (shared, mut e, mut tx, mut mon) = rig();
+        shared.monitor_volume.set(1.0);
+        // Even with "hear clips myself" off: hearing it is what a preview is for.
+        shared.monitor_sounds.store(false, Relaxed);
+        let clip = || {
+            Arc::new(SoundData {
+                frames: vec![0.4; 48_000 * 2],
+                sample_rate: 48_000,
+            })
+        };
+        e.apply(EngineCmd::Listen(SoundCmd::Play {
+            id: 9,
+            data: clip(),
+            volume: 0.5,
+            looped: false,
+        }));
+        let (out, m) = talk(&mut e, &mut tx, &mut mon, 0, 100, |_| 0.0);
+        assert!(
+            out.iter().all(|x| x.abs() < 1e-6),
+            "nothing on the virtual mic"
+        );
+        assert!(
+            (m.last().unwrap() - 0.2).abs() < 1e-4,
+            "{}",
+            m.last().unwrap()
+        );
+        assert_eq!(shared.listen_id.load(Relaxed), 9);
+        assert!(!shared.is_playing(9) && shared.sounds_playing.load(Relaxed) == 0);
+        let p = shared.listen_progress.get();
+        assert!(p > 0.1 && p < 0.2, "{p}");
+        // It ends by itself.
+        talk(&mut e, &mut tx, &mut mon, 100 * BLOCK, 800, |_| 0.0);
+        assert_eq!(shared.listen_id.load(Relaxed), 0);
+
+        // Safe mode stops a preview and refuses new ones.
+        e.apply(EngineCmd::Listen(SoundCmd::Play {
+            id: 9,
+            data: clip(),
+            volume: 1.0,
+            looped: false,
+        }));
+        talk(&mut e, &mut tx, &mut mon, 0, 2, |_| 0.0);
+        assert_eq!(shared.listen_id.load(Relaxed), 9);
+        shared.safe_mode.store(true, Relaxed);
+        talk(&mut e, &mut tx, &mut mon, 0, 30, |_| 0.0);
+        assert_eq!(shared.listen_id.load(Relaxed), 0);
+        e.apply(EngineCmd::Listen(SoundCmd::Play {
+            id: 9,
+            data: clip(),
+            volume: 1.0,
+            looped: false,
+        }));
+        talk(&mut e, &mut tx, &mut mon, 0, 2, |_| 0.0);
+        assert_eq!(shared.listen_id.load(Relaxed), 0);
     }
 
     #[test]

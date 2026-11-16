@@ -42,6 +42,9 @@ pub enum Action {
     Volume(SoundId, f32),
     /// The master volume of every clip (0..1).
     MasterVolume(f32),
+    /// Play (or, when it is already, stop) a clip in the headphones only.
+    Preview(SoundId),
+    StopPreview,
     /// A new display name; the file keeps its own.
     Rename(SoundId, String),
     BeginHotkey(SoundId),
@@ -1202,7 +1205,13 @@ fn pad(
             state.open(id, &e.name, false);
         }
     }
-    if ready {
+    // Shift+click: hear it in the headphones only, whatever its play mode.
+    let shift = ui.input(|i| i.modifiers.shift);
+    if ready && shift {
+        if r.clicked() {
+            actions.push(Action::Preview(id));
+        }
+    } else if ready {
         if e.play_mode.is_held() {
             // Plays while the mouse button is held on it (like the hotkey).
             if r.hovered() && !on_tools && ui.input(|i| i.pointer.primary_pressed()) {
@@ -1310,6 +1319,23 @@ fn clip_menu(ui: &mut Ui, v: &View, state: &mut State, s: &Sound, actions: &mut 
     ui.set_min_width(230.0);
     if v.shared.is_playing(id) && ui.button(format!("{}  Stop", icons::STOP)).clicked() {
         actions.push(Action::Stop(id));
+        ui.close();
+    }
+    let previewing = v.board.previewing() == Some(id);
+    let listen = if previewing {
+        format!("{}  Stop the preview", icons::HEADPHONES)
+    } else {
+        format!("{}  Preview in my headphones", icons::HEADPHONES)
+    };
+    if ui
+        .add_enabled(
+            matches!(s.state, LoadState::Ready(_)),
+            egui::Button::new(listen),
+        )
+        .on_hover_text("Only you hear it; it does not go to the virtual mic (Shift+click)")
+        .clicked()
+    {
+        actions.push(Action::Preview(id));
         ui.close();
     }
     if ui
@@ -1440,7 +1466,8 @@ fn volume_slider(ui: &mut Ui, volume: &mut f32) -> Response {
 // ------------------------------------------------------------------------------------------
 
 /// One playing clip in the strip; a click stops it.
-fn now_chip(ui: &mut Ui, s: &Sound, progress: f32) -> Response {
+/// `preview`: it plays in the headphones only (it shows a headphones icon until hovered).
+fn now_chip(ui: &mut Ui, s: &Sound, progress: f32, preview: bool) -> Response {
     let p = palette(ui);
     let time = time_text(length_s(&s.state), Some(progress)).unwrap_or_default();
     let font = FontId::proportional(font::SMALL + 0.5);
@@ -1472,10 +1499,15 @@ fn now_chip(ui: &mut Ui, s: &Sound, progress: f32) -> Response {
         let edge = if hovered { p.danger } else { p.border_strong };
         painter.rect_stroke(rect, radius, Stroke::new(1.0, edge), StrokeKind::Inside);
         let cy = rect.center().y;
+        let icon = if preview && !hovered {
+            icons::HEADPHONES
+        } else {
+            icons::STOP
+        };
         painter.text(
             pos2(rect.left() + 16.0, cy),
             Align2::CENTER_CENTER,
-            icons::STOP,
+            icon,
             FontId::proportional(13.0),
             if hovered { p.danger } else { p.accent },
         );
@@ -1488,8 +1520,16 @@ fn now_chip(ui: &mut Ui, s: &Sound, progress: f32) -> Response {
         );
         painter.galley(at, time_galley, p.text_muted);
     }
+    let tip = if preview {
+        format!(
+            "Stop the preview of \"{}\" (only you hear it)",
+            s.entry.name
+        )
+    } else {
+        format!("Stop \"{}\"", s.entry.name)
+    };
     r.on_hover_cursor(CursorIcon::PointingHand)
-        .on_hover_text(format!("Stop \"{}\"", s.entry.name))
+        .on_hover_text(tip)
 }
 
 /// The strip under the page: what is playing, each with its own stop, and Stop all.
@@ -1501,6 +1541,7 @@ fn now_playing(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) {
         .into_iter()
         .filter_map(|id| Some((v.sound(id)?, v.shared.progress_of(id).unwrap_or(0.0))))
         .collect();
+    let preview = v.board.previewing().and_then(|id| v.sound(id));
     egui::Panel::bottom("now_playing")
         .exact_size(NOW_H)
         .frame(
@@ -1563,15 +1604,24 @@ fn now_playing(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) {
                     );
                     ui.add_space(space::S);
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        if playing.is_empty() {
+                        if playing.is_empty() && preview.is_none() {
                             ui.label(RichText::new("Nothing is playing").color(p.text_faint));
                             return;
                         }
                         egui::ScrollArea::horizontal()
                             .id_salt("now_playing_clips")
                             .show(ui, |ui| {
+                                if let Some(s) = preview {
+                                    let progress = v.shared.listen_progress.get();
+                                    let r = now_chip(ui, s, progress, true);
+                                    #[cfg(test)]
+                                    tests::remember(ui, ("now", "preview".into()), r.rect);
+                                    if r.clicked() {
+                                        actions.push(Action::StopPreview);
+                                    }
+                                }
                                 for (s, progress) in &playing {
-                                    let r = now_chip(ui, s, *progress);
+                                    let r = now_chip(ui, s, *progress, false);
                                     #[cfg(test)]
                                     tests::remember(ui, ("now", s.id.to_string()), r.rect);
                                     if r.clicked() {

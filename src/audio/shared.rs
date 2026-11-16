@@ -91,6 +91,9 @@ pub struct Shared {
     /// Master soundboard volume (0..1), on top of each clip's own volume. Applies to the
     /// virtual mic and the headphones alike.
     pub sound_volume: AtomicF32,
+    /// The clip previewed in the headphones only (0 = none) and how far it is (0..1).
+    pub listen_id: AtomicU64,
+    pub listen_progress: AtomicF32,
     /// Bumped to stop every soundboard clip (they fade out); acted on by the engine.
     pub stop_sounds: AtomicU32,
     /// Panic / safe mode: the engine sends the clean mic (no effects, no Melody Voice), plays
@@ -143,6 +146,8 @@ impl Default for Shared {
             monitor_voice: AtomicBool::new(true),
             monitor_sounds: AtomicBool::new(true),
             sound_volume: AtomicF32::new(1.0),
+            listen_id: AtomicU64::new(0),
+            listen_progress: AtomicF32::zero(),
             stop_sounds: AtomicU32::new(0),
             safe_mode: AtomicBool::new(false),
             safe_mutes_monitor: AtomicBool::new(false),

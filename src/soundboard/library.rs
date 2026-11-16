@@ -159,6 +159,7 @@ impl Board {
     /// Removes a clip and returns it, so it can be put back with [`Board::restore`].
     pub fn take(&mut self, id: SoundId) -> Option<Removed> {
         self.port.send(EngineCmd::Sound(SoundCmd::Stop(id)));
+        self.port.send(EngineCmd::Listen(SoundCmd::Stop(id)));
         self.triggers.forget(id);
         let index = self.sounds.iter().position(|s| s.id == id)?;
         let entry = self.sounds.remove(index).entry;
@@ -243,6 +244,47 @@ impl Board {
             self.revision += 1;
         }
         sent
+    }
+
+    /// Plays a clip in the headphones only (it never reaches the virtual mic), from the top;
+    /// any other preview stops. Not counted as a play. False if it is not loaded, safe mode
+    /// is on or no engine is running.
+    pub fn preview(&mut self, id: SoundId) -> bool {
+        if self
+            .shared
+            .as_ref()
+            .is_some_and(|s| s.safe_mode.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            return false;
+        }
+        let Some(s) = self.sounds.iter().find(|s| s.id == id) else {
+            return false;
+        };
+        let LoadState::Ready(data) = &s.state else {
+            return false;
+        };
+        let play = SoundCmd::Play {
+            id,
+            data: data.clone(),
+            volume: s.entry.volume,
+            looped: false,
+        };
+        self.port.send(EngineCmd::Listen(SoundCmd::StopAll));
+        self.port.send(EngineCmd::Listen(play))
+    }
+
+    pub fn stop_preview(&self) {
+        self.port.send(EngineCmd::Listen(SoundCmd::StopAll));
+    }
+
+    /// The clip being previewed, if any.
+    pub fn previewing(&self) -> Option<SoundId> {
+        let id = self
+            .shared
+            .as_ref()?
+            .listen_id
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (id != 0).then_some(id)
     }
 
     /// Empties "Recent".
@@ -334,6 +376,8 @@ impl Board {
         }
         self.port
             .send(EngineCmd::Sound(SoundCmd::SetVolume(id, volume)));
+        self.port
+            .send(EngineCmd::Listen(SoundCmd::SetVolume(id, volume)));
     }
 
     /// Triggers every sound bound to this key combination (per its play mode); returns how

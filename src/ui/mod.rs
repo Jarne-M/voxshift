@@ -1426,6 +1426,8 @@ impl VoxApp {
                 self.cfg.soundboard.master_volume = v.clamp(0.0, 1.0);
                 apply_to_shared(&self.cfg, &self.shared);
             }
+            A::Preview(id) => self.preview_clip(ctx, id),
+            A::StopPreview => self.sounds.lock().stop_preview(),
             A::BeginHotkey(id) => self.begin_capture(KeyTarget::Sound(id)),
             A::CancelHotkey => self.cancel_capture(),
             A::ClearHotkey(id) => self.clear_hotkey(KeyTarget::Sound(id)),
@@ -1528,6 +1530,28 @@ impl VoxApp {
                 self.sounds.lock().clear_recent();
                 self.sounds_changed();
             }
+        }
+    }
+
+    /// Shift+click or "Preview": the clip in my headphones only. A second time stops it.
+    fn preview_clip(&mut self, ctx: &egui::Context, id: SoundId) {
+        let mut board = self.sounds.lock();
+        if board.previewing() == Some(id) {
+            board.stop_preview();
+            return;
+        }
+        let started = board.preview(id);
+        drop(board);
+        if self.feedback.safe_mode() {
+            self.toasts
+                .push(ctx, "Safe mode is on: no clips play until you restore");
+        } else if !self.cfg.devices.monitor_enabled {
+            self.toasts.push(
+                ctx,
+                "Turn on the monitor (your headphones) under Audio setup to preview clips",
+            );
+        } else if !started {
+            self.toasts.push(ctx, "That clip is not loaded yet");
         }
     }
 
@@ -2235,6 +2259,19 @@ pub(crate) mod tests {
         })
         .textures_delta
         .clear();
+    }
+
+    /// [`frame`] with these modifier keys down from now on (until changed again).
+    pub fn frame_with(
+        ctx: &egui::Context,
+        app: &mut VoxApp,
+        size: (f32, f32),
+        t: f64,
+        mut events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) {
+        events.insert(0, egui::Event::ModifiersChanged(modifiers));
+        frame(ctx, app, size, t, events);
     }
 
     /// One frame where the window's X was clicked; returns the root viewport commands.
@@ -4216,6 +4253,64 @@ pub(crate) mod tests {
         render(&mut engine, 30);
         assert!(!app.shared.is_playing(id), "Stop all stopped it");
         assert_eq!(app.cfg.sounds[0].plays, 2);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shift_click_previews_a_clip_in_the_headphones_only_and_again_stops_it() {
+        use soundboard::tests::rect_of;
+        let ctx = egui::Context::default();
+        let (mut app, mut engine, dir) =
+            loaded_board_app(&ctx, "ui-preview", &["airhorn.wav", "bruh.wav"]);
+        app.cfg.devices.monitor_enabled = true;
+        let ids: Vec<SoundId> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+        let size = (1240.0, 800.0);
+        let shift_click = |app: &mut VoxApp, pos, t| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::SHIFT,
+            };
+            let shift = egui::Modifiers::SHIFT;
+            frame_with(
+                &ctx,
+                app,
+                size,
+                t,
+                vec![egui::Event::PointerMoved(pos)],
+                shift,
+            );
+            frame_with(&ctx, app, size, t + 0.05, vec![button(true)], shift);
+            frame_with(&ctx, app, size, t + 0.1, vec![button(false)], shift);
+            frame_with(&ctx, app, size, t + 0.15, vec![], egui::Modifiers::NONE);
+        };
+        let pad = rect_of(&ctx, "clip", ids[0]).center();
+        shift_click(&mut app, pad, 1.0);
+        render(&mut engine, 4);
+        assert_eq!(app.shared.listen_id.load(Relaxed), ids[0], "previewing");
+        assert!(!app.shared.is_playing(ids[0]), "not on the virtual mic");
+        assert_eq!(app.cfg.sounds[0].plays, 0, "a preview is not a play");
+        // It shows in the strip; Shift+click on another clip switches the preview.
+        frame(&ctx, &mut app, size, 1.5, vec![]);
+        assert!(soundboard::tests::try_rect_of(&ctx, "now", "preview").is_some());
+        let other = rect_of(&ctx, "clip", ids[1]).center();
+        shift_click(&mut app, other, 2.0);
+        render(&mut engine, 30);
+        assert_eq!(app.shared.listen_id.load(Relaxed), ids[1]);
+        // The same clip again stops it.
+        shift_click(&mut app, other, 3.0);
+        render(&mut engine, 30);
+        assert_eq!(app.shared.listen_id.load(Relaxed), 0);
+        // A plain click still plays it for everyone.
+        click(&ctx, &mut app, other, 4.0);
+        render(&mut engine, 2);
+        assert!(app.shared.is_playing(ids[1]));
+        assert_eq!(app.shared.listen_id.load(Relaxed), 0);
+        // Without a monitor a preview explains where to turn it on.
+        app.cfg.devices.monitor_enabled = false;
+        app.apply_sound_action(&ctx, soundboard::Action::Preview(ids[0]));
+        assert!(app.toasts.contains("Turn on the monitor"));
         std::fs::remove_dir_all(dir).ok();
     }
 
