@@ -775,6 +775,82 @@ mod tests {
         );
     }
 
+    /// The pictures in README.md (copy them to `docs/screenshots`). The real keyboard listener
+    /// runs, so the pages don't show the "hotkeys are not available" note a test would.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "writes pictures to VOXSHIFT_SHOTS; run with --ignored"]
+    fn shots_for_the_readme() {
+        use crate::soundboard::hotkeys::tests::HOOK_TESTS;
+        use crate::soundboard::hotkeys::{Hotkey, HotkeyService};
+        use crate::voice_keys::{KeyTarget, PresetHotkey};
+        let Some(dir) = out_dir() else {
+            eprintln!("VOXSHIFT_SHOTS is not set: nothing to do");
+            return;
+        };
+        let _serial = HOOK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let listen = |app: &mut VoxApp| {
+            app.hotkeys = Some(HotkeyService::start(app.sounds.board.clone(), None));
+        };
+        let size = (1280, 720);
+        let dark = ThemeChoice::Dark;
+        app_shot(&dir, "readme-voice", size, dark, 1.0, |app, _| listen(app));
+        app_shot(&dir, "readme-soundboard", size, dark, 1.0, |app, ctx| {
+            use crate::soundboard::playmode::PlayMode;
+            use crate::ui::soundboard::Action as A;
+            listen(app);
+            app.cfg.page = Page::Soundboard;
+            let ids: Vec<u64> = app.sounds.lock().sounds.iter().map(|s| s.id).collect();
+            for name in ["Memes", "Stream"] {
+                app.apply_sound_action(ctx, A::NewFolder);
+                let id = app.cfg.soundboard.folders.last().unwrap().id;
+                app.apply_sound_action(ctx, A::RenameFolder(id, name.into()));
+            }
+            app.apply_sound_action(ctx, A::Tab(crate::soundboard::organize::BoardTab::All));
+            for (i, color) in [(0, 0), (2, 6), (3, 1), (5, 7), (6, 4), (9, 8)] {
+                app.apply_sound_action(ctx, A::Color(ids[i], Some(color)));
+            }
+            for i in [0, 3, 5] {
+                app.apply_sound_action(ctx, A::ToggleFavorite(ids[i]));
+            }
+            app.apply_sound_action(ctx, A::PlayMode(ids[2], PlayMode::Hold));
+            app.apply_sound_action(ctx, A::PlayMode(ids[6], PlayMode::LoopWhileHeld));
+            let key = |vk, ctrl| Hotkey::new(vk, ctrl, false, false, false, "");
+            app.set_hotkey(KeyTarget::Sound(ids[0]), Some(key(0x61, false)));
+            app.set_hotkey(KeyTarget::Sound(ids[2]), Some(key(0x62, true)));
+            app.set_hotkey(KeyTarget::Sound(ids[3]), Some(key(0x63, false)));
+            for (slot, (i, progress)) in [(1, 0.35), (6, 0.7)].into_iter().enumerate() {
+                app.shared.playing_ids[slot].store(ids[i], Relaxed);
+                app.shared.playing_progress[slot].set(progress);
+            }
+            let (id, name) = {
+                let b = app.sounds.lock();
+                (b.sounds[3].id, b.sounds[3].entry.name.clone())
+            };
+            app.board_page.open(id, &name, false);
+        });
+        app_shot(&dir, "readme-audio-setup", size, dark, 1.0, |app, _| {
+            listen(app);
+            app.cfg.page = Page::Audio;
+        });
+        app_shot(
+            &dir,
+            "readme-hotkeys-light",
+            size,
+            ThemeChoice::Light,
+            1.0,
+            |app, _| {
+                listen(app);
+                app.cfg.page = Page::Hotkeys;
+                app.cfg.voice_keys.mute = Some(Hotkey::new(0x76, false, false, false, false, ""));
+                app.cfg.voice_keys.presets.push(PresetHotkey {
+                    preset: "Robot".into(),
+                    hotkey: Some(Hotkey::new(0x70, false, true, false, false, "")),
+                });
+            },
+        );
+    }
+
     /// The QoL extras: the shortcuts overlay, cue, mic check, A/B, trim and the wizard.
     /// `VOXSHIFT_SHOT` (a name or part of one) picks a few, so a change can be checked alone.
     #[test]
