@@ -136,7 +136,17 @@ const STEP_TITLES: [(&str, &str); 4] = [
     (icons::USERS, "Other apps"),
 ];
 
-fn step_card(ui: &mut Ui, index: usize, s: &Step, width: f32) {
+/// The height of a step card's content at `width`: the title row and the wrapped line.
+fn step_content_height(ui: &Ui, s: &Step, width: f32) -> f32 {
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let line = ui
+        .painter()
+        .layout(s.line.clone(), font, palette(ui).text_muted, width - 24.0);
+    ui.spacing().interact_size.y + ui.spacing().item_spacing.y + line.size().y
+}
+
+/// One step of the signal path, at least `min_height` tall (so the cards in a row match).
+fn step_card(ui: &mut Ui, index: usize, s: &Step, width: f32, min_height: f32) {
     let p = palette(ui);
     let (icon, title) = STEP_TITLES[index];
     let tone = s.tone.color(p);
@@ -147,7 +157,7 @@ fn step_card(ui: &mut Ui, index: usize, s: &Step, width: f32) {
         .inner_margin(Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.set_width(width - 24.0);
-            ui.set_min_height(58.0);
+            ui.set_min_height(min_height.max(58.0));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = space::S;
                 ui.label(RichText::new(icon).size(17.0).color(p.text_muted));
@@ -169,11 +179,16 @@ fn signal_path(ui: &mut Ui, steps: &[Step; 4]) {
     let available = ui.available_width();
     if available < 600.0 {
         for (i, s) in steps.iter().enumerate() {
-            step_card(ui, i, s, available);
+            step_card(ui, i, s, available, 0.0);
         }
         return;
     }
     let width = (available - 3.0 * arrow) / 4.0;
+    // Side by side the four cards share one height: the tallest one's.
+    let min_height = steps
+        .iter()
+        .map(|s| step_content_height(ui, s, width))
+        .fold(0.0, f32::max);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         for (i, s) in steps.iter().enumerate() {
@@ -189,7 +204,7 @@ fn signal_path(ui: &mut Ui, steps: &[Step; 4]) {
                 ui.painter()
                     .line_segment([c + vec2(1.0, 4.0), c + vec2(5.0, 0.0)], stroke);
             }
-            ui.vertical(|ui| step_card(ui, i, s, width));
+            ui.vertical(|ui| step_card(ui, i, s, width, min_height));
         }
     });
 }
@@ -354,9 +369,13 @@ pub(super) fn mic_row(ui: &mut Ui, cfg: &mut Config, v: &View, slot: usize, ch: 
             ));
         }
         let db = to_db(level).max(MIC_FLOOR_DB);
-        ui.label(
-            RichText::new(format!("{db:>4.0} dB"))
-                .monospace()
+        // (A fixed width keeps the row still while the number changes.)
+        widgets::column_label(
+            ui,
+            56.0,
+            16.0,
+            RichText::new(format!("{db:.0} dB"))
+                .small()
                 .color(p.text_muted),
         );
     });

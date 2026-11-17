@@ -177,6 +177,8 @@ fn feedback(ui: &mut Ui, cfg: &mut Config, v: &View) {
         if f.cues {
             widgets::Slider::new(&mut f.cue_volume, 0.05..=1.0)
                 .label("Beep volume")
+                // (In line with the other rows' controls.)
+                .label_width(162.0)
                 .percent(true)
                 .default_value(0.5)
                 .tip("How loud the switch beeps are in your headphones.")
@@ -240,7 +242,7 @@ fn settings_file(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) {
     });
     if ui.data(|d| d.get_temp::<bool>(confirm)).unwrap_or(false) {
         let mut answer = None;
-        let modal = egui::Modal::new(Id::new("reset_settings")).show(ui.ctx(), |ui| {
+        let modal = widgets::modal(ui.ctx(), "reset_settings").show(ui.ctx(), |ui| {
             ui.set_width(420.0);
             ui.heading("Reset settings?");
             ui.label(

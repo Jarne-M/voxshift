@@ -880,7 +880,7 @@ impl VoxApp {
         };
         let tray_ok = self.tray.is_some();
         let mut choice = None;
-        let response = egui::Modal::new(egui::Id::new("close_dialog")).show(ctx, |ui| {
+        let response = widgets::modal(ctx, "close_dialog").show(ctx, |ui| {
             ui.set_width(400.0);
             ui.heading("Close VoxShift?");
             ui.add_space(4.0);
@@ -1932,7 +1932,7 @@ impl VoxApp {
             return;
         };
         let mut choice = None;
-        let response = egui::Modal::new(egui::Id::new("key_conflict")).show(ctx, |ui| {
+        let response = widgets::modal(ctx, "key_conflict").show(ctx, |ui| {
             ui.set_width(420.0);
             ui.heading("Key already in use");
             ui.add_space(4.0);

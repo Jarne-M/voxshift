@@ -567,6 +567,12 @@ pub fn card_frame(p: &Palette) -> Frame {
         .inner_margin(Margin::same(14))
 }
 
+/// A dialog over a dimmed window. egui's default modal frame is a popup's, whose 6-point
+/// margin crowds the text against the edge; dialogs get a window's margin instead.
+pub fn modal(ctx: &egui::Context, id: &str) -> egui::Modal {
+    egui::Modal::new(egui::Id::new(id)).frame(Frame::window(&ctx.global_style()))
+}
+
 /// A rounded panel that groups controls, as wide as the space it is in.
 pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
     card_frame(palette(ui)).show(ui, |ui| {
@@ -901,8 +907,10 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
         .corner_radius(CornerRadius::same(RADIUS_S + 1))
         .inner_margin(Margin::same(2))
         .show(ui, |ui| {
+            ui.spacing_mut().interact_size.y = 22.0;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
+                ui.spacing_mut().button_padding.y = 2.0;
                 for &(option, label) in options {
                     let on = *value == option;
                     let text = RichText::new(label).color(if on { p.on_accent } else { p.text });
@@ -912,7 +920,9 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
                             .fill(fill)
                             .frame_when_inactive(on)
                             .corner_radius(CornerRadius::same(RADIUS_S))
-                            .min_size(vec2(0.0, 26.0)),
+                            // 22 + margin + border = a row's 28, so a label beside the
+                            // control lines up with it.
+                            .min_size(vec2(0.0, 22.0)),
                     );
                     if r.clicked() && !on {
                         *value = option;

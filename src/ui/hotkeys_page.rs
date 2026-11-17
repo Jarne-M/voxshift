@@ -11,7 +11,7 @@ use crate::soundboard::hotkeys::Hotkey;
 use crate::soundboard::mixer::SoundId;
 use crate::soundboard::organize;
 use crate::voice_keys::{KeyTarget, PresetHotkey, VoiceKeyMode};
-use egui::{Align, Id, Key, Layout, RichText, Ui};
+use egui::{Align, Id, Key, Layout, RichText, Ui, vec2};
 
 pub enum Action {
     Capture(KeyTarget),
@@ -219,16 +219,24 @@ fn row_ui(
         match r.target {
             KeyTarget::Preset(i) if i < cfg_presets.len() => {
                 let preset = &mut cfg_presets[i].preset;
-                egui::ComboBox::from_id_salt(("preset_key", i))
-                    .selected_text(preset.as_str())
-                    .width(label_w - 8.0)
-                    .show_ui(ui, |ui| {
-                        for name in &v.preset_names {
-                            ui.selectable_value(preset, name.clone(), name);
-                        }
-                    })
-                    .response
-                    .on_hover_text(r.tip);
+                // In a box as wide as the other rows' labels, so every key starts in one column.
+                ui.allocate_ui_with_layout(
+                    vec2(label_w, ROW_H),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        ui.set_min_size(vec2(label_w, ROW_H));
+                        egui::ComboBox::from_id_salt(("preset_key", i))
+                            .selected_text(preset.as_str())
+                            .width(label_w - 16.0)
+                            .show_ui(ui, |ui| {
+                                for name in &v.preset_names {
+                                    ui.selectable_value(preset, name.clone(), name);
+                                }
+                            })
+                            .response
+                            .on_hover_text(r.tip);
+                    },
+                );
             }
             _ => {
                 let label = widgets::column_label(
@@ -273,7 +281,13 @@ fn group_extras(ui: &mut Ui, name: &str, cfg: &mut Config, actions: &mut Vec<Act
         }
         "Voice changer" => {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("The effects key").color(p.text_muted));
+                let label_w = LABEL_W.min(ui.available_width() * 0.45);
+                widgets::column_label(
+                    ui,
+                    label_w,
+                    ROW_H,
+                    RichText::new("The effects key").color(p.text_muted),
+                );
                 widgets::segmented(
                     ui,
                     &mut cfg.voice_keys.mode,

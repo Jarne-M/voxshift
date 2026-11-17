@@ -118,7 +118,7 @@ pub fn overlay(ctx: &Context, open: &mut bool) {
         return;
     }
     let mut close = false;
-    let response = egui::Modal::new(egui::Id::new("shortcuts_overlay")).show(ctx, |ui| {
+    let response = super::widgets::modal(ctx, "shortcuts_overlay").show(ctx, |ui| {
         let p = palette(ui);
         ui.set_width(460.0);
         ui.label(

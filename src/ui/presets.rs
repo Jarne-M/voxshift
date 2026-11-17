@@ -10,8 +10,8 @@ use crate::config::Config;
 use crate::config::presets::{self, Preset};
 use crate::dsp::params::Snapshot;
 use egui::{
-    Align, Color32, CursorIcon, FontId, Id, Key, Layout, Response, RichText, Sense, Stroke,
-    StrokeKind, Ui, pos2, vec2,
+    Align, Color32, CursorIcon, FontId, Key, Layout, Response, RichText, Sense, Stroke, StrokeKind,
+    Ui, pos2, vec2,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -234,7 +234,7 @@ fn name_dialog(ctx: &egui::Context, cfg: &Config, state: &mut BarState) -> Optio
     let replaces = renaming.is_none() && cfg.user_presets.iter().any(|p| p.name == name);
     let mut confirm = false;
     let mut cancel = false;
-    let response = egui::Modal::new(Id::new("preset_name")).show(ctx, |ui| {
+    let response = super::widgets::modal(ctx, "preset_name").show(ctx, |ui| {
         ui.set_width(360.0);
         match &renaming {
             Some(old) => ui.heading(format!("Rename \"{old}\"")),
@@ -368,14 +368,26 @@ pub fn bar(ui: &mut Ui, cfg: &Config, fx: &Snapshot, state: &mut BarState) -> Ve
                     actions.push(Action::Apply(preset.clone()));
                 }
             }
-            // Your own presets, set apart from the built-in ones.
-            let (rect, _) = ui.allocate_exact_size(vec2(9.0, 30.0), Sense::hover());
-            ui.painter().vline(
-                rect.center().x,
-                (rect.top() + 5.0)..=(rect.bottom() - 5.0),
-                Stroke::new(1.0, p.border_strong),
-            );
-            ui.label(RichText::new("Yours").small().color(p.text_muted));
+            // Your own presets, set apart from the built-in ones. The divider and "Yours" go to
+            // the next line with the chip after them, rather than being left at the end of one.
+            let yours = RichText::new("Yours").small().color(p.text_muted);
+            let label_w = ui
+                .painter()
+                .layout_no_wrap("Yours".into(), FontId::proportional(font::SMALL), p.text)
+                .size()
+                .x;
+            // (At the start of a line the divider has nothing to divide: then it's left out.)
+            if ui.available_size_before_wrap().x < 9.0 + label_w + 80.0 + 2.0 * space::S {
+                ui.end_row();
+            } else {
+                let (rect, _) = ui.allocate_exact_size(vec2(9.0, 30.0), Sense::hover());
+                ui.painter().vline(
+                    rect.center().x,
+                    (rect.top() + 5.0)..=(rect.bottom() - 5.0),
+                    Stroke::new(1.0, p.border_strong),
+                );
+            }
+            ui.label(yours);
             for preset in presets::favorites_first(&cfg.user_presets) {
                 let selected = is_current(preset);
                 let r = chip(

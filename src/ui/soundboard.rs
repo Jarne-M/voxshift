@@ -293,7 +293,12 @@ fn toolbar_left(
     let r = ui.add(
         egui::TextEdit::singleline(search)
             .id(id)
-            .hint_text(format!("{}  Search all clips (Ctrl+F)", icons::SEARCH))
+            // (The long hint would be cut off in the narrow box.)
+            .hint_text(if narrow {
+                format!("{}  Search (Ctrl+F)", icons::SEARCH)
+            } else {
+                format!("{}  Search all clips (Ctrl+F)", icons::SEARCH)
+            })
             .desired_width(if narrow { 150.0 } else { 220.0 }),
     );
     if ui.input(|i| i.modifiers.command && i.key_pressed(Key::F)) {
@@ -604,13 +609,19 @@ fn tab_bar(ui: &mut Ui, v: &View, entries: &[SoundEntry], actions: &mut Vec<Acti
             actions,
         );
         if !v.settings.folders.is_empty() {
-            // Your folders, set apart from the built-in tabs.
-            let (rect, _) = ui.allocate_exact_size(vec2(9.0, 30.0), Sense::hover());
-            ui.painter().vline(
-                rect.center().x,
-                (rect.top() + 5.0)..=(rect.bottom() - 5.0),
-                Stroke::new(1.0, p.border_strong),
-            );
+            // Your folders, set apart from the built-in tabs. The divider wraps with the first
+            // folder rather than being left at the end of a line.
+            // (At the start of a line it has nothing to divide: then it's left out.)
+            if ui.available_size_before_wrap().x < 9.0 + 100.0 + space::S {
+                ui.end_row();
+            } else {
+                let (rect, _) = ui.allocate_exact_size(vec2(9.0, 30.0), Sense::hover());
+                ui.painter().vline(
+                    rect.center().x,
+                    (rect.top() + 5.0)..=(rect.bottom() - 5.0),
+                    Stroke::new(1.0, p.border_strong),
+                );
+            }
         }
         for (i, f) in v.settings.folders.iter().enumerate() {
             let n = count(&|e| e.folder == Some(f.id));

@@ -185,7 +185,7 @@ pub fn show(
 ) -> Outcome {
     let mut out = Outcome::default();
     let last = STEPS.len() - 1;
-    let modal = egui::Modal::new(egui::Id::new("setup_wizard")).show(ctx, |ui| {
+    let modal = super::widgets::modal(ctx, "setup_wizard").show(ctx, |ui| {
         let p = palette(ui);
         ui.set_width(520.0);
         ui.horizontal(|ui| {
