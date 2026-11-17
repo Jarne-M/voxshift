@@ -2,6 +2,7 @@
 //! non-real-time, so a mutex is fine). Playing a sound hands its preloaded buffer to the engine.
 
 use super::hotkeys::Hotkey;
+use super::loudness::{self, Level};
 use super::mixer::{SoundCmd, SoundData, SoundId};
 use super::playmode::{Cmd, PlayMode, Triggers};
 use super::{decode, names, organize};
@@ -102,6 +103,19 @@ pub struct Sound {
     pub id: SoundId,
     pub entry: SoundEntry,
     pub state: LoadState,
+    /// How loud it is, measured when it loaded (`None` until then, or when silent).
+    pub level: Option<Level>,
+}
+
+impl Sound {
+    /// The volume it plays at: its own, times the loudness correction when that is on.
+    pub fn play_volume(&self, normalize: bool) -> f32 {
+        let gain = match (normalize, self.level) {
+            (true, Some(level)) => level.gain(),
+            _ => 1.0,
+        };
+        self.entry.volume * gain
+    }
 }
 
 struct Job {
@@ -125,6 +139,8 @@ pub struct Board {
     triggers: Triggers,
     /// What is playing (for toggle mode); set by the app.
     pub shared: Option<Arc<Shared>>,
+    /// "Even out loudness": clips play with their loudness correction (set by the app).
+    pub normalize: bool,
 }
 
 impl Board {
@@ -147,6 +163,7 @@ impl Board {
             id,
             entry,
             state: LoadState::Loading,
+            level: None,
         });
         id
     }
@@ -225,6 +242,7 @@ impl Board {
         {
             return false; // panic / safe mode: no clips (the engine refuses them too)
         }
+        let normalize = self.normalize;
         let Some(s) = self.sounds.iter_mut().find(|s| s.id == id) else {
             return false;
         };
@@ -234,7 +252,7 @@ impl Board {
         let sent = self.port.send(EngineCmd::Sound(SoundCmd::Play {
             id,
             data: data.clone(),
-            volume: s.entry.volume,
+            volume: s.play_volume(normalize),
             looped,
         }));
         if sent {
@@ -266,7 +284,7 @@ impl Board {
         let play = SoundCmd::Play {
             id,
             data: data.clone(),
-            volume: s.entry.volume,
+            volume: s.play_volume(self.normalize),
             looped: false,
         };
         self.port.send(EngineCmd::Listen(SoundCmd::StopAll));
@@ -370,10 +388,34 @@ impl Board {
         }
     }
 
-    pub fn set_volume(&mut self, id: SoundId, volume: f32) {
-        if let Some(s) = self.get_mut(id) {
-            s.entry.volume = volume;
+    /// Switches "Even out loudness"; clips that are playing change level right away.
+    pub fn set_normalize(&mut self, on: bool) {
+        if self.normalize == on {
+            return;
         }
+        self.normalize = on;
+        let shared = self.shared.clone();
+        let previewing = self.previewing();
+        for s in &self.sounds {
+            let volume = s.play_volume(on);
+            if shared.as_ref().is_some_and(|sh| sh.is_playing(s.id)) {
+                self.port
+                    .send(EngineCmd::Sound(SoundCmd::SetVolume(s.id, volume)));
+            }
+            if previewing == Some(s.id) {
+                self.port
+                    .send(EngineCmd::Listen(SoundCmd::SetVolume(s.id, volume)));
+            }
+        }
+    }
+
+    pub fn set_volume(&mut self, id: SoundId, volume: f32) {
+        let normalize = self.normalize;
+        let Some(s) = self.get_mut(id) else {
+            return;
+        };
+        s.entry.volume = volume;
+        let volume = s.play_volume(normalize);
         self.port
             .send(EngineCmd::Sound(SoundCmd::SetVolume(id, volume)));
         self.port
@@ -442,6 +484,7 @@ impl Soundboard {
             revision: 0,
             triggers: Triggers::default(),
             shared: None,
+            normalize: false,
         }));
         let b = board.clone();
         std::thread::Builder::new()
@@ -450,10 +493,15 @@ impl Soundboard {
                 // Ends when the board (and with it the job sender) is dropped.
                 while let Ok(job) = rx.recv() {
                     let result = decode::load(&job.path, job.rate);
+                    let level = result
+                        .as_ref()
+                        .ok()
+                        .and_then(|d| loudness::measure(&d.frames, d.sample_rate));
                     let mut board = b.lock().unwrap_or_else(|e| e.into_inner());
                     // A later rate change may have queued a newer job; this result is
                     // still better than nothing and gets replaced when that one lands.
                     if let Some(s) = board.get_mut(job.id) {
+                        s.level = level;
                         s.state = match result {
                             Ok(data) => LoadState::Ready(Arc::new(data)),
                             Err(e) => LoadState::Failed(e),
@@ -560,6 +608,65 @@ mod tests {
         }
         assert!(peak > 0.3, "sound audible in the output: {peak}");
         assert!(shared.is_playing(id));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn even_out_loudness_plays_a_quiet_and_a_loud_clip_at_about_the_same_level() {
+        use crate::audio::block::{BLOCK, BlockSource};
+        use crate::audio::engine::Engine;
+        use crate::audio::shared::Shared;
+        let dir = temp_dir("loudness");
+        let tone = |amplitude: f32| -> Vec<i16> {
+            (0..48_000)
+                .map(|i| ((i as f32 * 0.0576).sin() * amplitude * 32767.0) as i16)
+                .collect()
+        };
+        let (quiet, loud) = (dir.join("quiet.wav"), dir.join("loud.wav"));
+        write_wav(&quiet, 48_000, 1, &tone(0.05));
+        write_wav(&loud, 48_000, 1, &tone(0.8));
+        let shared = Arc::new(Shared::default());
+        shared
+            .voice_on
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let (mut engine, link) = Engine::new(shared.clone(), 48_000);
+        let port = Arc::new(EnginePort::default());
+        port.set(Some(link.cmds));
+        let sb = Soundboard::new(
+            port,
+            vec![SoundEntry::from_path(quiet), SoundEntry::from_path(loud)],
+        );
+        wait_loaded(&sb, 2);
+        sb.lock().shared = Some(shared.clone());
+        let ids: Vec<SoundId> = sb.lock().sounds.iter().map(|s| s.id).collect();
+        assert!(
+            sb.lock().sounds.iter().all(|s| s.level.is_some()),
+            "measured"
+        );
+
+        let mut peak_of = |id: SoundId, normalize: bool| {
+            sb.lock().set_normalize(normalize);
+            assert!(sb.lock().play(id));
+            let mut out = [0.0; BLOCK * 2];
+            let mut peak = 0.0f32;
+            for _ in 0..100 {
+                engine.render(&mut out);
+                peak = out.iter().fold(peak, |m, x| m.max(x.abs()));
+            }
+            sb.lock().stop_all();
+            for _ in 0..20 {
+                engine.render(&mut out);
+            }
+            peak
+        };
+        let (q, l) = (peak_of(ids[0], false), peak_of(ids[1], false));
+        assert!(l / q > 10.0, "as recorded: {q} {l}");
+        let (q, l) = (peak_of(ids[0], true), peak_of(ids[1], true));
+        assert!((l / q - 1.0).abs() < 0.1, "evened out: {q} {l}");
+        // The clip's own volume still counts on top.
+        sb.lock().set_volume(ids[1], 0.4);
+        let half = peak_of(ids[1], true);
+        assert!((half / l - 0.5).abs() < 0.05, "{half} {l}");
         std::fs::remove_dir_all(dir).ok();
     }
 

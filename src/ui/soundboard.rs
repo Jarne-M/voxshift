@@ -42,6 +42,8 @@ pub enum Action {
     Volume(SoundId, f32),
     /// The master volume of every clip (0..1).
     MasterVolume(f32),
+    /// "Even out loudness" on or off.
+    Normalize(bool),
     /// Play (or, when it is already, stop) a clip in the headphones only.
     Preview(SoundId),
     StopPreview,
@@ -372,6 +374,17 @@ fn toolbar_right(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) {
             "\"Hear clips myself\"",
             actions,
         );
+        ui.separator();
+        let mut even = v.settings.normalize;
+        let r = ui.checkbox(&mut even, "Even out loudness").on_hover_text(
+            "Play every clip at about the same loudness, so a quiet clip and a loud one \
+                 need no fiddling with their volumes. Your files are not changed.",
+        );
+        #[cfg(test)]
+        tests::remember(ui, ("menu", "normalize".into()), r.rect);
+        if r.changed() {
+            actions.push(Action::Normalize(even));
+        }
         ui.separator();
         if ui
             .button(format!("{}  New folder", icons::FOLDER_ADD))
@@ -1772,6 +1785,21 @@ fn edit_panel(ui: &mut Ui, v: &View, state: &mut State, s: &Sound, actions: &mut
     let mut volume = e.volume;
     if volume_slider(ui, &mut volume).changed() {
         actions.push(Action::Volume(id, volume));
+    }
+    if let Some(level) = s.level {
+        let text = if v.settings.normalize {
+            format!(
+                "Loudness {:.0} dB, evened out by {:+.1} dB",
+                level.loudness_db,
+                level.gain_db()
+            )
+        } else {
+            format!("Loudness {:.0} dB", level.loudness_db)
+        };
+        widgets::hint(ui, &text).on_hover_text(
+            "\"Even out loudness\" (in the \u{22ef} menu above the clips) plays every clip at \
+             about the same level",
+        );
     }
 
     field(ui, "Hotkey");

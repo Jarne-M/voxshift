@@ -368,6 +368,7 @@ impl VoxApp {
             let mut board = sounds.lock();
             board.recent = cfg.soundboard.recent.clone();
             board.shared = Some(shared.clone()); // toggle mode asks what is playing
+            board.normalize = cfg.soundboard.normalize;
             cfg.sounds = board.entries();
         }
         let tray_poster: Arc<OnceLock<TrayPoster>> = Arc::new(OnceLock::new());
@@ -1202,6 +1203,9 @@ impl VoxApp {
             self.cancel_capture();
         }
         self.cfg = settings::reset(&self.cfg);
+        self.sounds
+            .lock()
+            .set_normalize(self.cfg.soundboard.normalize);
         self.fx = Snapshot::from_settings(&self.cfg.effects);
         self.effects_changed();
         let _ = self.select_melody(self.cfg.melody.source.clone(), false);
@@ -1490,6 +1494,10 @@ impl VoxApp {
             A::MasterVolume(v) => {
                 self.cfg.soundboard.master_volume = v.clamp(0.0, 1.0);
                 apply_to_shared(&self.cfg, &self.shared);
+            }
+            A::Normalize(on) => {
+                self.cfg.soundboard.normalize = on;
+                self.sounds.lock().set_normalize(on);
             }
             A::Preview(id) => self.preview_clip(ctx, id),
             A::StopPreview => self.sounds.lock().stop_preview(),

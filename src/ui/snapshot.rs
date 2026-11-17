@@ -821,6 +821,39 @@ mod tests {
                 app.shared.monitor_clean.store(true, Relaxed);
             });
         }
+        if wanted("extra-normalize") {
+            app_shot(
+                &dir,
+                "extra-normalize",
+                (1280, 720),
+                dark,
+                1.0,
+                |app, ctx| {
+                    use crate::soundboard::loudness::Level;
+                    app.cfg.page = Page::Soundboard;
+                    app.apply_sound_action(ctx, crate::ui::soundboard::Action::Normalize(true));
+                    // (The clips reload at the output rate first; that would measure them again.)
+                    app.sounds.lock().set_output_rate(48_000);
+                    let start = std::time::Instant::now();
+                    while app.sounds.lock().sounds.iter().any(|s| match &s.state {
+                        crate::soundboard::library::LoadState::Ready(d) => d.sample_rate != 48_000,
+                        _ => true,
+                    }) {
+                        assert!(start.elapsed().as_secs() < 20);
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    let (id, name) = {
+                        let mut b = app.sounds.lock();
+                        b.sounds[3].level = Some(Level {
+                            loudness_db: -27.4,
+                            peak: 0.3,
+                        });
+                        (b.sounds[3].id, b.sounds[3].entry.name.clone())
+                    };
+                    app.board_page.open(id, &name, false);
+                },
+            );
+        }
         if wanted("extra-preview") {
             app_shot(&dir, "extra-preview", (1280, 720), dark, 1.0, |app, _| {
                 app.cfg.page = Page::Soundboard;

@@ -86,6 +86,8 @@ pub struct BoardSettings {
     pub pad_size: f32,
     /// Master volume of every clip (0..1), on top of each clip's own volume.
     pub master_volume: f32,
+    /// "Even out loudness": every clip plays at about the same level (see `loudness`).
+    pub normalize: bool,
 }
 
 impl Default for BoardSettings {
@@ -98,6 +100,7 @@ impl Default for BoardSettings {
             view: BoardView::default(),
             pad_size: PAD_SIZE_DEFAULT,
             master_volume: 1.0,
+            normalize: false,
         }
     }
 }
