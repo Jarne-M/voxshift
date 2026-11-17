@@ -379,6 +379,9 @@ pub fn bar(ui: &mut Ui, cfg: &Config, fx: &Snapshot, state: &mut BarState) -> Ve
             // (At the start of a line the divider has nothing to divide: then it's left out.)
             if ui.available_size_before_wrap().x < 9.0 + label_w + 80.0 + 2.0 * space::S {
                 ui.end_row();
+                // (Still a chip's height, so "Yours" sits in the middle of the line.)
+                ui.allocate_exact_size(vec2(0.0, 30.0), Sense::hover());
+                ui.add_space(-ui.spacing().item_spacing.x);
             } else {
                 let (rect, _) = ui.allocate_exact_size(vec2(9.0, 30.0), Sense::hover());
                 ui.painter().vline(
