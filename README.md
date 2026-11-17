@@ -68,7 +68,8 @@ nothing is uploaded anywhere.
 **Convenient**
 - Global hotkeys that work while a game has focus (the game still gets the key), all on one
   page.
-- A setup wizard on the first start, dark and light themes, and a UI scale from 90 to 150 %.
+- A setup wizard on the first start, dark and light themes, an accent colour of your choice,
+  and a UI scale from 90 to 150 %.
 - Runs in the system tray, can start with Windows, and remembers all your settings.
 - Share your presets and melodies with friends in one file.
 
@@ -164,7 +165,7 @@ Then pick a preset at the top of the **Voice** page and try it.
 | **Soundboard** | your clips, folders, search, the edit panel and "Now playing" |
 | **Audio setup** | the signal path, virtual mic, microphones, monitor and latency |
 | **Hotkeys** | every global hotkey in one list |
-| **Settings** | theme and UI scale, window and startup, switch feedback, the settings file, About |
+| **Settings** | theme, UI scale and accent colour, window and startup, switch feedback, the settings file, About |
 
 The button at the bottom left folds the rail to icons only; **?** lists the keyboard
 shortcuts. Messages (mic switched, preset saved, clip deleted, import results, errors) appear
@@ -470,7 +471,7 @@ it right away.
 
   | Icon | Meaning |
   |---|---|
-  | violet | all good |
+  | your accent colour (teal unless you [picked another](#settings)) | all good |
   | grey | voice changer off |
   | grey with a red slash | mic muted |
   | orange | no microphone available |
@@ -567,8 +568,8 @@ them in the app.
 
 The **Settings** page has:
 
-- **Appearance:** **Theme** (*Dark*, *Light* or *Same as Windows*) and **UI scale** (90 to
-  150 %). Ctrl + plus and Ctrl + minus also change the scale.
+- **Appearance:** **Theme** (*Dark*, *Light* or *Same as Windows*), **UI scale** (90 to
+  150 %; Ctrl + plus and Ctrl + minus also change it) and **Accent colour** (see below).
 - **Window & startup:** what closing the window does, **Start with Windows**, **Start minimized
   to the tray** and the voice changer's state at start. The window's size and place are
   remembered.
@@ -577,6 +578,25 @@ The **Settings** page has:
 - **Settings file:** where your settings are saved, **Open folder**, and **Reset settings…**.
 - **About:** the version, links to the Releases page and the source code, and **Setup
   wizard…**.
+
+**Accent colour.** The accent marks what is active: the ON pill, the selected page, switches,
+sliders, the selected preset, segmented buttons, the piano roll and more. It is **teal** by
+default. Under **Settings → Appearance → Accent colour** you can pick:
+
+- one of the quick picks: **Teal**, **Blue**, **Indigo**, **Graphite** or **Violet** (the
+  colour of older versions);
+- any colour of your own, with the colour picker or by typing or pasting a code such as
+  `#3B82F6` into the field next to it;
+- **Reset** to go back to teal.
+
+Everything follows at once, in the dark and the light theme. VoxShift works out the rest
+for you: lighter and darker shades for hover and highlights, and black or white text on the
+accent, whichever reads better (so a light colour such as yellow gets black text). If a
+colour would be hard to see on the theme's background (a very light colour on the light
+theme, or a very dark one on the dark theme), it is shown a little darker or lighter there.
+Red, orange and green mean danger, warnings and "all good"; an accent close to one of those
+gets a small warning, but you can still use it. The tray icon and the window icon use the
+accent as their "all good" colour.
 
 | What | Where |
 |---|---|
