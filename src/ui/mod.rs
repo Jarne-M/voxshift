@@ -210,6 +210,8 @@ fn apply_to_shared(cfg: &Config, shared: &Shared) {
     shared.monitor_voice.store(cfg.monitor_voice, Relaxed);
     shared.monitor_sounds.store(cfg.monitor_sounds, Relaxed);
     shared.sound_volume.set(cfg.soundboard.master_volume);
+    shared.duck_on.store(cfg.soundboard.duck, Relaxed);
+    shared.duck_db.set(cfg.soundboard.duck_db);
     shared.params.store(&Snapshot::from_settings(&cfg.effects));
     apply_feedback(cfg, shared);
 }
@@ -1493,6 +1495,12 @@ impl VoxApp {
             }
             A::MasterVolume(v) => {
                 self.cfg.soundboard.master_volume = v.clamp(0.0, 1.0);
+                apply_to_shared(&self.cfg, &self.shared);
+            }
+            A::Duck(on, db) => {
+                let range = organize::DUCK_DB_RANGE;
+                self.cfg.soundboard.duck = on;
+                self.cfg.soundboard.duck_db = db.clamp(*range.start(), *range.end());
                 apply_to_shared(&self.cfg, &self.shared);
             }
             A::Trim(id, trim) => {
@@ -4389,6 +4397,21 @@ pub(crate) mod tests {
         app.apply_sound_action(&ctx, soundboard::Action::Preview(ids[0]));
         assert!(app.toasts.contains("Turn on the monitor"));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn ducking_settings_reach_the_engine_and_old_configs_have_it_off() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        assert!(!app.shared.duck_on.load(Relaxed));
+        app.apply_sound_action(&ctx, soundboard::Action::Duck(true, 12.0));
+        assert!(app.shared.duck_on.load(Relaxed));
+        assert_eq!(app.shared.duck_db.get(), 12.0);
+        assert!(app.cfg.soundboard.duck);
+        app.apply_sound_action(&ctx, soundboard::Action::Duck(true, 99.0));
+        assert_eq!(app.shared.duck_db.get(), 24.0, "clamped");
+        let old: organize::BoardSettings = serde_json::from_str("{}").unwrap();
+        assert!(!old.duck && old.duck_db == organize::DUCK_DB_DEFAULT);
     }
 
     #[test]

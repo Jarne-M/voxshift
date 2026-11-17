@@ -872,6 +872,20 @@ mod tests {
                 app.board_page.open(id, &name, false);
             });
         }
+        if wanted("extra-board-menu") {
+            app_shot_clicking(
+                &dir,
+                "extra-board-menu",
+                (1280, 720),
+                |app, ctx| {
+                    use crate::ui::soundboard::Action as A;
+                    app.cfg.page = Page::Soundboard;
+                    app.apply_sound_action(ctx, A::Normalize(true));
+                    app.apply_sound_action(ctx, A::Duck(true, 10.0));
+                },
+                ("toolbar", "more"),
+            );
+        }
         if wanted("extra-preview") {
             app_shot(&dir, "extra-preview", (1280, 720), dark, 1.0, |app, _| {
                 app.cfg.page = Page::Soundboard;
@@ -1022,6 +1036,38 @@ mod tests {
         };
         // (The toasts from setting the demo up are gone after a few seconds.)
         shot.wait(9.0, &mut frame);
+        shot.shoot(&mut frame)
+            .save_png(&dir.join(format!("{name}.png")));
+    }
+
+    /// [`app_shot`], then a click on the widget a test remembered as `target` (to open a
+    /// menu, say) before the picture is taken.
+    fn app_shot_clicking(
+        dir: &Path,
+        name: &str,
+        size: (usize, usize),
+        setup: impl FnOnce(&mut VoxApp, &Context),
+        target: (&str, &str),
+    ) {
+        let mut shot = Shot::new(size.0, size.1, ThemeChoice::Dark, 1.0);
+        let mut app = demo_app(&shot.ctx);
+        setup(&mut app, &shot.ctx);
+        let mut frame = |ui: &mut Ui| {
+            app.tick(ui.ctx());
+            app.draw(ui);
+        };
+        shot.wait(9.0, &mut frame);
+        let at = crate::ui::soundboard::tests::rect_of(&shot.ctx, target.0, target.1).center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        shot.step(vec![egui::Event::PointerMoved(at)], &mut frame);
+        shot.step(vec![button(true)], &mut frame);
+        shot.step(vec![button(false)], &mut frame);
+        shot.wait(0.5, &mut frame);
         shot.shoot(&mut frame)
             .save_png(&dir.join(format!("{name}.png")));
     }

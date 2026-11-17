@@ -88,7 +88,14 @@ pub struct BoardSettings {
     pub master_volume: f32,
     /// "Even out loudness": every clip plays at about the same level (see `loudness`).
     pub normalize: bool,
+    /// Ducking: lower my voice by `duck_db` while a clip plays.
+    pub duck: bool,
+    pub duck_db: f32,
 }
+
+/// How far ducking lowers the voice, in dB.
+pub const DUCK_DB_DEFAULT: f32 = 8.0;
+pub const DUCK_DB_RANGE: std::ops::RangeInclusive<f32> = 3.0..=24.0;
 
 impl Default for BoardSettings {
     fn default() -> Self {
@@ -101,6 +108,8 @@ impl Default for BoardSettings {
             pad_size: PAD_SIZE_DEFAULT,
             master_volume: 1.0,
             normalize: false,
+            duck: false,
+            duck_db: DUCK_DB_DEFAULT,
         }
     }
 }

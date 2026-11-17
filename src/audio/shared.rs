@@ -97,6 +97,9 @@ pub struct Shared {
     /// A/B compare, held from the window: the headphones get your clean voice instead of
     /// the effects. The virtual mic is not affected.
     pub monitor_clean: AtomicBool,
+    /// Ducking: your voice goes down by `duck_db` (positive dB) while a clip plays.
+    pub duck_on: AtomicBool,
+    pub duck_db: AtomicF32,
     /// Bumped to stop every soundboard clip (they fade out); acted on by the engine.
     pub stop_sounds: AtomicU32,
     /// Panic / safe mode: the engine sends the clean mic (no effects, no Melody Voice), plays
@@ -152,6 +155,8 @@ impl Default for Shared {
             listen_id: AtomicU64::new(0),
             listen_progress: AtomicF32::zero(),
             monitor_clean: AtomicBool::new(false),
+            duck_on: AtomicBool::new(false),
+            duck_db: AtomicF32::new(8.0),
             stop_sounds: AtomicU32::new(0),
             safe_mode: AtomicBool::new(false),
             safe_mutes_monitor: AtomicBool::new(false),

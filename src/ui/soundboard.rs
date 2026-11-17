@@ -17,7 +17,8 @@ use crate::soundboard::library::{Board, LoadState, Sound, SoundEntry};
 use crate::soundboard::mixer::SoundId;
 use crate::soundboard::names;
 use crate::soundboard::organize::{
-    self, BoardSettings, BoardTab, BoardView, PAD_SIZE_DEFAULT, PAD_SIZE_RANGE, SortMode,
+    self, BoardSettings, BoardTab, BoardView, DUCK_DB_DEFAULT, DUCK_DB_RANGE, PAD_SIZE_DEFAULT,
+    PAD_SIZE_RANGE, SortMode,
 };
 use crate::soundboard::playmode::PlayMode;
 use crate::soundboard::shape::{MAX_FADE_S, Trim};
@@ -45,6 +46,8 @@ pub enum Action {
     MasterVolume(f32),
     /// "Even out loudness" on or off.
     Normalize(bool),
+    /// Ducking on or off, and by how many dB.
+    Duck(bool, f32),
     /// A clip's trim and fades.
     Trim(SoundId, crate::soundboard::shape::Trim),
     /// Play (or, when it is already, stop) a clip in the headphones only.
@@ -359,7 +362,8 @@ fn action_key_menu(
 /// The view controls, added from the right edge inwards.
 fn toolbar_right(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) {
     let p = palette(ui);
-    widgets::menu_icon_button(ui, icons::MORE, "Hotkeys, new folder, Recent", |ui| {
+    let tip = "Hotkeys, loudness, ducking, new folder, Recent";
+    let _more = widgets::menu_icon_button(ui, icons::MORE, tip, |ui| {
         action_key_menu(
             ui,
             v,
@@ -388,6 +392,35 @@ fn toolbar_right(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) {
         if r.changed() {
             actions.push(Action::Normalize(even));
         }
+        let (mut duck, mut db) = (v.settings.duck, v.settings.duck_db);
+        let r = ui
+            .checkbox(&mut duck, "Lower my voice while a clip plays")
+            .on_hover_text(
+                "Ducking: your voice goes down a little while a clip plays (for others and in \
+                 your headphones), so the clip is easy to hear. It comes back when the clip ends.",
+            );
+        #[cfg(test)]
+        tests::remember(ui, ("menu", "duck".into()), r.rect);
+        let mut changed = r.changed();
+        if duck {
+            ui.horizontal(|ui| {
+                // (A slider takes all the room it gets: keep the menu narrow.)
+                ui.set_max_width(260.0);
+                ui.add_space(24.0);
+                changed |= widgets::Slider::new(&mut db, DUCK_DB_RANGE)
+                    .label("By")
+                    .unit(" dB")
+                    .default_value(DUCK_DB_DEFAULT)
+                    .step(1.0)
+                    .label_width(28.0)
+                    .tip("How much quieter your voice gets")
+                    .show(ui)
+                    .changed();
+            });
+        }
+        if changed {
+            actions.push(Action::Duck(duck, db));
+        }
         ui.separator();
         if ui
             .button(format!("{}  New folder", icons::FOLDER_ADD))
@@ -407,6 +440,8 @@ fn toolbar_right(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) {
             ui.close();
         }
     });
+    #[cfg(test)]
+    tests::remember(ui, ("toolbar", "more".into()), _more.rect);
     let list = v.settings.view == BoardView::List;
     if toggle_icon(ui, icons::VIEW_LIST, list, "Compact list").clicked() && !list {
         actions.push(Action::View(BoardView::List));

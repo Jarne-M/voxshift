@@ -77,7 +77,14 @@ pub struct Engine {
     sound_volume: Smoother,
     /// A/B compare: 0 = the headphones get the voice with effects, 1 = the clean mic.
     monitor_clean: Ramp,
+    /// Ducking: the voice's gain (1 = untouched), quick down and slow back up.
+    duck: Smoother,
 }
+
+/// Ducking goes down this fast when a clip starts...
+const DUCK_ATTACK_S: f32 = 0.03;
+/// ...and comes back up this slowly after the last one ends.
+const DUCK_RELEASE_S: f32 = 0.35;
 
 /// How long A/B compare takes to cross over.
 const AB_FADE_S: f32 = 0.02;
@@ -109,6 +116,7 @@ impl Engine {
         let engine = Self {
             sound_volume,
             monitor_clean: Ramp::new(sr, AB_FADE_S, 0.0),
+            duck: Smoother::new(sr, DUCK_RELEASE_S, 1.0),
             cmds: cmd_rx,
             garbage: garbage_tx,
             shared,
@@ -314,6 +322,24 @@ impl BlockSource for Engine {
         let progress = self.sounds.progress();
         for (slot, p) in self.shared.playing_progress.iter().zip(progress) {
             slot.set(p);
+        }
+
+        // Ducking: while a clip plays (not one fading out), the voice goes down a few dB,
+        // for others and in the headphones alike. Quick down, slow back up.
+        let clip_on = self.sounds.ids().iter().any(|&id| id != 0);
+        let duck_to = if clip_on && self.shared.duck_on.load(Relaxed) {
+            super::shared::from_db(-self.shared.duck_db.get().clamp(0.0, 40.0))
+        } else {
+            1.0
+        };
+        let time = if duck_to < 1.0 {
+            DUCK_ATTACK_S
+        } else {
+            DUCK_RELEASE_S
+        };
+        self.duck.set_time(self.sample_rate, time);
+        for v in voice.iter_mut() {
+            *v *= self.duck.next(duck_to);
         }
 
         let mut out_peak = 0.0f32;
@@ -755,6 +781,62 @@ mod tests {
         let (out, _) = talk(&mut e, &mut tx, &mut mon, 200 * BLOCK, 100, |_| 0.0);
         assert!(out.last().unwrap().abs() < 1e-3);
         assert!(shared.is_playing(3));
+    }
+
+    #[test]
+    fn ducking_lowers_the_voice_while_a_clip_plays_and_brings_it_back_after() {
+        use crate::soundboard::mixer::{SoundCmd, SoundData};
+        let (shared, mut e, mut tx, mut mon) = rig();
+        shared.duck_on.store(true, Relaxed);
+        shared.duck_db.set(12.0); // a quarter of the level
+        shared.monitor_volume.set(1.0);
+        // A silent clip, so what comes out is the voice alone.
+        let silent = || {
+            Arc::new(SoundData {
+                frames: vec![0.0; 48_000 * 2],
+                sample_rate: 48_000,
+            })
+        };
+        let peak_of = |v: &[f32]| v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        let (out, _) = talk(&mut e, &mut tx, &mut mon, 0, 100, sine);
+        let full = peak_of(&out[out.len() / 2..]);
+        e.apply(EngineCmd::Sound(SoundCmd::Play {
+            id: 1,
+            data: silent(),
+            volume: 1.0,
+            looped: false,
+        }));
+        let (out, m) = talk(&mut e, &mut tx, &mut mon, 100 * BLOCK, 100, sine);
+        let ducked = peak_of(&out[out.len() - 1000..]);
+        assert!((ducked / full - 0.25).abs() < 0.02, "{ducked} of {full}");
+        let heard = peak_of(&m[m.len() - 1000..]);
+        assert!(
+            (heard / full - 0.25).abs() < 0.02,
+            "headphones too: {heard}"
+        );
+        // Gone down within the attack (no click: a glide over several ms).
+        let step = out
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(step < 0.05, "{step}");
+        // The clip ends (1 s): the voice comes back, slowly.
+        let blocks = 48_000 * 2 / BLOCK; // past the clip's end, plus the release
+        let (out, _) = talk(&mut e, &mut tx, &mut mon, 200 * BLOCK, blocks, sine);
+        assert!(peak_of(&out[out.len() - 2000..]) / full > 0.97, "back up");
+        assert_eq!(shared.sounds_playing.load(Relaxed), 0);
+        // Off: a clip does nothing to the voice.
+        shared.duck_on.store(false, Relaxed);
+        e.apply(EngineCmd::Sound(SoundCmd::Play {
+            id: 2,
+            data: silent(),
+            volume: 1.0,
+            looped: false,
+        }));
+        let (out, _) = talk(&mut e, &mut tx, &mut mon, (200 + blocks) * BLOCK, 100, sine);
+        let level = peak_of(&out[out.len() / 2..]);
+        // (Within the few % a sampled sine's peak varies by.)
+        assert!((level / full - 1.0).abs() < 0.03, "{level} of {full}");
     }
 
     #[test]
