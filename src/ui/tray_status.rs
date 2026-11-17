@@ -17,6 +17,12 @@ pub fn presets(cfg: &Config) -> (Vec<String>, Option<String>) {
     (favorites, cfg.preset.clone())
 }
 
+/// The accent colour from the config, for the "all good" icon.
+pub fn accent(cfg: &Config) -> [u8; 3] {
+    let c = crate::ui::theme::accent_of(&cfg.accent);
+    [c.r(), c.g(), c.b()]
+}
+
 pub fn compute(
     dev: &DeviceStatus,
     voice_on: bool,
@@ -63,6 +69,7 @@ pub fn compute(
         tooltip,
         presets: Vec::new(),
         preset: None,
+        accent: crate::shell::icon::DEFAULT_ACCENT,
     }
 }
 
@@ -122,6 +129,16 @@ mod tests {
                 Some("C".to_string())
             )
         );
+    }
+
+    #[test]
+    fn the_icon_follows_the_accent_and_a_broken_value_gives_teal() {
+        let mut cfg = Config::default();
+        assert_eq!(accent(&cfg), crate::shell::icon::DEFAULT_ACCENT);
+        cfg.accent = "#3B82F6".into();
+        assert_eq!(accent(&cfg), [0x3B, 0x82, 0xF6]);
+        cfg.accent = "purple".into();
+        assert_eq!(accent(&cfg), crate::shell::icon::DEFAULT_ACCENT);
     }
 
     #[test]

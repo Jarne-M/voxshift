@@ -156,8 +156,9 @@ fn main() -> eframe::Result {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(config::config_path);
     let (cfg, notice) = config::load_from(&config_path);
+    let accent = ui::theme::accent_of(&cfg.accent);
     let icon = egui::IconData {
-        rgba: shell::icon::render(shell::Health::Ok, 64),
+        rgba: shell::icon::render(shell::Health::Ok, [accent.r(), accent.g(), accent.b()], 64),
         width: 64,
         height: 64,
     };
@@ -191,6 +192,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             ui::theme::apply(&cc.egui_ctx, cfg.theme);
+            ui::theme::set_accent(&cc.egui_ctx, accent);
             cc.egui_ctx.set_zoom_factor(cfg.ui_scale());
             let app = ui::VoxApp::new(config_path, cfg, notice, cc.egui_ctx.clone());
             Ok(Box::new(app))

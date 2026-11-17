@@ -35,6 +35,8 @@ pub struct TrayStatus {
     pub presets: Vec<String>,
     /// The preset last loaded (its quick pick is ticked).
     pub preset: Option<String>,
+    /// The accent colour: the icon's colour when all is well.
+    pub accent: [u8; 3],
 }
 
 /// What the tray (or a second launch of the app) asks for.
@@ -129,6 +131,7 @@ mod tests {
             tooltip: String::new(),
             presets: vec!["Late night".into(), "Rock & roll".into()],
             preset: Some("Rock & roll".into()),
+            accent: icon::DEFAULT_ACCENT,
         };
         assert_eq!(
             preset_items(&s),

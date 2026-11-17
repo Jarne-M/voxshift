@@ -123,6 +123,9 @@ pub struct VoxApp {
     frames_drawn: u64,
     autostart: bool,
     autostart_elsewhere: bool,
+    /// The accent colour the window and its icon were last styled with. The start styles them
+    /// with the config's (in `main`); a change after that is applied by `follow_accent`.
+    applied_accent: String,
 }
 
 /// Watches a hotkey capture for key presses that never reach the global listener.
@@ -311,8 +314,9 @@ impl VoxApp {
                     shared_s.monitor_voice.load(Relaxed),
                     shared_s.safe_mode.load(Relaxed),
                 );
-                (s.presets, s.preset) =
-                    tray_status::presets(&mirror_s.lock().unwrap_or_else(|e| e.into_inner()));
+                let cfg = mirror_s.lock().unwrap_or_else(|e| e.into_inner());
+                (s.presets, s.preset) = tray_status::presets(&cfg);
+                s.accent = tray_status::accent(&cfg);
                 s
             },
             move |action| match action {
@@ -409,6 +413,7 @@ impl VoxApp {
             frames_drawn: 0,
             autostart: false,
             autostart_elsewhere: false,
+            applied_accent: cfg.accent.clone(),
             sounds,
             hotkeys: None,
             capturing: None,
@@ -605,6 +610,7 @@ impl VoxApp {
     pub fn tick(&mut self, ctx: &egui::Context) {
         self.status = self.manager.status();
         self.first_run_defaults();
+        self.follow_accent(ctx);
         self.sounds.lock().set_output_rate(self.status.output.rate);
         // The tray or a hotkey may have toggled the voice changer or "hear myself".
         let voice_on = self.shared.voice_on.load(Relaxed);
@@ -740,6 +746,27 @@ impl VoxApp {
             };
             self.jump_to_preset(ctx, &name);
         }
+    }
+
+    /// A new accent colour in the config (Settings, a reset): restyle the window, and give the
+    /// window icon and the tray icon the new "all good" colour.
+    fn follow_accent(&mut self, ctx: &egui::Context) {
+        if self.applied_accent == self.cfg.accent {
+            return;
+        }
+        self.applied_accent = self.cfg.accent.clone();
+        let accent = theme::accent_of(&self.cfg.accent);
+        theme::set_accent(ctx, accent);
+        let rgb = [accent.r(), accent.g(), accent.b()];
+        ctx.send_viewport_cmd(ViewportCommand::Icon(Some(Arc::new(egui::IconData {
+            rgba: crate::shell::icon::render(crate::shell::Health::Ok, rgb, 64),
+            width: 64,
+            height: 64,
+        }))));
+        // (The tray reads the colour from the mirror, which must have it first.)
+        self.sync_mirror();
+        self.refresh_tray();
+        ctx.request_repaint();
     }
 
     /// A preset hotkey or a tray quick pick: load the preset and switch the voice changer on.
@@ -4573,6 +4600,74 @@ pub(crate) mod tests {
         let skip = rect_of(&ctx, "wizard", "skip").center();
         click(&ctx, &mut app, skip, 9.0);
         assert!(app.wizard.is_none() && app.cfg.setup_done);
+    }
+
+    /// Settings › Appearance › Accent colour: a quick pick, a pasted hex code and Reset each
+    /// restyle the window at once, are saved as hex, and reach the tray (through the mirror).
+    #[test]
+    fn the_accent_colour_follows_the_settings_row_live() {
+        use widgets::rect_of;
+        let ctx = egui::Context::default();
+        theme::apply(&ctx, theme::ThemeChoice::Dark);
+        let mut app = test_app();
+        app.cfg.page = Page::Settings;
+        let size = (1240.0, 800.0);
+        settle(&ctx, &mut app, 0.0);
+        assert_eq!(app.cfg.accent, "#14B8A6", "teal by default");
+        assert_eq!(theme::palette_of(&ctx).accent, theme::DEFAULT_ACCENT);
+
+        let blue = rect_of(&ctx, "accent", "Blue").center();
+        click(&ctx, &mut app, blue, 1.0);
+        frame(&ctx, &mut app, size, 1.5, vec![]);
+        assert_eq!(app.cfg.accent, "#3B82F6");
+        let p = theme::palette_of(&ctx);
+        assert_eq!(
+            p,
+            theme::Palette::new(true, theme::ACCENTS[1].1),
+            "restyled"
+        );
+        assert_eq!(p.on_accent, egui::Color32::WHITE);
+        assert_eq!(
+            tray_status::accent(&app.mirror.lock().unwrap()),
+            [0x3B, 0x82, 0xF6],
+            "the tray icon follows"
+        );
+
+        // A pasted code: a light yellow gets black text on it.
+        let hex = rect_of(&ctx, "accent", "hex").center();
+        click(&ctx, &mut app, hex, 2.0);
+        let select_all = egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        frame(&ctx, &mut app, size, 2.5, vec![select_all]);
+        frame(
+            &ctx,
+            &mut app,
+            size,
+            2.6,
+            vec![egui::Event::Paste("#FFEB00".into())],
+        );
+        frame(&ctx, &mut app, size, 2.7, vec![]);
+        assert_eq!(app.cfg.accent, "#FFEB00");
+        assert_eq!(theme::palette_of(&ctx).on_accent, egui::Color32::BLACK);
+
+        let reset = rect_of(&ctx, "accent", "reset").center();
+        click(&ctx, &mut app, reset, 3.0);
+        frame(&ctx, &mut app, size, 3.5, vec![]);
+        assert_eq!(app.cfg.accent, "#14B8A6");
+        assert_eq!(theme::palette_of(&ctx), theme::DARK);
+
+        // "Reset settings" brings a changed accent back to teal too.
+        app.cfg.accent = "#6366F1".into();
+        frame(&ctx, &mut app, size, 4.0, vec![]);
+        assert_eq!(theme::palette_of(&ctx).accent, theme::ACCENTS[2].1);
+        app.reset_settings(&ctx);
+        frame(&ctx, &mut app, size, 4.1, vec![]);
+        assert_eq!(theme::palette_of(&ctx), theme::DARK);
     }
 
     #[test]

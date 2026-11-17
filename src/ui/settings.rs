@@ -5,7 +5,7 @@ use super::icons;
 use super::theme::{self, ThemeChoice, palette, space};
 use super::widgets::{self, Tone, card, section_title};
 use crate::config::{CloseBehavior, Config, StartVoice};
-use egui::{Id, RichText, Ui};
+use egui::{Color32, Id, RichText, Stroke, Ui};
 use std::path::Path;
 
 pub const REPO_URL: &str = "https://github.com/Jarne-M/voxshift";
@@ -87,7 +87,100 @@ fn appearance(ui: &mut Ui, cfg: &mut Config, actions: &mut Vec<Action>) {
                 actions.push(Action::Scale(scale));
             }
         });
+        accent_row(ui, cfg);
     });
+}
+
+/// One colour of the quick picks: a round swatch, ringed when it is the one in use.
+fn swatch(ui: &mut Ui, color: Color32, selected: bool, name: &str) -> egui::Response {
+    let p = palette(ui);
+    let size = 22.0;
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    let c = rect.center();
+    let hovered = r.hovered();
+    ui.painter().circle_filled(c, size / 2.0 - 3.0, color);
+    if selected || hovered {
+        let ring = if selected { p.text } else { p.border_strong };
+        ui.painter()
+            .circle_stroke(c, size / 2.0 - 0.5, Stroke::new(1.5, ring));
+    }
+    #[cfg(test)]
+    widgets::remember(ui.ctx(), "accent", name, rect);
+    r.on_hover_text(format!("{name} ({})", theme::to_hex(color)))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// "Accent colour": quick picks, a colour picker, a hex field and Reset. A change is stored in
+/// the config; the app restyles everything from it on the next frame.
+fn accent_row(ui: &mut Ui, cfg: &mut Config) {
+    let current = theme::accent_of(&cfg.accent);
+    let mut pick = None;
+    row(ui, "Accent colour", |ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        for (name, color) in theme::ACCENTS {
+            if swatch(ui, color, current == color, name).clicked() {
+                pick = Some(color);
+            }
+        }
+        ui.add_space(space::S);
+        let mut rgb = [current.r(), current.g(), current.b()];
+        if ui
+            .color_edit_button_srgb(&mut rgb)
+            .on_hover_text("Any colour of your own")
+            .changed()
+        {
+            pick = Some(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+        }
+        // While you type, the field keeps your text; otherwise it shows the colour in use.
+        let id = Id::new("accent_hex");
+        let mut text = ui
+            .data(|d| d.get_temp::<String>(id))
+            .unwrap_or_else(|| theme::to_hex(current));
+        let r = ui
+            .add(
+                egui::TextEdit::singleline(&mut text)
+                    .desired_width(72.0)
+                    .char_limit(7)
+                    .hint_text("#RRGGBB"),
+            )
+            .on_hover_text("Type or paste a colour code, like #14B8A6");
+        #[cfg(test)]
+        widgets::remember(ui.ctx(), "accent", "hex", r.rect);
+        if r.changed()
+            && let Some(c) = theme::parse_hex(&text)
+        {
+            pick = Some(c);
+        }
+        if r.has_focus() {
+            ui.data_mut(|d| d.insert_temp(id, text));
+        } else {
+            ui.data_mut(|d| d.remove::<String>(id));
+        }
+        let reset = ui
+            .add_enabled(current != theme::DEFAULT_ACCENT, egui::Button::new("Reset"))
+            .on_hover_text("Back to teal, the default");
+        #[cfg(test)]
+        widgets::remember(ui.ctx(), "accent", "reset", reset.rect);
+        if reset.clicked() {
+            pick = Some(theme::DEFAULT_ACCENT);
+        }
+    });
+    if let Some(c) = pick {
+        cfg.accent = theme::to_hex(c);
+        ui.ctx().request_repaint();
+    }
+    if let Some(what) = theme::resembles_status(theme::accent_of(&cfg.accent)) {
+        widgets::notice(
+            ui,
+            icons::WARNING,
+            &format!(
+                "This colour looks like the {what} colour VoxShift uses for status, so \
+                 \u{201c}active\u{201d} and a warning may be hard to tell apart. You can still \
+                 use it."
+            ),
+            Tone::Warning,
+        );
+    }
 }
 
 fn window(ui: &mut Ui, cfg: &mut Config, v: &View, actions: &mut Vec<Action>) {

@@ -885,7 +885,7 @@ struct Look<'a> {
 }
 
 impl Look<'_> {
-    fn fill(&self, p: &Palette) -> Color32 {
+    fn fill(&self, p: Palette) -> Color32 {
         let base = match tint(self.e) {
             Some(c) => mix(p.surface, c, 0.10),
             None => p.surface,
@@ -899,7 +899,7 @@ impl Look<'_> {
         }
     }
 
-    fn border(&self, p: &Palette) -> Stroke {
+    fn border(&self, p: Palette) -> Stroke {
         if self.progress.is_some() {
             Stroke::new(1.5, p.accent)
         } else if self.editing {

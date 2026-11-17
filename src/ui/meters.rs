@@ -53,7 +53,7 @@ impl Peak {
     }
 }
 
-fn level_color(p: &Palette, db: f32) -> Color32 {
+fn level_color(p: Palette, db: f32) -> Color32 {
     if db > -3.0 {
         p.danger
     } else if db > -12.0 {
@@ -201,7 +201,7 @@ fn meter_in(
 pub fn clip_lamp(ui: &mut Ui, lit: bool) -> Response {
     let p = palette(ui);
     let font = FontId::proportional(font::SMALL - 1.5);
-    let color = if lit { p.on_accent } else { p.text_faint };
+    let color = if lit { p.on_status } else { p.text_faint };
     let galley = ui.painter().layout_no_wrap("CLIP".to_string(), font, color);
     let (rect, resp) = ui.allocate_exact_size(galley.size() + vec2(10.0, 4.0), Sense::hover());
     if ui.is_rect_visible(rect) {
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn colours_follow_the_level() {
-        let p = &crate::ui::theme::DARK;
+        let p = crate::ui::theme::DARK;
         assert_eq!(level_color(p, -30.0), p.success);
         assert_eq!(level_color(p, -8.0), p.warning);
         assert_eq!(level_color(p, -1.0), p.danger);

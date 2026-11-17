@@ -195,7 +195,7 @@ fn is_black_key(key: i32) -> bool {
 /// accent colour, Melody Voice's playhead (a line with a marker) and "Play melody"'s (green).
 fn piano_roll(
     ui: &mut Ui,
-    p: &Palette,
+    p: Palette,
     m: &Melody,
     current: Option<usize>,
     head: f32,

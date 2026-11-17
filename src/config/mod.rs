@@ -150,6 +150,8 @@ pub struct Config {
     pub melody: MelodySettings,
     /// Dark, light, or the same as Windows.
     pub theme: ThemeChoice,
+    /// The accent colour as "#RRGGBB" (files from before it existed get teal, the default).
+    pub accent: String,
     /// UI scale (1 = 100 %).
     pub ui_scale: f32,
     /// Where the window was and how big, to open it there again.
@@ -169,6 +171,9 @@ pub struct WindowPlacement {
     pub height: f32,
     pub maximized: bool,
 }
+
+/// The default accent colour: teal.
+pub const DEFAULT_ACCENT_HEX: &str = "#14B8A6";
 
 /// The UI scale a config may hold.
 pub const UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
@@ -225,6 +230,7 @@ impl Default for Config {
             soundboard: BoardSettings::default(),
             melody: MelodySettings::default(),
             theme: ThemeChoice::default(),
+            accent: DEFAULT_ACCENT_HEX.to_string(),
             ui_scale: 1.0,
             window: None,
             setup_done: true,
@@ -558,6 +564,25 @@ mod tests {
         assert!(!w(100.0, 1100.0).fits(screen));
         assert!(!w(-32000.0, -32000.0).fits(screen), "minimized");
         assert!(w(2000.0, 10.0).fits([-1920.0, 0.0, 3840.0 + 1920.0, 1080.0]));
+    }
+
+    #[test]
+    fn the_accent_is_saved_as_hex_and_older_files_get_teal() {
+        let cfg: Config = serde_json::from_str(r#"{ "theme": "Light" }"#).unwrap();
+        assert_eq!(
+            cfg.accent, "#14B8A6",
+            "a file from before the accent setting"
+        );
+        let dir = temp_dir("config-accent");
+        let path = dir.join("config.json");
+        let cfg = Config {
+            accent: "#3B82F6".into(),
+            ..Config::default()
+        };
+        save_to(&path, &cfg).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r##""accent": "#3B82F6""##), "{text}");
+        assert_eq!(load_from(&path).0.accent, "#3B82F6");
     }
 
     #[test]

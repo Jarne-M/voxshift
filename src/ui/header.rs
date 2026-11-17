@@ -360,7 +360,7 @@ fn meters_block(ui: &mut Ui, v: &View, width: f32, latency: bool) {
 fn mute_button(ui: &mut Ui, v: &View, compact: bool) -> Response {
     let p = palette(ui);
     let (icon, label, fill, fg, stroke) = if v.muted {
-        (icons::MIC_OFF, "Muted", p.danger, p.on_accent, p.danger)
+        (icons::MIC_OFF, "Muted", p.danger, p.on_status, p.danger)
     } else {
         (icons::MIC, "Mute", p.surface, p.text, p.border_strong)
     };
@@ -388,7 +388,7 @@ fn panic_button(ui: &mut Ui, v: &View) -> Response {
         RichText::new("PANIC")
             .size(15.0)
             .strong()
-            .color(p.on_accent),
+            .color(p.on_status),
     )
     .fill(p.panic)
     .corner_radius(CornerRadius::same(19))
@@ -401,16 +401,16 @@ fn panic_button(ui: &mut Ui, v: &View) -> Response {
 }
 
 /// The red banner shown instead of the normal header while safe mode is on.
-fn safe_banner(ui: &mut Ui, v: &View, p: &Palette, actions: &mut Vec<Action>) {
+fn safe_banner(ui: &mut Ui, v: &View, p: Palette, actions: &mut Vec<Action>) {
     let wide = ui.available_width() > 760.0;
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = space::M;
-        ui.label(RichText::new(icons::SAFE).size(24.0).color(p.on_accent));
+        ui.label(RichText::new(icons::SAFE).size(24.0).color(p.on_status));
         ui.label(
             RichText::new("SAFE MODE")
                 .size(18.0)
                 .strong()
-                .color(p.on_accent),
+                .color(p.on_status),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let restore = egui::Button::new(
@@ -444,7 +444,7 @@ fn safe_banner(ui: &mut Ui, v: &View, p: &Palette, actions: &mut Vec<Action>) {
                                 "Only your clean mic is sent: no effects, no Melody Voice, no \
                                  sounds{headphones}. Nothing was changed."
                             ))
-                            .color(p.on_accent),
+                            .color(p.on_status),
                         )
                         .truncate(),
                     );
@@ -455,7 +455,7 @@ fn safe_banner(ui: &mut Ui, v: &View, p: &Palette, actions: &mut Vec<Action>) {
 }
 
 /// The fill of the header panel (red in safe mode).
-pub fn fill(p: &Palette, safe: bool) -> Color32 {
+pub fn fill(p: Palette, safe: bool) -> Color32 {
     if safe { p.panic } else { p.surface }
 }
 

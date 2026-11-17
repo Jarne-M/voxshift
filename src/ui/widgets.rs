@@ -559,7 +559,7 @@ pub fn parse_value(text: &str, percent: bool) -> Option<f32> {
 // ------------------------------------------------------------------------------------------
 
 /// The frame of a card: a surface with a subtle border.
-pub fn card_frame(p: &Palette) -> Frame {
+pub fn card_frame(p: Palette) -> Frame {
     Frame::new()
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
@@ -832,7 +832,7 @@ pub enum Tone {
 }
 
 impl Tone {
-    pub fn color(self, p: &Palette) -> Color32 {
+    pub fn color(self, p: Palette) -> Color32 {
         match self {
             Tone::Neutral => p.text_muted,
             Tone::Accent => p.accent,
@@ -970,7 +970,7 @@ pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
 /// An action that removes or stops something.
 pub fn danger_button(ui: &mut Ui, text: &str) -> Response {
     let p = palette(ui);
-    filled_button(ui, text, p.danger, p.on_accent)
+    filled_button(ui, text, p.danger, p.on_status)
 }
 
 /// A square button with only an icon; it gets a background when hovered.

@@ -11,7 +11,7 @@
 
 use super::instance::WM_SHOW_APP;
 use super::{Health, TrayAction, TrayStatus, WINDOW_CLASS, copy_wide, icon, wide};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -65,7 +65,9 @@ struct Ctx {
     hwnd: HWND,
     status: StatusFn,
     action: ActionFn,
-    icons: Vec<(Health, HICON)>,
+    icons: RefCell<Vec<(Health, HICON)>>,
+    /// The accent colour the "all good" icon was drawn in.
+    icon_accent: Cell<[u8; 3]>,
     last: RefCell<Option<TrayStatus>>,
     balloon: Arc<Mutex<Option<(String, String)>>>,
     taskbar_created: u32,
@@ -76,9 +78,26 @@ struct Ctx {
 impl Ctx {
     fn icon(&self, h: Health) -> HICON {
         self.icons
+            .borrow()
             .iter()
             .find(|(k, _)| *k == h)
             .map_or(std::ptr::null_mut(), |(_, i)| *i)
+    }
+
+    /// Redraws the "all good" icon when the accent colour changed. Returns whether it did.
+    fn follow_accent(&self, accent: [u8; 3]) -> bool {
+        if self.icon_accent.get() == accent {
+            return false;
+        }
+        let fresh = make_icon(&icon::render(Health::Ok, accent, 32), 32);
+        for (h, i) in self.icons.borrow_mut().iter_mut() {
+            if *h == Health::Ok {
+                // The shell copies the icon it is given, so the old handle can go now.
+                unsafe { DestroyIcon(std::mem::replace(i, fresh)) };
+            }
+        }
+        self.icon_accent.set(accent);
+        true
     }
 
     fn base_data(&self) -> NOTIFYICONDATAW {
@@ -94,7 +113,8 @@ impl Ctx {
     fn refresh(&self, add: bool, force: bool) {
         let status = (self.status)();
         let changed = self.last.borrow().as_ref() != Some(&status);
-        if !(add || force || changed) {
+        let recolored = self.follow_accent(status.accent);
+        if !(add || force || changed || recolored) {
             return;
         }
         let mut nid = self.base_data();
@@ -475,13 +495,14 @@ fn run(
             Health::Safe,
         ]
         .into_iter()
-        .map(|h| (h, make_icon(&icon::render(h, 32), 32)))
+        .map(|h| (h, make_icon(&icon::render(h, icon::DEFAULT_ACCENT, 32), 32)))
         .collect();
         let ctx = Box::new(Ctx {
             hwnd,
             status,
             action,
-            icons,
+            icons: RefCell::new(icons),
+            icon_accent: Cell::new(icon::DEFAULT_ACCENT),
             last: RefCell::new(None),
             balloon,
             taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
@@ -500,7 +521,7 @@ fn run(
         }
         // The window is destroyed: nothing can reach the context any more.
         let ctx = Box::from_raw(ptr);
-        for (_, icon) in &ctx.icons {
+        for (_, icon) in ctx.icons.borrow().iter() {
             DestroyIcon(*icon);
         }
     }
@@ -527,6 +548,7 @@ mod tests {
                 tooltip: "VoxShift overlay test".into(),
                 presets: Vec::new(),
                 preset: None,
+                accent: icon::DEFAULT_ACCENT,
             },
             |_| {},
         )
@@ -544,7 +566,7 @@ mod tests {
 
     #[test]
     fn icon_conversion_produces_a_handle() {
-        let icon = make_icon(&icon::render(Health::NoMic, 32), 32);
+        let icon = make_icon(&icon::render(Health::NoMic, icon::DEFAULT_ACCENT, 32), 32);
         assert!(!icon.is_null());
         unsafe { DestroyIcon(icon) };
     }
@@ -568,6 +590,8 @@ mod tests {
                     tooltip: "VoxShift test".into(),
                     presets: vec!["Late night".into()],
                     preset: Some("Late night".into()),
+                    // Another colour than the icons start with: the Ok icon is redrawn.
+                    accent: [0x3B, 0x82, 0xF6],
                 }
             },
             |_| {},

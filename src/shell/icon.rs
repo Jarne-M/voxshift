@@ -3,10 +3,13 @@
 
 use super::Health;
 
-/// RGBA colour of the disc for each state.
-pub fn disc_color(h: Health) -> [u8; 3] {
+/// The accent colour the icon has when all is well, unless you pick another (teal).
+pub const DEFAULT_ACCENT: [u8; 3] = [0x14, 0xB8, 0xA6];
+
+/// Colour of the disc for each state; "all good" is the accent colour.
+pub fn disc_color(h: Health, accent: [u8; 3]) -> [u8; 3] {
     match h {
-        Health::Ok => [130, 90, 240],
+        Health::Ok => accent,
         Health::VoiceOff | Health::Muted => [110, 110, 118],
         Health::NoMic => [235, 150, 40],
         Health::NoOutput => [220, 50, 50],
@@ -55,10 +58,10 @@ fn mic(p: (f32, f32), n: f32) -> f32 {
 }
 
 /// Renders the icon as straight (non-premultiplied) RGBA, `size` x `size`.
-pub fn render(h: Health, size: u32) -> Vec<u8> {
+pub fn render(h: Health, accent: [u8; 3], size: u32) -> Vec<u8> {
     let n = size as f32;
     let mut out = vec![0u8; (size * size * 4) as usize];
-    let color = disc_color(h);
+    let color = disc_color(h, accent);
     for y in 0..size {
         for x in 0..size {
             let p = (x as f32 + 0.5, y as f32 + 0.5);
@@ -112,26 +115,39 @@ mod tests {
             Health::NoMic,
             Health::NoOutput,
         ] {
-            let img = render(h, 32);
+            let img = render(h, DEFAULT_ACCENT, 32);
             assert_eq!(img.len(), 32 * 32 * 4);
             assert_eq!(px(&img, 32, 0, 0)[3], 0);
             // Left edge of the disc, away from the white glyph.
             let p = px(&img, 32, 3, 16);
             assert_eq!(p[3], 255);
-            assert_eq!(&p[..3], &disc_color(h));
+            assert_eq!(&p[..3], &disc_color(h, DEFAULT_ACCENT));
         }
     }
 
     #[test]
+    fn all_good_has_the_accent_colour_and_problems_keep_theirs() {
+        let blue = [0x3B, 0x82, 0xF6];
+        assert_eq!(&px(&render(Health::Ok, blue, 32), 32, 3, 16)[..3], &blue);
+        assert_eq!(
+            disc_color(Health::NoOutput, blue),
+            disc_color(Health::NoOutput, DEFAULT_ACCENT)
+        );
+    }
+
+    #[test]
     fn glyph_is_white_and_muted_has_a_red_slash() {
-        let img = render(Health::Ok, 64);
+        let img = render(Health::Ok, DEFAULT_ACCENT, 64);
         assert_eq!(&px(&img, 64, 32, 22)[..3], &[255, 255, 255], "mic head");
-        let muted = render(Health::Muted, 64);
+        let muted = render(Health::Muted, DEFAULT_ACCENT, 64);
         let p = px(&muted, 64, 18, 18);
         assert!(p[0] > 200 && p[1] < 100, "slash: {p:?}");
         // Safe mode: red, with a white bar from bottom left to top right.
-        let safe = render(Health::Safe, 64);
-        assert_eq!(&px(&safe, 64, 3, 32)[..3], &disc_color(Health::Safe));
+        let safe = render(Health::Safe, DEFAULT_ACCENT, 64);
+        assert_eq!(
+            &px(&safe, 64, 3, 32)[..3],
+            &disc_color(Health::Safe, DEFAULT_ACCENT)
+        );
         assert_eq!(&px(&safe, 64, 16, 48)[..3], &[255, 255, 255], "the bar");
     }
 }

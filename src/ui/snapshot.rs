@@ -773,6 +773,25 @@ mod tests {
                 app.config_path = Some(r"C:\Users\you\AppData\Roaming\VoxShift\config.json".into());
             },
         );
+        // An accent of your own that looks like the danger red: the warning shows, and the
+        // whole window follows the colour.
+        for (name, choice) in [
+            ("setup-accent-dark", ThemeChoice::Dark),
+            ("setup-accent-light", ThemeChoice::Light),
+        ] {
+            app_shot(&dir, name, (1280, 720), choice, 1.0, |app, _| {
+                app.cfg.page = Page::Settings;
+                app.cfg.accent = "#E5484D".into();
+            });
+        }
+        app_shot(
+            &dir,
+            "voice-yellow",
+            (1280, 720),
+            ThemeChoice::Light,
+            1.0,
+            |app, _| app.cfg.accent = "#FFEB00".into(),
+        );
     }
 
     /// The pictures in README.md (copy them to `docs/screenshots`). The real keyboard listener

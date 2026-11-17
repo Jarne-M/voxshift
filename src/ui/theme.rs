@@ -1,9 +1,15 @@
 //! Look and feel in one place: colour tokens, spacing, corner radii and font sizes, for a dark
 //! and a light theme. Everything else in `ui` takes its colours from [`palette`], so a theme
-//! change reaches every widget.
+//! or accent change reaches every widget.
 //!
 //! Colour carries meaning: green = good, orange = warning, red = danger / panic, and the
-//! violet accent = "this is active".
+//! accent (teal unless you pick another in Settings) = "this is active".
+//!
+//! The accent you pick is turned into a full set by [`Palette::new`]: nudged lighter or darker
+//! until it reads on the theme's surfaces, hover and soft variants derived from it, and black
+//! or white text on it, whichever contrasts more. The context's style holds the result (as its
+//! hyperlink colour, which is the accent anyway), so [`palette`] needs no global state and
+//! every egui context has its own.
 
 use egui::{Color32, Context, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Ui};
 use serde::{Deserialize, Serialize};
@@ -46,13 +52,15 @@ pub struct Palette {
     pub text: Color32,
     pub text_muted: Color32,
     pub text_faint: Color32,
-    /// "Active": the VoxShift violet.
+    /// "Active": the accent colour you picked (made readable on this theme).
     pub accent: Color32,
     pub accent_hover: Color32,
     /// A quiet tint of the accent, for the background of active things.
     pub accent_soft: Color32,
     /// Text and icons on an accent, success or danger fill.
     pub on_accent: Color32,
+    /// Text and icons on a success, danger or panic fill (those don't follow the accent).
+    pub on_status: Color32,
     pub success: Color32,
     pub warning: Color32,
     pub danger: Color32,
@@ -60,6 +68,8 @@ pub struct Palette {
     pub panic: Color32,
 }
 
+/// The dark theme's base. Its accent fields are the default (teal) set; [`Palette::new`]
+/// replaces them with the ones for the accent you picked.
 pub const DARK: Palette = Palette {
     bg: Color32::from_rgb(17, 17, 21),
     surface: Color32::from_rgb(26, 26, 32),
@@ -70,16 +80,18 @@ pub const DARK: Palette = Palette {
     text: Color32::from_rgb(236, 236, 242),
     text_muted: Color32::from_rgb(160, 160, 176),
     text_faint: Color32::from_rgb(108, 108, 124),
-    accent: Color32::from_rgb(150, 110, 255),
-    accent_hover: Color32::from_rgb(171, 138, 255),
-    accent_soft: Color32::from_rgb(46, 38, 78),
-    on_accent: Color32::WHITE,
+    accent: Color32::from_rgb(20, 184, 166),
+    accent_hover: Color32::from_rgb(62, 197, 182),
+    accent_soft: Color32::from_rgb(25, 58, 59),
+    on_accent: Color32::BLACK,
+    on_status: Color32::WHITE,
     success: Color32::from_rgb(52, 199, 123),
     warning: Color32::from_rgb(240, 170, 50),
     danger: Color32::from_rgb(238, 82, 82),
     panic: Color32::from_rgb(200, 30, 36),
 };
 
+/// The light theme's base; see [`DARK`] about the accent fields.
 pub const LIGHT: Palette = Palette {
     bg: Color32::from_rgb(243, 243, 247),
     surface: Color32::from_rgb(255, 255, 255),
@@ -90,30 +102,181 @@ pub const LIGHT: Palette = Palette {
     text: Color32::from_rgb(24, 24, 31),
     text_muted: Color32::from_rgb(88, 88, 104),
     text_faint: Color32::from_rgb(136, 136, 150),
-    accent: Color32::from_rgb(118, 78, 232),
-    accent_hover: Color32::from_rgb(98, 58, 212),
-    accent_soft: Color32::from_rgb(234, 227, 255),
+    accent: Color32::from_rgb(16, 147, 133),
+    accent_hover: Color32::from_rgb(13, 121, 109),
+    accent_soft: Color32::from_rgb(222, 240, 238),
     on_accent: Color32::WHITE,
+    on_status: Color32::WHITE,
     success: Color32::from_rgb(20, 148, 84),
     warning: Color32::from_rgb(190, 118, 0),
     danger: Color32::from_rgb(208, 48, 48),
     panic: Color32::from_rgb(190, 25, 30),
 };
 
-impl Palette {
-    pub fn of(dark: bool) -> &'static Palette {
-        if dark { &DARK } else { &LIGHT }
+/// The accent colours offered in Settings, as quick picks. The first is the default.
+pub const ACCENTS: [(&str, Color32); 5] = [
+    ("Teal", Color32::from_rgb(0x14, 0xB8, 0xA6)),
+    ("Blue", Color32::from_rgb(0x3B, 0x82, 0xF6)),
+    ("Indigo", Color32::from_rgb(0x63, 0x66, 0xF1)),
+    ("Graphite", Color32::from_rgb(0xA1, 0xA1, 0xAA)),
+    ("Violet", Color32::from_rgb(150, 110, 255)),
+];
+
+pub const DEFAULT_ACCENT: Color32 = ACCENTS[0].1;
+
+/// "#14B8A6" (or "14b8a6", or the short "#1BA") as a colour.
+pub fn parse_hex(text: &str) -> Option<Color32> {
+    let hex = text.trim().trim_start_matches('#');
+    let digit = |i: usize| u8::from_str_radix(hex.get(i..i + 1)?, 16).ok();
+    let byte = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
+    match hex.len() {
+        6 => Some(Color32::from_rgb(byte(0)?, byte(2)?, byte(4)?)),
+        3 => Some(Color32::from_rgb(
+            digit(0)? * 17,
+            digit(1)? * 17,
+            digit(2)? * 17,
+        )),
+        _ => None,
     }
 }
 
-/// The colours of the theme this `Ui` is drawn in.
-pub fn palette(ui: &Ui) -> &'static Palette {
-    Palette::of(ui.visuals().dark_mode)
+/// A colour as "#RRGGBB".
+pub fn to_hex(c: Color32) -> String {
+    format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())
+}
+
+/// The accent a config holds; a missing or broken value gives the default.
+pub fn accent_of(hex: &str) -> Color32 {
+    parse_hex(hex).unwrap_or(DEFAULT_ACCENT)
+}
+
+/// Relative luminance (WCAG).
+fn luminance(c: Color32) -> f32 {
+    let lin = |v: u8| {
+        let v = f32::from(v) / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// WCAG contrast ratio between two colours (1 to 21).
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// How much contrast the accent needs against the theme's backgrounds (as for icons and
+/// large text).
+const ACCENT_CONTRAST: f32 = 3.1;
+
+/// White text on the accent is kept from this contrast up (bold and button-sized text).
+const ON_ACCENT_CONTRAST: f32 = 3.0;
+
+/// `c`, moved towards white (dark theme) or black (light theme) just enough to stand out on
+/// every background of `base`. A colour that already does is returned as it is, so applying
+/// this twice changes nothing.
+fn readable_accent(base: &Palette, c: Color32, dark: bool) -> Color32 {
+    let c = Color32::from_rgb(c.r(), c.g(), c.b());
+    let toward = if dark { Color32::WHITE } else { Color32::BLACK };
+    let worst = |c: Color32| {
+        [base.bg, base.surface, base.surface_raised]
+            .into_iter()
+            .map(|b| contrast(c, b))
+            .fold(f32::MAX, f32::min)
+    };
+    let mut out = c;
+    let mut t = 0.0;
+    while worst(out) < ACCENT_CONTRAST && t < 1.0 {
+        t += 0.02;
+        out = mix(c, toward, t);
+    }
+    out
+}
+
+impl Palette {
+    /// The theme's colours with `accent` as the accent, and everything derived from it.
+    pub fn new(dark: bool, accent: Color32) -> Palette {
+        let base = if dark { DARK } else { LIGHT };
+        let accent = readable_accent(&base, accent, dark);
+        let soft = if dark { 0.20 } else { 0.14 };
+        // White text where it reads well enough (as on most saturated colours), black on
+        // light colours such as teal, graphite or yellow.
+        let on_accent = if contrast(Color32::WHITE, accent) >= ON_ACCENT_CONTRAST
+            || contrast(Color32::WHITE, accent) >= contrast(Color32::BLACK, accent)
+        {
+            Color32::WHITE
+        } else {
+            Color32::BLACK
+        };
+        // Hover moves away from the text colour, so the text only gets easier to read.
+        let away = if on_accent == Color32::WHITE {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        };
+        Palette {
+            accent,
+            accent_hover: mix(accent, away, 0.18),
+            accent_soft: mix(base.surface, accent, soft),
+            on_accent,
+            ..base
+        }
+    }
+}
+
+/// Hue (0..360), saturation and value (0..1) of a colour.
+fn hsv(c: Color32) -> (f32, f32, f32) {
+    let [r, g, b] = [c.r(), c.g(), c.b()].map(|v| f32::from(v) / 255.0);
+    let max = r.max(g).max(b);
+    let d = max - r.min(g).min(b);
+    let hue = if d <= f32::EPSILON {
+        0.0
+    } else if max == r {
+        60.0 * ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    let sat = if max > 0.0 { d / max } else { 0.0 };
+    (hue, sat, max)
+}
+
+/// Which status colour (red, orange or green) an accent would be mistaken for, if any. Those
+/// colours mean panic / errors, warnings and "all good", so an accent close to one of them
+/// makes the window harder to read at a glance.
+pub fn resembles_status(c: Color32) -> Option<&'static str> {
+    let (hue, sat, val) = hsv(c);
+    if sat < 0.35 || val < 0.35 {
+        return None; // greys and very dark colours read as neutral
+    }
+    [
+        ("red (panic and errors)", DARK.danger),
+        ("orange (warnings)", DARK.warning),
+        ("green (all good)", DARK.success),
+    ]
+    .into_iter()
+    .find(|(_, status)| {
+        let d = (hue - hsv(*status).0).abs();
+        d.min(360.0 - d) < 16.0
+    })
+    .map(|(name, _)| name)
+}
+
+/// The colours of the theme this `Ui` is drawn in, with the accent in use.
+pub fn palette(ui: &Ui) -> Palette {
+    let v = ui.visuals();
+    Palette::new(v.dark_mode, v.hyperlink_color)
 }
 
 /// Like [`palette`], for code that only has the context (dialogs, toasts).
-pub fn palette_of(ctx: &Context) -> &'static Palette {
-    Palette::of(ctx.global_style().visuals.dark_mode)
+pub fn palette_of(ctx: &Context) -> Palette {
+    let style = ctx.global_style();
+    Palette::new(style.visuals.dark_mode, style.visuals.hyperlink_color)
 }
 
 /// The spacing scale. Everything is laid out on these steps (the scale is kept whole, also
@@ -244,12 +407,21 @@ fn install_fonts(ctx: &Context) {
 }
 
 /// Sets up fonts and both themes, and switches to `choice`. Call once at start; use
-/// [`set_choice`] to switch later.
+/// [`set_choice`] and [`set_accent`] to change them later.
 pub fn apply(ctx: &Context, choice: ThemeChoice) {
     install_fonts(ctx);
-    ctx.style_mut_of(egui::Theme::Dark, |s| style(s, &DARK, true));
-    ctx.style_mut_of(egui::Theme::Light, |s| style(s, &LIGHT, false));
+    set_accent(ctx, DEFAULT_ACCENT);
     set_choice(ctx, choice);
+}
+
+/// Restyles both themes for this accent colour; every widget follows from the next frame.
+pub fn set_accent(ctx: &Context, accent: Color32) {
+    ctx.style_mut_of(egui::Theme::Dark, |s| {
+        style(s, &Palette::new(true, accent), true)
+    });
+    ctx.style_mut_of(egui::Theme::Light, |s| {
+        style(s, &Palette::new(false, accent), false)
+    });
 }
 
 pub fn set_choice(ctx: &Context, choice: ThemeChoice) {
@@ -264,27 +436,30 @@ pub fn set_choice(ctx: &Context, choice: ThemeChoice) {
 mod tests {
     use super::*;
 
-    fn luminance(c: Color32) -> f32 {
-        let lin = |v: u8| {
-            let v = f32::from(v) / 255.0;
-            if v <= 0.04045 {
-                v / 12.92
-            } else {
-                ((v + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
-    }
-
-    /// WCAG contrast ratio.
-    fn contrast(a: Color32, b: Color32) -> f32 {
-        let (la, lb) = (luminance(a), luminance(b));
-        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    /// The quick picks and some awkward colours of your own: white, black, yellow, a mid grey,
+    /// a dark navy.
+    fn accents_to_try() -> Vec<Color32> {
+        ACCENTS
+            .iter()
+            .map(|a| a.1)
+            .chain([
+                Color32::WHITE,
+                Color32::BLACK,
+                Color32::from_rgb(255, 235, 0),
+                Color32::from_rgb(128, 128, 128),
+                Color32::from_rgb(10, 20, 60),
+            ])
+            .collect()
     }
 
     #[test]
     fn text_is_readable_on_every_surface_in_both_themes() {
-        for (name, p) in [("dark", &DARK), ("light", &LIGHT)] {
+        for (accent, dark) in accents_to_try()
+            .into_iter()
+            .flat_map(|a| [(a, true), (a, false)])
+        {
+            let p = &Palette::new(dark, accent);
+            let name = format!("{} {}", if dark { "dark" } else { "light" }, to_hex(accent));
             for (what, bg) in [
                 ("bg", p.bg),
                 ("surface", p.surface),
@@ -306,10 +481,100 @@ mod tests {
                     );
                 }
             }
-            assert!(contrast(p.on_accent, p.accent) > 3.0, "{name}: on accent");
-            assert!(contrast(p.on_accent, p.panic) > 4.5, "{name}: on panic");
+            assert!(
+                contrast(p.on_accent, p.accent) >= ON_ACCENT_CONTRAST,
+                "{name}: text on the accent"
+            );
+            assert!(
+                // (Pure white or black has nowhere further to go: then it stays the same.)
+                contrast(p.on_accent, p.accent_hover) >= contrast(p.on_accent, p.accent),
+                "{name}: hover makes the text easier to read"
+            );
+            assert!(contrast(p.on_status, p.panic) > 4.5, "{name}: on panic");
+            assert!(contrast(p.on_status, p.danger) > 3.0, "{name}: on danger");
             assert!(contrast(p.text, p.accent_soft) > 7.0, "{name}: on soft");
         }
+    }
+
+    #[test]
+    fn the_base_palettes_are_the_default_accents_set() {
+        assert_eq!(Palette::new(true, DEFAULT_ACCENT), DARK);
+        assert_eq!(Palette::new(false, DEFAULT_ACCENT), LIGHT);
+    }
+
+    #[test]
+    fn a_light_accent_gets_dark_text_and_a_readable_accent_is_kept_as_it_is() {
+        let teal = Palette::new(true, DEFAULT_ACCENT);
+        assert_eq!(teal.accent, DEFAULT_ACCENT, "teal reads on dark as it is");
+        assert_eq!(teal.on_accent, Color32::BLACK, "teal is light: black text");
+        assert_eq!(Palette::new(true, ACCENTS[2].1).on_accent, Color32::WHITE);
+        // Too light for a white page: darkened, and making it readable again changes nothing.
+        let light = Palette::new(false, DEFAULT_ACCENT);
+        assert_ne!(light.accent, DEFAULT_ACCENT);
+        assert_eq!(Palette::new(false, light.accent), light, "idempotent");
+        // Hover moves away from the text: lighter under black text, darker under white.
+        assert!(luminance(teal.accent_hover) > luminance(teal.accent));
+        assert_eq!(light.on_accent, Color32::WHITE);
+        assert!(luminance(light.accent_hover) < luminance(light.accent));
+        // A pale accent (yellow) gets black text in both themes.
+        for dark in [true, false] {
+            let yellow = Palette::new(dark, Color32::from_rgb(255, 235, 0));
+            if dark {
+                assert_eq!(yellow.on_accent, Color32::BLACK);
+            }
+            assert!(contrast(yellow.on_accent, yellow.accent) >= ON_ACCENT_CONTRAST);
+        }
+    }
+
+
+    #[test]
+    fn hex_codes_parse_and_print() {
+        assert_eq!(parse_hex("#14B8A6"), Some(DEFAULT_ACCENT));
+        assert_eq!(parse_hex(" 14b8a6 "), Some(DEFAULT_ACCENT));
+        assert_eq!(parse_hex("#fff"), Some(Color32::WHITE));
+        for bad in ["", "#12345", "#GGGGGG", "#1234567", "teal", "#é1"] {
+            assert_eq!(parse_hex(bad), None, "{bad:?}");
+        }
+        assert_eq!(to_hex(Color32::from_rgb(59, 130, 246)), "#3B82F6");
+        assert_eq!(accent_of("nonsense"), DEFAULT_ACCENT);
+        for (_, c) in ACCENTS {
+            assert_eq!(parse_hex(&to_hex(c)), Some(c));
+        }
+    }
+
+    #[test]
+    fn only_colours_like_red_orange_or_green_get_a_warning() {
+        for (_, c) in ACCENTS {
+            assert_eq!(resembles_status(c), None, "{}", to_hex(c));
+        }
+        for (hex, what) in [
+            ("#E53935", "red"),
+            ("#F4511E", "red"),
+            ("#FB8C00", "orange"),
+            ("#22C55E", "green"),
+        ] {
+            let found = resembles_status(parse_hex(hex).unwrap());
+            assert!(
+                found.is_some_and(|f| f.starts_with(what)),
+                "{hex}: {found:?}"
+            );
+        }
+        // Greys and very dark colours aren't mistaken for anything.
+        assert_eq!(resembles_status(Color32::from_rgb(130, 118, 118)), None);
+        assert_eq!(resembles_status(Color32::from_rgb(60, 10, 10)), None);
+    }
+
+    #[test]
+    fn a_new_accent_restyles_both_themes() {
+        let ctx = Context::default();
+        apply(&ctx, ThemeChoice::Dark);
+        assert_eq!(palette_of(&ctx), DARK);
+        let blue = ACCENTS[1].1;
+        set_accent(&ctx, blue);
+        assert_eq!(palette_of(&ctx), Palette::new(true, blue));
+        assert_eq!(ctx.global_style().visuals.selection.stroke.color, blue);
+        set_choice(&ctx, ThemeChoice::Light);
+        assert_eq!(palette_of(&ctx), Palette::new(false, blue));
     }
 
     #[test]
@@ -327,10 +592,10 @@ mod tests {
         let ctx = Context::default();
         apply(&ctx, ThemeChoice::Dark);
         assert!(ctx.global_style().visuals.dark_mode);
-        assert_eq!(palette_of(&ctx), &DARK);
+        assert_eq!(palette_of(&ctx), DARK);
         set_choice(&ctx, ThemeChoice::Light);
         assert!(!ctx.global_style().visuals.dark_mode);
-        assert_eq!(palette_of(&ctx), &LIGHT);
+        assert_eq!(palette_of(&ctx), LIGHT);
         assert_eq!(ctx.global_style().visuals.panel_fill, LIGHT.bg);
     }
 }
