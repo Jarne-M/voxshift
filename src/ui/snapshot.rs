@@ -814,6 +814,13 @@ mod tests {
                 };
             });
         }
+        if wanted("extra-ab") {
+            app_shot(&dir, "extra-ab", (1280, 720), dark, 1.0, |app, ctx| {
+                // As drawn while the button is held.
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new("ab_compare"), true));
+                app.shared.monitor_clean.store(true, Relaxed);
+            });
+        }
         if wanted("extra-preview") {
             app_shot(&dir, "extra-preview", (1280, 720), dark, 1.0, |app, _| {
                 app.cfg.page = Page::Soundboard;

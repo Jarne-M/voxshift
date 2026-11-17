@@ -78,6 +78,8 @@ pub struct VoxApp {
     shortcuts_open: bool,
     /// "Mic check": recording what others hear, or playing it back.
     mic_check: mic_check::MicCheck,
+    /// The A/B compare button was held this frame.
+    ab_held: bool,
     /// What a toast's "Undo" button can still bring back, by the toast's token.
     undo: Vec<(u64, Undo)>,
     undo_seq: u64,
@@ -404,6 +406,7 @@ impl VoxApp {
             board_page: soundboard::State::default(),
             shortcuts_open: false,
             mic_check: mic_check::MicCheck::default(),
+            ab_held: false,
             undo: Vec::new(),
             undo_seq: 0,
             board_revision: 0,
@@ -988,6 +991,11 @@ impl VoxApp {
                 Page::Settings => page(ui, 760.0, |ui| self.settings_page(ui)),
             });
 
+        // A/B compare lasts only while its button is held on the Voice page: any frame
+        // without that (another page, the mouse let go elsewhere) lets it go.
+        self.shared
+            .monitor_clean
+            .store(std::mem::take(&mut self.ab_held), Relaxed);
         self.handle_dropped_files(&ctx);
         self.tick_mic_check(&ctx);
         self.poll_hotkey_capture(&ctx);
@@ -1033,9 +1041,13 @@ impl VoxApp {
         let voice_on = self.shared.voice_on.load(Relaxed) && !self.feedback.safe_mode();
         let now = self.clock.elapsed().as_secs_f64();
         let mut mic_check_clicked = false;
+        let hearing = self.cfg.devices.monitor_enabled && self.shared.monitor_voice.load(Relaxed);
+        let mut ab_held = false;
         let chain = effects::chain(ui, &mut self.fx, voice_on, |ui| {
             mic_check_clicked = mic_check::button(ui, &self.mic_check, now);
+            ab_held = effects::ab_button(ui, hearing);
         });
+        self.ab_held = ab_held;
         if mic_check_clicked {
             self.toggle_mic_check(ui.ctx());
         }
@@ -4365,6 +4377,52 @@ pub(crate) mod tests {
         app.apply_sound_action(&ctx, soundboard::Action::Preview(ids[0]));
         assert!(app.toasts.contains("Turn on the monitor"));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn ab_compare_is_on_only_while_its_button_is_held() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.cfg.page = Page::Voice;
+        let size = (1240.0, 800.0);
+        frame(&ctx, &mut app, size, 0.0, vec![]);
+        // Without the monitor there is nothing to compare: the button is off.
+        let at = soundboard::tests::rect_of(&ctx, "voice", "ab").center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(
+            &ctx,
+            &mut app,
+            size,
+            0.1,
+            vec![egui::Event::PointerMoved(at)],
+        );
+        frame(&ctx, &mut app, size, 0.2, vec![button(true)]);
+        frame(&ctx, &mut app, size, 0.3, vec![]);
+        assert!(!app.shared.monitor_clean.load(Relaxed));
+        frame(&ctx, &mut app, size, 0.4, vec![button(false)]);
+
+        app.cfg.devices.monitor_enabled = true;
+        frame(&ctx, &mut app, size, 1.0, vec![]);
+        frame(&ctx, &mut app, size, 1.1, vec![button(true)]);
+        for i in 0..5 {
+            frame(&ctx, &mut app, size, 1.2 + f64::from(i) * 0.1, vec![]);
+            assert!(app.shared.monitor_clean.load(Relaxed), "held");
+        }
+        frame(&ctx, &mut app, size, 2.0, vec![button(false)]);
+        frame(&ctx, &mut app, size, 2.1, vec![]);
+        assert!(!app.shared.monitor_clean.load(Relaxed), "let go");
+        // Held while switching pages: it lets go too.
+        frame(&ctx, &mut app, size, 3.0, vec![button(true)]);
+        frame(&ctx, &mut app, size, 3.1, vec![]);
+        assert!(app.shared.monitor_clean.load(Relaxed));
+        app.cfg.page = Page::Soundboard;
+        frame(&ctx, &mut app, size, 3.2, vec![]);
+        assert!(!app.shared.monitor_clean.load(Relaxed));
     }
 
     #[test]

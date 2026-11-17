@@ -399,6 +399,42 @@ pub struct Outcome {
 
 /// Draws the whole chain. `voice_on`: whether the voice changer is on; when it is off the
 /// chain is dimmed (it can still be adjusted) and a note says what others hear.
+/// A/B compare: hold it to hear your clean voice in the headphones instead of the effects.
+/// `hearing`: the monitor is on and plays your voice (otherwise there is nothing to compare).
+/// Returns true while it is held down.
+pub fn ab_button(ui: &mut Ui, hearing: bool) -> bool {
+    let p = palette(ui);
+    let id = egui::Id::new("ab_compare");
+    let held_before = ui.ctx().data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    let (text, color) = if held_before {
+        ("Clean voice", p.on_accent)
+    } else {
+        ("Hold: A/B", p.text_muted)
+    };
+    let button =
+        egui::Button::new(RichText::new(format!("{}  {text}", icons::COMPARE)).color(color))
+            .sense(egui::Sense::click_and_drag());
+    let button = if held_before {
+        button.fill(p.accent)
+    } else {
+        button
+    };
+    let r = ui
+        .add_enabled(hearing, button)
+        .on_hover_text(
+            "Hold to hear your clean voice in your headphones, let go for the effects. \
+             Others keep hearing the effects.",
+        )
+        .on_disabled_hover_text(
+            "Turn on the monitor and \"Hear myself\" under Audio setup to compare",
+        );
+    #[cfg(test)]
+    widgets::remember(ui.ctx(), "voice", "ab", r.rect);
+    let held = hearing && r.is_pointer_button_down_on();
+    ui.ctx().data_mut(|d| d.insert_temp(id, held));
+    held
+}
+
 /// `tools` adds buttons to the right of the title row, left of "Reset all effects".
 pub fn chain(
     ui: &mut Ui,

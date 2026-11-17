@@ -75,7 +75,12 @@ pub struct Engine {
     was_safe: bool,
     /// The master soundboard volume, glided so moving its slider never crackles.
     sound_volume: Smoother,
+    /// A/B compare: 0 = the headphones get the voice with effects, 1 = the clean mic.
+    monitor_clean: Ramp,
 }
+
+/// How long A/B compare takes to cross over.
+const AB_FADE_S: f32 = 0.02;
 
 /// How fast the master soundboard volume follows its slider.
 const SOUND_VOLUME_S: f32 = 0.02;
@@ -103,6 +108,7 @@ impl Engine {
         let sound_volume = Smoother::new(sr, SOUND_VOLUME_S, shared.sound_volume.get());
         let engine = Self {
             sound_volume,
+            monitor_clean: Ramp::new(sr, AB_FADE_S, 0.0),
             cmds: cmd_rx,
             garbage: garbage_tx,
             shared,
@@ -250,6 +256,8 @@ impl BlockSource for Engine {
             melody.next_note();
         }
         self.melody_next_seen = next;
+        // The mic before any effect, for A/B compare in the headphones (a copy on the stack).
+        let clean = voice;
         self.chain.run(&mut voice, &params, voice_on);
         let melody = self.chain.melody().status();
         self.shared.melody_detected.set(melody.detected);
@@ -391,13 +399,20 @@ impl BlockSource for Engine {
             *v = self.monitor_gain[0].next(tv) * vol;
             *s = self.monitor_gain[1].next(ts) * vol;
         }
+        // A/B compare: the headphones cross over to the clean mic while it is held.
+        let ab = on(self.shared.monitor_clean.load(Relaxed));
+        let mut own = voice;
+        for (o, c) in own.iter_mut().zip(clean) {
+            let t = self.monitor_clean.next(ab);
+            *o += (c - *o) * t;
+        }
         if let Some(tx) = &mut self.monitor
             && let Ok(chunk) = tx.write_chunk_uninit(BLOCK * 2)
         {
             let it = (0..BLOCK * 2).map(|j| {
                 let i = j / 2;
                 // (A preview is heard even with "hear clips myself" off: that is its point.)
-                (voice[i] * gv[i] + sfx[j] * gs[i] + heard[j] * vol + cue[i]).clamp(-1.0, 1.0)
+                (own[i] * gv[i] + sfx[j] * gs[i] + heard[j] * vol + cue[i]).clamp(-1.0, 1.0)
             });
             chunk.fill_from_iter(it);
         }
@@ -740,6 +755,43 @@ mod tests {
         let (out, _) = talk(&mut e, &mut tx, &mut mon, 200 * BLOCK, 100, |_| 0.0);
         assert!(out.last().unwrap().abs() < 1e-3);
         assert!(shared.is_playing(3));
+    }
+
+    #[test]
+    fn ab_compare_gives_the_headphones_the_clean_mic_and_leaves_the_virtual_mic_alone() {
+        use crate::dsp::params::P;
+        let (shared, mut e, mut tx, mut mon) = rig();
+        shared.monitor_volume.set(1.0);
+        shared.params.set(P::OutputGain, 6.0); // about twice as loud
+        let peak_of = |v: &[f32]| v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        let (out, m) = talk(&mut e, &mut tx, &mut mon, 0, 200, sine);
+        let (out_fx, mon_fx) = (peak_of(&out[out.len() / 2..]), peak_of(&m[m.len() / 2..]));
+        assert!(
+            out_fx > 0.5 && (mon_fx - out_fx).abs() < 0.02,
+            "{out_fx} {mon_fx}"
+        );
+
+        shared.monitor_clean.store(true, Relaxed);
+        let (out, m) = talk(&mut e, &mut tx, &mut mon, 200 * BLOCK, 200, sine);
+        let (out_ab, mon_ab) = (peak_of(&out[out.len() / 2..]), peak_of(&m[m.len() / 2..]));
+        assert!(
+            (out_ab - out_fx).abs() < 0.02,
+            "others still hear the effect: {out_ab}"
+        );
+        assert!((mon_ab - 0.3).abs() < 0.02, "I hear my clean mic: {mon_ab}");
+        // The crossover is a short fade, not a jump.
+        let step = m
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(step < 0.1, "{step}");
+
+        shared.monitor_clean.store(false, Relaxed);
+        let (_, m) = talk(&mut e, &mut tx, &mut mon, 400 * BLOCK, 200, sine);
+        assert!(
+            (peak_of(&m[m.len() / 2..]) - mon_fx).abs() < 0.02,
+            "back to the effect"
+        );
     }
 
     #[test]
