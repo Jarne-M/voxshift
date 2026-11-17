@@ -399,12 +399,20 @@ pub struct Outcome {
 
 /// Draws the whole chain. `voice_on`: whether the voice changer is on; when it is off the
 /// chain is dimmed (it can still be adjusted) and a note says what others hear.
-pub fn chain(ui: &mut Ui, fx: &mut Snapshot, voice_on: bool) -> Outcome {
+/// `tools` adds buttons to the right of the title row, left of "Reset all effects".
+pub fn chain(
+    ui: &mut Ui,
+    fx: &mut Snapshot,
+    voice_on: bool,
+    tools: impl FnOnce(&mut Ui),
+) -> Outcome {
     let p = palette(ui);
     let mut out = Outcome::default();
     ui.horizontal(|ui| {
         widgets::section_title(ui, icons::FX_CHAIN, "Effect chain");
-        widgets::hint(ui, "Your voice passes through these in order, 1 to 9");
+        if ui.available_width() > 760.0 {
+            widgets::hint(ui, "Your voice passes through these in order, 1 to 9");
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let reset = ui
                 .button(
@@ -417,6 +425,7 @@ pub fn chain(ui: &mut Ui, fx: &mut Snapshot, voice_on: bool) -> Outcome {
             if reset.clicked() {
                 out.reset_all = true;
             }
+            tools(ui);
         });
     });
     if !voice_on {

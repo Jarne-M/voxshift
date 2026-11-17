@@ -82,11 +82,13 @@ pub const FILE: &str = ph::FILE_TEXT;
 pub const ABOUT: &str = ph::INFO;
 pub const LINK: &str = ph::ARROW_SQUARE_OUT;
 pub const HELP: &str = ph::QUESTION;
+pub const RECORD: &str = ph::RECORD;
 
 /// Every icon above, for the test that checks the font has them all.
 #[cfg(test)]
-pub const ALL: [&str; 63] = [
+pub const ALL: [&str; 64] = [
     HELP,
+    RECORD,
     USERS,
     SAFETY,
     APPEARANCE,

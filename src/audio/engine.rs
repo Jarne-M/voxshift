@@ -31,6 +31,9 @@ pub enum EngineCmd {
     Sound(SoundCmd),
     /// A clip for your headphones only ("preview"): it never reaches the virtual mic.
     Listen(SoundCmd),
+    /// A copy of everything sent to the virtual mic, for the mic check's recording. Blocks
+    /// that don't fit are dropped, never waited for.
+    AttachTap(Option<Producer<f32>>),
 }
 
 /// Things the audio thread is done with, to be dropped elsewhere. The payloads are never read:
@@ -54,6 +57,7 @@ pub struct Engine {
     /// Clips previewed in the headphones only.
     listen: SoundMixer,
     monitor: Option<Producer<f32>>,
+    tap: Option<Producer<f32>>,
     cue: Cue,
     in_meter: PeakMeter,
     out_meter: PeakMeter,
@@ -109,6 +113,7 @@ impl Engine {
             sounds: SoundMixer::with_rate(sample_rate),
             listen: SoundMixer::with_rate(sample_rate),
             monitor: None,
+            tap: None,
             cue: Cue::new(sr),
             in_meter: PeakMeter::new(sr, 0.3),
             out_meter: PeakMeter::new(sr, 0.3),
@@ -147,6 +152,11 @@ impl Engine {
             }
             EngineCmd::AttachMonitor(tx) => {
                 if let Some(old) = std::mem::replace(&mut self.monitor, tx) {
+                    self.retire(Garbage::Monitor(old));
+                }
+            }
+            EngineCmd::AttachTap(tx) => {
+                if let Some(old) = std::mem::replace(&mut self.tap, tx) {
                     self.retire(Garbage::Monitor(old));
                 }
             }
@@ -271,22 +281,17 @@ impl BlockSource for Engine {
         for done in self.sounds.mix(&mut sfx).into_iter().flatten() {
             self.retire(Garbage::Sound(done));
         }
+        let master = self.shared.sound_volume.get().clamp(0.0, 1.0);
+        for frame in sfx.as_chunks_mut::<2>().0 {
+            let g = self.sound_volume.next(master);
+            frame[0] *= g;
+            frame[1] *= g;
+        }
+        // Previews (and the mic check's recording) play at their own level: the master
+        // volume is about the mix others hear, and the recording already went through it.
         let mut heard = [0.0; BLOCK * 2];
         for done in self.listen.mix(&mut heard).into_iter().flatten() {
             self.retire(Garbage::Sound(done));
-        }
-        let master = self.shared.sound_volume.get().clamp(0.0, 1.0);
-        for (frame, h) in sfx
-            .as_chunks_mut::<2>()
-            .0
-            .iter_mut()
-            .zip(heard.as_chunks_mut::<2>().0)
-        {
-            let g = self.sound_volume.next(master);
-            for c in 0..2 {
-                frame[c] *= g;
-                h[c] *= g;
-            }
         }
         let listen_id = self.listen.ids().into_iter().find(|&id| id != 0);
         self.shared.listen_id.store(listen_id.unwrap_or(0), Relaxed);
@@ -315,6 +320,11 @@ impl BlockSource for Engine {
         }
         if clipped {
             self.shared.clip_count.fetch_add(1, Relaxed);
+        }
+        if let Some(tap) = &mut self.tap
+            && let Ok(chunk) = tap.write_chunk_uninit(BLOCK * 2)
+        {
+            chunk.fill_from_iter(out.iter().copied());
         }
         self.shared
             .output_level

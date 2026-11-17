@@ -801,6 +801,19 @@ mod tests {
                 app.apply_sound_action(ctx, crate::ui::soundboard::Action::MasterVolume(0.7));
             });
         }
+        if wanted("extra-mic-check") {
+            app_shot(&dir, "extra-mic-check", (1280, 720), dark, 1.0, |app, _| {
+                let (_tx, rx) = rtrb::RingBuffer::new(16);
+                let mut samples = Vec::with_capacity(48_000 * 10);
+                samples.resize(48_000 * 4, 0.0);
+                app.mic_check = crate::ui::mic_check::MicCheck::Recording {
+                    rx,
+                    samples,
+                    rate: 48_000,
+                    started: 0.0,
+                };
+            });
+        }
         if wanted("extra-preview") {
             app_shot(&dir, "extra-preview", (1280, 720), dark, 1.0, |app, _| {
                 app.cfg.page = Page::Soundboard;

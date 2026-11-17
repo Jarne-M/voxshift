@@ -9,6 +9,7 @@ pub mod hotkeys_page;
 pub mod icons;
 pub mod melody;
 pub mod meters;
+pub mod mic_check;
 pub mod nav;
 pub mod presets;
 pub mod settings;
@@ -75,6 +76,8 @@ pub struct VoxApp {
     board_page: soundboard::State,
     /// The `?` overlay with the in-window keyboard shortcuts is open.
     shortcuts_open: bool,
+    /// "Mic check": recording what others hear, or playing it back.
+    mic_check: mic_check::MicCheck,
     /// What a toast's "Undo" button can still bring back, by the toast's token.
     undo: Vec<(u64, Undo)>,
     undo_seq: u64,
@@ -400,6 +403,7 @@ impl VoxApp {
             hotkey_filter: String::new(),
             board_page: soundboard::State::default(),
             shortcuts_open: false,
+            mic_check: mic_check::MicCheck::default(),
             undo: Vec::new(),
             undo_seq: 0,
             board_revision: 0,
@@ -985,6 +989,7 @@ impl VoxApp {
             });
 
         self.handle_dropped_files(&ctx);
+        self.tick_mic_check(&ctx);
         self.poll_hotkey_capture(&ctx);
         self.key_conflict_dialog(&ctx);
         self.close_dialog(&ctx);
@@ -1026,12 +1031,60 @@ impl VoxApp {
         self.melody_panel(ui);
         ui.add_space(theme::space::L);
         let voice_on = self.shared.voice_on.load(Relaxed) && !self.feedback.safe_mode();
-        let chain = effects::chain(ui, &mut self.fx, voice_on);
+        let now = self.clock.elapsed().as_secs_f64();
+        let mut mic_check_clicked = false;
+        let chain = effects::chain(ui, &mut self.fx, voice_on, |ui| {
+            mic_check_clicked = mic_check::button(ui, &self.mic_check, now);
+        });
+        if mic_check_clicked {
+            self.toggle_mic_check(ui.ctx());
+        }
         if chain.changed {
             self.effects_changed();
         }
         if chain.reset_all {
             self.reset_all_effects(ui.ctx());
+        }
+    }
+
+    /// The Mic check button: start recording, or stop whatever it is doing.
+    fn toggle_mic_check(&mut self, ctx: &egui::Context) {
+        if self.mic_check.busy() {
+            self.mic_check.cancel(&self.manager.port);
+            return;
+        }
+        if self.feedback.safe_mode() {
+            self.toasts
+                .push(ctx, "Safe mode is on: restore first, then check your mic");
+            return;
+        }
+        let now = self.clock.elapsed().as_secs_f64();
+        let rate = self.status.output.rate;
+        if !self.mic_check.start(&self.manager.port, rate, now) {
+            self.toasts.error(
+                ctx,
+                "Mic check: the virtual mic is not running (see Audio setup)",
+            );
+            return;
+        }
+        if !self.cfg.devices.monitor_enabled {
+            self.toasts.warn(
+                ctx,
+                "Recording. Turn on the monitor under Audio setup to hear it back.",
+            );
+        }
+    }
+
+    /// Moves the mic check along (every frame, also while another page is open).
+    fn tick_mic_check(&mut self, ctx: &egui::Context) {
+        let now = self.clock.elapsed().as_secs_f64();
+        if let Some(mic_check::Outcome::Failed) =
+            self.mic_check.tick(&self.manager.port, &self.shared, now)
+        {
+            self.toasts.error(
+                ctx,
+                "Mic check: nothing was recorded. Is the virtual mic running?",
+            );
         }
     }
 
@@ -4311,6 +4364,29 @@ pub(crate) mod tests {
         app.cfg.devices.monitor_enabled = false;
         app.apply_sound_action(&ctx, soundboard::Action::Preview(ids[0]));
         assert!(app.toasts.contains("Turn on the monitor"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_mic_check_button_records_and_a_second_click_stops_it() {
+        let ctx = egui::Context::default();
+        let (mut app, mut engine, dir) = loaded_board_app(&ctx, "ui-mic-check", &["a.wav"]);
+        app.cfg.devices.monitor_enabled = true;
+        app.cfg.page = Page::Voice;
+        frame(&ctx, &mut app, (1240.0, 800.0), 1.0, vec![]);
+        let button = soundboard::tests::rect_of(&ctx, "voice", "mic_check").center();
+        click(&ctx, &mut app, button, 1.5);
+        assert!(app.mic_check.recording());
+        render(&mut engine, 20);
+        frame(&ctx, &mut app, (1240.0, 800.0), 2.0, vec![]);
+        assert!(app.mic_check.progress(0.0) > 0.0, "the tap delivers");
+        click(&ctx, &mut app, button, 2.5);
+        assert!(!app.mic_check.busy(), "stopped");
+        // Without an engine it says why.
+        app.manager.port.set(None);
+        click(&ctx, &mut app, button, 3.5);
+        assert!(!app.mic_check.busy());
+        assert!(app.toasts.contains("virtual mic is not running"));
         std::fs::remove_dir_all(dir).ok();
     }
 
