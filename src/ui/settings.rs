@@ -38,6 +38,8 @@ pub enum Action {
     OpenConfigFolder,
     /// Confirmed in the dialog.
     Reset,
+    /// Open the setup wizard.
+    Wizard,
 }
 
 fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
@@ -272,10 +274,24 @@ fn settings_file(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) {
     }
 }
 
-fn about(ui: &mut Ui) {
+fn about(ui: &mut Ui, actions: &mut Vec<Action>) {
     let p = palette(ui);
     card(ui, |ui| {
-        section_title(ui, icons::ABOUT, "About");
+        ui.horizontal(|ui| {
+            section_title(ui, icons::ABOUT, "About");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let r = ui
+                    .button(format!("{}  Setup wizard\u{2026}", icons::LOGO))
+                    .on_hover_text(
+                        "The three first-start steps again: virtual mic, microphone, test",
+                    );
+                #[cfg(test)]
+                widgets::remember(ui.ctx(), "settings", "wizard", r.rect);
+                if r.clicked() {
+                    actions.push(Action::Wizard);
+                }
+            });
+        });
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(concat!("VoxShift ", env!("CARGO_PKG_VERSION")))
@@ -305,7 +321,7 @@ pub fn page(ui: &mut Ui, cfg: &mut Config, v: &View) -> Vec<Action> {
     ui.add_space(space::M);
     settings_file(ui, v, &mut actions);
     ui.add_space(space::M);
-    about(ui);
+    about(ui, &mut actions);
     actions
 }
 

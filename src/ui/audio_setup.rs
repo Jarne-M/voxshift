@@ -200,7 +200,7 @@ fn signal_path(ui: &mut Ui, steps: &[Step; 4]) {
 
 /// Dropdown of device names. Keeps showing a configured device that is not connected right now
 /// (the setting is kept for when it comes back).
-fn device_combo(
+pub(super) fn device_combo(
     ui: &mut Ui,
     id: &str,
     current: &mut String,
@@ -261,7 +261,7 @@ fn link_text(state: &LinkState, ep: &Endpoint) -> (String, Tone) {
     }
 }
 
-fn state_line(ui: &mut Ui, ep: &Endpoint) {
+pub(super) fn state_line(ui: &mut Ui, ep: &Endpoint) {
     let p = palette(ui);
     let (text, tone) = link_text(&ep.state, ep);
     ui.horizontal(|ui| {
@@ -322,7 +322,7 @@ fn virtual_mic_card(ui: &mut Ui, cfg: &mut Config, s: &DeviceStatus, ch: &mut Ch
 
 /// One mic: its device, a live meter with its dB value (and, for the primary, the silence
 /// threshold drawn on it) and its state.
-fn mic_row(ui: &mut Ui, cfg: &mut Config, v: &View, slot: usize, ch: &mut Changed) {
+pub(super) fn mic_row(ui: &mut Ui, cfg: &mut Config, v: &View, slot: usize, ch: &mut Changed) {
     let p = palette(ui);
     let active = v.status.active.slot() == Some(slot);
     ui.horizontal(|ui| {

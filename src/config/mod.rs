@@ -154,6 +154,10 @@ pub struct Config {
     pub ui_scale: f32,
     /// Where the window was and how big, to open it there again.
     pub window: Option<WindowPlacement>,
+    /// The setup wizard was finished or skipped. A missing value counts as done: a file
+    /// written before the wizard existed belongs to someone already set up; only a fresh
+    /// start (no file at all) gets `false`, from [`load_from`].
+    pub setup_done: bool,
 }
 
 /// The window's last place and size, in Windows' logical pixels (as at 100 % UI scale).
@@ -223,6 +227,17 @@ impl Default for Config {
             theme: ThemeChoice::default(),
             ui_scale: 1.0,
             window: None,
+            setup_done: true,
+        }
+    }
+}
+
+impl Config {
+    /// What a first start uses: the defaults, with the setup wizard still to do.
+    pub fn fresh() -> Self {
+        Self {
+            setup_done: false,
+            ..Self::default()
         }
     }
 }
@@ -244,7 +259,7 @@ pub fn config_path() -> PathBuf {
 pub fn load_from(path: &Path) -> (Config, Option<String>) {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Config::default(), None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Config::fresh(), None),
         Err(e) => {
             return (
                 Config::default(),
@@ -549,7 +564,9 @@ mod tests {
     fn missing_partial_and_broken_files() {
         let dir = temp_dir("config-bad");
         let path = dir.join("config.json");
-        assert_eq!(load_from(&path), (Config::default(), None));
+        // No file: a first start, with the setup wizard to do.
+        assert_eq!(load_from(&path), (Config::fresh(), None));
+        assert!(!Config::fresh().setup_done);
 
         // Old or hand-edited files with missing fields load with defaults for the rest.
         std::fs::write(
@@ -559,6 +576,10 @@ mod tests {
         .unwrap();
         let (cfg, warning) = load_from(&path);
         assert!(warning.is_none());
+        assert!(
+            cfg.setup_done,
+            "a file from before the wizard: already set up"
+        );
         assert!(!cfg.voice_on);
         assert_eq!(cfg.mic.silence_secs, 3.0);
         assert!(cfg.mic.switch_back, "missing field takes its default");

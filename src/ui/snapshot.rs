@@ -886,6 +886,17 @@ mod tests {
                 ("toolbar", "more"),
             );
         }
+        for (step, name) in [(0, "extra-wizard-1"), (2, "extra-wizard-3")] {
+            if wanted(name) {
+                app_shot(&dir, name, (1280, 720), dark, 1.0, |app, _| {
+                    app.wizard = Some(crate::ui::wizard::Wizard { step });
+                    if step == 0 {
+                        // As on a machine without VB-CABLE.
+                        app.manager = ManagerHandle::detached(crate::ui::tests::fake_status());
+                    }
+                });
+            }
+        }
         if wanted("extra-preview") {
             app_shot(&dir, "extra-preview", (1280, 720), dark, 1.0, |app, _| {
                 app.cfg.page = Page::Soundboard;

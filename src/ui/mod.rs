@@ -21,6 +21,7 @@ pub mod theme;
 pub mod toast;
 pub mod tray_status;
 pub mod widgets;
+pub mod wizard;
 
 use crate::audio::device_manager::{DeviceStatus, Event, ManagerCmd, ManagerHandle};
 use crate::audio::shared::{ActiveMic, Shared};
@@ -80,6 +81,8 @@ pub struct VoxApp {
     mic_check: mic_check::MicCheck,
     /// The A/B compare button was held this frame.
     ab_held: bool,
+    /// The setup wizard, while it is open.
+    wizard: Option<wizard::Wizard>,
     /// What a toast's "Undo" button can still bring back, by the toast's token.
     undo: Vec<(u64, Undo)>,
     undo_seq: u64,
@@ -410,6 +413,7 @@ impl VoxApp {
             shortcuts_open: false,
             mic_check: mic_check::MicCheck::default(),
             ab_held: false,
+            wizard: (!cfg.setup_done).then(wizard::Wizard::default),
             undo: Vec::new(),
             undo_seq: 0,
             board_revision: 0,
@@ -946,7 +950,8 @@ impl VoxApp {
         let blocked = self.capturing.is_some()
             || self.key_conflict.is_some()
             || self.close_dialog.is_some()
-            || self.shortcuts_open;
+            || self.shortcuts_open
+            || self.wizard.is_some();
         for shortcut in shortcuts::read(&ctx, self.cfg.page, blocked) {
             self.apply_shortcut(&ctx, shortcut);
         }
@@ -1005,6 +1010,7 @@ impl VoxApp {
         self.key_conflict_dialog(&ctx);
         self.close_dialog(&ctx);
         shortcuts::overlay(&ctx, &mut self.shortcuts_open);
+        self.wizard_dialog(&ctx);
         for token in self.toasts.show(&ctx) {
             self.undo(&ctx, token);
         }
@@ -1059,6 +1065,43 @@ impl VoxApp {
         }
         if chain.reset_all {
             self.reset_all_effects(ui.ctx());
+        }
+    }
+
+    /// The setup wizard, if open. Its device changes go out like the Audio setup page's.
+    fn wizard_dialog(&mut self, ctx: &egui::Context) {
+        let Some(wizard) = &mut self.wizard else {
+            return;
+        };
+        let preset = presets::loaded(&self.cfg, &self.fx).map(|(p, _)| p.name.clone());
+        let view = audio_setup::View {
+            status: &self.status,
+            shared: &self.shared,
+            preset: preset.as_deref(),
+            melody_on: self.fx.on(P::MelodyOn),
+        };
+        let now = self.clock.elapsed().as_secs_f64();
+        let out = wizard::show(ctx, wizard, &mut self.cfg, &view, &self.mic_check, now);
+        let ch = out.changed;
+        if ch.devices {
+            self.manager
+                .send(ManagerCmd::Devices(self.cfg.devices.clone()));
+        }
+        if ch.monitor {
+            apply_to_shared(&self.cfg, &self.shared);
+        }
+        if ch.rescan {
+            self.manager.send(ManagerCmd::Rescan);
+        }
+        if out.mic_check {
+            self.toggle_mic_check(ctx);
+        }
+        if out.close {
+            self.wizard = None;
+            self.cfg.setup_done = true;
+            if self.mic_check.busy() {
+                self.mic_check.cancel(&self.manager.port);
+            }
         }
     }
 
@@ -1194,6 +1237,7 @@ impl VoxApp {
                     }
                 }
                 settings::Action::Reset => self.reset_settings(ui.ctx()),
+                settings::Action::Wizard => self.wizard = Some(wizard::Wizard::default()),
             }
         }
     }
@@ -4397,6 +4441,81 @@ pub(crate) mod tests {
         app.apply_sound_action(&ctx, soundboard::Action::Preview(ids[0]));
         assert!(app.toasts.contains("Turn on the monitor"));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_setup_wizard_opens_on_a_first_start_walks_three_steps_and_reopens_from_settings() {
+        use soundboard::tests::{rect_of, try_rect_of};
+        let ctx = egui::Context::default();
+        // Someone already set up (any existing config file) never sees it by itself.
+        assert!(test_app().wizard.is_none());
+        // A first start does.
+        let mut app = VoxApp::with_manager(
+            Config::fresh(),
+            Arc::new(Shared::default()),
+            ManagerHandle::detached(fake_status()),
+        );
+        assert!(app.wizard.is_some());
+        let size = (1240.0, 800.0);
+        frame(&ctx, &mut app, size, 0.0, vec![]);
+        // Step 1: no VB-CABLE here, so it offers the download and a rescan.
+        assert!(try_rect_of(&ctx, "wizard", "rescan").is_some());
+        // While it is open, the in-window shortcuts are off.
+        let on = app.shared.voice_on.load(Relaxed);
+        frame(
+            &ctx,
+            &mut app,
+            size,
+            0.1,
+            vec![key_event(egui::Key::Space, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.shared.voice_on.load(Relaxed), on);
+
+        let next = rect_of(&ctx, "wizard", "next").center();
+        click(&ctx, &mut app, next, 1.0);
+        assert_eq!(app.wizard.as_ref().unwrap().step, 1);
+        let back = rect_of(&ctx, "wizard", "back").center();
+        click(&ctx, &mut app, back, 2.0);
+        assert_eq!(app.wizard.as_ref().unwrap().step, 0);
+        click(&ctx, &mut app, next, 3.0);
+        click(&ctx, &mut app, next, 4.0);
+        assert_eq!(app.wizard.as_ref().unwrap().step, 2);
+        // Step 3: switching the headphones on also turns on "hear myself".
+        app.cfg.monitor_voice = false;
+        app.cfg.monitor_sounds = false;
+        let monitor = rect_of(&ctx, "wizard", "monitor").center();
+        click(&ctx, &mut app, monitor, 5.0);
+        assert!(app.cfg.devices.monitor_enabled && app.cfg.monitor_voice);
+        assert!(!app.cfg.setup_done);
+        let finish = rect_of(&ctx, "wizard", "next").center();
+        click(&ctx, &mut app, finish, 6.0);
+        assert!(app.wizard.is_none() && app.cfg.setup_done, "finished");
+
+        // Settings › About opens it again; Skip closes it.
+        app.cfg.page = Page::Settings;
+        frame(&ctx, &mut app, size, 7.0, vec![]);
+        let reopen = rect_of(&ctx, "settings", "wizard");
+        // (The About card is at the bottom of the page: scroll there first.)
+        let scroll = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -2000.0),
+            modifiers: Default::default(),
+            phase: egui::TouchPhase::Move,
+        };
+        frame(
+            &ctx,
+            &mut app,
+            size,
+            7.1,
+            vec![egui::Event::PointerMoved(reopen.center()), scroll],
+        );
+        settle(&ctx, &mut app, 7.2);
+        let reopen = rect_of(&ctx, "settings", "wizard").center();
+        click(&ctx, &mut app, reopen, 8.0);
+        assert_eq!(app.wizard.as_ref().map(|w| w.step), Some(0));
+        let skip = rect_of(&ctx, "wizard", "skip").center();
+        click(&ctx, &mut app, skip, 9.0);
+        assert!(app.wizard.is_none() && app.cfg.setup_done);
     }
 
     #[test]
