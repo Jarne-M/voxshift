@@ -43,7 +43,7 @@ nothing is uploaded anywhere.
 - Effects: pitch, noise gate, tone/EQ, distortion, robot, chorus, echo and reverb, shown as a
   chain in the order your voice passes through them.
 - Ready-made presets (Deep Voice, Chipmunk, Robot, Demon, Radio and more) plus your own, with
-  favourites.
+  favourites that you can also pick from the tray menu.
 - **Melody Voice**: talk and it comes out *sung* to a melody, or auto-tuned to a key. Use the
   built-in tunes or your own MIDI files.
 - **A/B compare** (hold to hear your clean voice) and a **mic check** that records five seconds
@@ -219,7 +219,8 @@ The **Presets** card sits at the top of the Voice page.
 - **Your own** presets follow after **Yours**, favourites first (marked with ★). Click
   **+ New** to save the current settings under a name. Right-click one of your presets to
   **Rename**, add it to or remove it from the favourites, **Replace with the current
-  settings**, or **Delete** it. A preset saved with Melody Voice on also remembers its melody.
+  settings**, or **Delete** it. Favourites are also quick picks in the
+  [tray menu](#tray-icon-closing-and-startup). A preset saved with Melody Voice on also remembers its melody.
 - When you change a slider after loading a preset, its chip gets a dot and **Save** and
   **Revert** appear. *Save* updates your own preset (for a built-in one it asks for a new
   name); *Revert* goes back to the preset as it was saved.
@@ -456,8 +457,14 @@ it right away.
   - Mute mic
   - Hear myself (monitor)
   - the active mic
+  - your favourite presets (see below)
   - Stop all sounds
   - Quit
+
+  **Favourite presets** appear in the menu as quick picks, in the same order as in the preset
+  bar (up to 10). The one in use is ticked. Picking one loads it and switches the voice
+  changer on, just like a preset hotkey. The menu always shows your favourites as they are
+  when you open it; with no favourites, that part of the menu is left out.
 
   Hovering the icon shows the status, and its colour shows problems at a glance:
 
