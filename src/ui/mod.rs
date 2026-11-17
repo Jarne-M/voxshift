@@ -296,21 +296,27 @@ impl VoxApp {
         let feedback = self.feedback.clone();
         let board = self.sounds.board.clone();
         let mirror = self.mirror.clone();
+        // (The window keeps the mirror in step with its config, also while it is hidden, so
+        // the menu's favourites are current whenever it opens.)
+        let mirror_s = self.mirror.clone();
         let path = self.config_path.clone();
         let ending = self.session_ending.clone();
         let tray = Tray::start(
             move || {
                 let dev = status.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                tray_status::compute(
+                let mut s = tray_status::compute(
                     &dev,
                     shared_s.voice_on.load(Relaxed),
                     shared_s.mic_muted.load(Relaxed),
                     shared_s.monitor_voice.load(Relaxed),
                     shared_s.safe_mode.load(Relaxed),
-                )
+                );
+                (s.presets, s.preset) =
+                    tray_status::presets(&mirror_s.lock().unwrap_or_else(|e| e.into_inner()));
+                s
             },
             move |action| match action {
-                TrayAction::Show | TrayAction::Quit => {
+                TrayAction::Show | TrayAction::Quit | TrayAction::Preset(_) => {
                     let _ = tx.send(action);
                     ctx.request_repaint();
                 }
@@ -732,20 +738,25 @@ impl VoxApp {
                     continue;
                 }
             };
-            let all = config::presets::builtin()
-                .into_iter()
-                .chain(self.cfg.user_presets.iter().cloned());
-            let Some(preset) = all.into_iter().find(|p| p.name == name) else {
-                self.notify(ctx, format!("Preset \"{name}\" no longer exists"));
-                continue;
-            };
-            self.apply_preset(ctx, &preset);
-            // Jumping to a preset means you want to hear it.
-            self.feedback.set_voice(true, true);
-            self.cfg.voice_on = true;
-            self.refresh_tray();
-            self.notify(ctx, format!("Preset: {}", preset.name));
+            self.jump_to_preset(ctx, &name);
         }
+    }
+
+    /// A preset hotkey or a tray quick pick: load the preset and switch the voice changer on.
+    fn jump_to_preset(&mut self, ctx: &egui::Context, name: &str) {
+        let all = config::presets::builtin()
+            .into_iter()
+            .chain(self.cfg.user_presets.iter().cloned());
+        let Some(preset) = all.into_iter().find(|p| p.name == name) else {
+            self.notify(ctx, format!("Preset \"{name}\" no longer exists"));
+            return;
+        };
+        self.apply_preset(ctx, &preset);
+        // Jumping to a preset means you want to hear it.
+        self.feedback.set_voice(true, true);
+        self.cfg.voice_on = true;
+        self.refresh_tray();
+        self.notify(ctx, format!("Preset: {}", preset.name));
     }
 
     /// A toast, or a tray balloon while the window is hidden.
@@ -765,6 +776,7 @@ impl VoxApp {
             match r {
                 TrayAction::Show => self.show_window(ctx),
                 TrayAction::Quit => self.quit(ctx),
+                TrayAction::Preset(name) => self.jump_to_preset(ctx, &name),
                 _ => {}
             }
         }
@@ -2509,6 +2521,51 @@ pub(crate) mod tests {
         let out = ctx.run_logic(&egui::RawInput::default(), |ctx| app.tick(ctx));
         assert!(out.viewport_commands[&egui::ViewportId::ROOT].contains(&ViewportCommand::Close));
         assert!(app.quitting);
+    }
+
+    /// A favourite preset picked in the tray menu: listed there, loaded like a preset hotkey
+    /// (voice changer on), ticked afterwards, and gone from the menu once unfavourited.
+    #[test]
+    fn a_tray_quick_pick_loads_the_favourite_preset_and_switches_the_voice_on() {
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        app.apply_preset_action(&ctx, presets::Action::Save("Late night".into()));
+        app.apply_preset_action(&ctx, presets::Action::Save("Plain".into()));
+        app.apply_preset_action(&ctx, presets::Action::Favorite("Late night".into(), true));
+        let robot = config::presets::builtin()
+            .into_iter()
+            .find(|p| p.name == "Robot")
+            .unwrap();
+        app.apply_preset(&ctx, &robot);
+        app.feedback.set_voice(false, false);
+        let (tx, rx) = mpsc::channel();
+        app.shell_requests = Some(rx);
+        app.hidden = true;
+        let tick = |app: &mut VoxApp| {
+            let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| app.tick(ctx));
+        };
+        tick(&mut app);
+        let (favorites, current) = tray_status::presets(&app.mirror.lock().unwrap());
+        assert_eq!(favorites, vec!["Late night".to_string()], "only favourites");
+        assert_eq!(current.as_deref(), Some("Robot"));
+        assert!(!app.shared.voice_on.load(Relaxed));
+
+        tx.send(TrayAction::Preset("Late night".into())).unwrap();
+        tick(&mut app);
+        assert_eq!(app.cfg.preset.as_deref(), Some("Late night"));
+        assert!(app.shared.voice_on.load(Relaxed) && app.cfg.voice_on);
+        let (_, current) = tray_status::presets(&app.mirror.lock().unwrap());
+        assert_eq!(current.as_deref(), Some("Late night"), "ticked in the menu");
+
+        app.apply_preset_action(&ctx, presets::Action::Favorite("Late night".into(), false));
+        tick(&mut app);
+        let (favorites, _) = tray_status::presets(&app.mirror.lock().unwrap());
+        assert!(favorites.is_empty(), "the menu follows the favourites");
+
+        // A favourite deleted while the menu was open: nothing changes, it says so.
+        tx.send(TrayAction::Preset("Gone".into())).unwrap();
+        tick(&mut app);
+        assert_eq!(app.cfg.preset.as_deref(), Some("Late night"));
     }
 
     #[test]

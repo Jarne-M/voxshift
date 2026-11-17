@@ -31,10 +31,14 @@ pub struct TrayStatus {
     /// Read-only menu line, e.g. "Active: Fallback mic".
     pub active: String,
     pub tooltip: String,
+    /// Your favourite presets, offered as quick picks in the menu (in the preset bar's order).
+    pub presets: Vec<String>,
+    /// The preset last loaded (its quick pick is ticked).
+    pub preset: Option<String>,
 }
 
 /// What the tray (or a second launch of the app) asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TrayAction {
     Show,
     ToggleVoice,
@@ -43,6 +47,8 @@ pub enum TrayAction {
     StopAllSounds,
     /// Panic (safe mode) on, or restore.
     TogglePanic,
+    /// Load this preset and switch the voice changer on, like a preset hotkey.
+    Preset(String),
     Quit,
     /// Windows is shutting down or logging off: save now, the process is about to end.
     SessionEnd,
@@ -67,6 +73,19 @@ pub fn virtual_screen() -> Option<[f32; 4]> {
         m(SM_CYVIRTUALSCREEN),
     ];
     (screen[2] > 0.0 && screen[3] > 0.0).then_some(screen)
+}
+
+/// Most quick picks the tray menu shows (a longer menu stops being quick).
+pub const MAX_TRAY_PRESETS: usize = 10;
+
+/// The tray menu's preset quick picks: the label (with `&` doubled, since a single one marks
+/// a keyboard shortcut in a Win32 menu) and whether it is the preset in use.
+pub fn preset_items(s: &TrayStatus) -> Vec<(String, bool)> {
+    s.presets
+        .iter()
+        .take(MAX_TRAY_PRESETS)
+        .map(|name| (name.replace('&', "&&"), s.preset.as_deref() == Some(name)))
+        .collect()
 }
 
 pub fn wide(s: &str) -> Vec<u16> {
@@ -96,6 +115,34 @@ mod tests {
         assert_eq!(buf[4], 0);
         copy_wide(&mut buf, "ab");
         assert_eq!(&buf[..3], &[97, 98, 0]);
+    }
+
+    #[test]
+    fn preset_quick_picks_tick_the_preset_in_use_and_escape_ampersands() {
+        let mut s = TrayStatus {
+            health: Health::Ok,
+            voice_on: true,
+            muted: false,
+            monitor: false,
+            safe: false,
+            active: String::new(),
+            tooltip: String::new(),
+            presets: vec!["Late night".into(), "Rock & roll".into()],
+            preset: Some("Rock & roll".into()),
+        };
+        assert_eq!(
+            preset_items(&s),
+            vec![
+                ("Late night".to_string(), false),
+                ("Rock && roll".to_string(), true)
+            ]
+        );
+        s.preset = Some("Cave".into());
+        assert!(preset_items(&s).iter().all(|(_, on)| !on));
+        s.presets = (0..15).map(|i| format!("P{i}")).collect();
+        assert_eq!(preset_items(&s).len(), MAX_TRAY_PRESETS);
+        s.presets.clear();
+        assert!(preset_items(&s).is_empty(), "no favourites, no section");
     }
 
     #[test]

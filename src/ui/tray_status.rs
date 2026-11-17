@@ -2,7 +2,20 @@
 
 use crate::audio::device_manager::DeviceStatus;
 use crate::audio::shared::ActiveMic;
+use crate::config::Config;
 use crate::shell::{Health, TrayStatus};
+
+/// The tray's preset quick picks: your favourite presets in the preset bar's order, and the
+/// preset last loaded.
+pub fn presets(cfg: &Config) -> (Vec<String>, Option<String>) {
+    let favorites = cfg
+        .user_presets
+        .iter()
+        .filter(|p| p.favorite)
+        .map(|p| p.name.clone())
+        .collect();
+    (favorites, cfg.preset.clone())
+}
 
 pub fn compute(
     dev: &DeviceStatus,
@@ -48,6 +61,8 @@ pub fn compute(
         safe,
         active: format!("Active: {mic}"),
         tooltip,
+        presets: Vec::new(),
+        preset: None,
     }
 }
 
@@ -85,6 +100,28 @@ mod tests {
         let t = compute(&status(false, ActiveMic::None), true, false, false, false);
         assert!(t.tooltip.contains("output missing"));
         assert!(t.tooltip.len() < 128, "fits the tray tooltip");
+    }
+
+    #[test]
+    fn quick_picks_are_the_favourites_in_order() {
+        use crate::config::presets::Preset;
+        let mut cfg = Config::default();
+        for (name, favorite) in [("A", true), ("B", false), ("C", true)] {
+            cfg.user_presets.push(Preset {
+                name: name.into(),
+                effects: Default::default(),
+                melody: None,
+                favorite,
+            });
+        }
+        cfg.preset = Some("C".into());
+        assert_eq!(
+            presets(&cfg),
+            (
+                vec!["A".to_string(), "C".to_string()],
+                Some("C".to_string())
+            )
+        );
     }
 
     #[test]

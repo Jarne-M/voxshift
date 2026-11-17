@@ -13,7 +13,8 @@ pub struct Preset {
     /// presets saved without Melody Voice or before it existed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub melody: Option<MelodySource>,
-    /// One of your favourites: shown first in the preset bar (and offered in the tray menu).
+    /// One of your favourites: shown first in the preset bar and offered as a quick pick in
+    /// the tray menu.
     /// Yours alone: a shared `.voxpack` does not carry it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub favorite: bool,

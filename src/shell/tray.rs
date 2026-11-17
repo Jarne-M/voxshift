@@ -52,6 +52,8 @@ const CMD_STOP: usize = 4;
 const CMD_QUIT: usize = 5;
 const CMD_MONITOR: usize = 6;
 const CMD_PANIC: usize = 7;
+/// The preset quick picks: `CMD_PRESET + i` for the i-th favourite.
+const CMD_PRESET: usize = 100;
 
 type StatusFn = Box<dyn Fn() -> TrayStatus + Send>;
 type ActionFn = Box<dyn Fn(TrayAction) + Send>;
@@ -169,6 +171,25 @@ impl Ctx {
                 monitor.as_ptr(),
             );
             AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, active.as_ptr());
+            // Favourite presets as quick picks (built from this status, so the menu always
+            // shows the favourites as they are when it opens).
+            let picks: Vec<(Vec<u16>, bool)> = super::preset_items(&s)
+                .into_iter()
+                .map(|(label, on)| (item(&label), on))
+                .collect();
+            if !picks.is_empty() {
+                AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                let title = item("Favourite presets");
+                AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, title.as_ptr());
+                for (i, (label, on)) in picks.iter().enumerate() {
+                    AppendMenuW(
+                        menu,
+                        MF_STRING | checked(*on),
+                        CMD_PRESET + i,
+                        label.as_ptr(),
+                    );
+                }
+            }
             AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
             AppendMenuW(menu, MF_STRING, CMD_STOP, stop.as_ptr());
             AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
@@ -198,6 +219,11 @@ impl Ctx {
                 CMD_PANIC => Some(TrayAction::TogglePanic),
                 CMD_STOP => Some(TrayAction::StopAllSounds),
                 CMD_QUIT => Some(TrayAction::Quit),
+                n if (CMD_PRESET..CMD_PRESET + picks.len()).contains(&n) => s
+                    .presets
+                    .get(n - CMD_PRESET)
+                    .cloned()
+                    .map(TrayAction::Preset),
                 _ => None,
             };
             if let Some(a) = action {
@@ -499,6 +525,8 @@ mod tests {
                 safe: false,
                 active: String::new(),
                 tooltip: "VoxShift overlay test".into(),
+                presets: Vec::new(),
+                preset: None,
             },
             |_| {},
         )
@@ -538,6 +566,8 @@ mod tests {
                     safe: false,
                     active: "Active: Primary mic".into(),
                     tooltip: "VoxShift test".into(),
+                    presets: vec!["Late night".into()],
+                    preset: Some("Late night".into()),
                 }
             },
             |_| {},
