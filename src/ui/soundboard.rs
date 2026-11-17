@@ -20,6 +20,7 @@ use crate::soundboard::organize::{
     self, BoardSettings, BoardTab, BoardView, PAD_SIZE_DEFAULT, PAD_SIZE_RANGE, SortMode,
 };
 use crate::soundboard::playmode::PlayMode;
+use crate::soundboard::shape::{MAX_FADE_S, Trim};
 use crate::voice_keys::KeyTarget;
 use egui::{
     Align, Align2, Color32, CornerRadius, CursorIcon, FontId, Frame, Id, Key, Layout, Margin, Rect,
@@ -44,6 +45,8 @@ pub enum Action {
     MasterVolume(f32),
     /// "Even out loudness" on or off.
     Normalize(bool),
+    /// A clip's trim and fades.
+    Trim(SoundId, crate::soundboard::shape::Trim),
     /// Play (or, when it is already, stop) a clip in the headphones only.
     Preview(SoundId),
     StopPreview,
@@ -1685,6 +1688,70 @@ fn swatch(ui: &mut Ui, color: Option<Color32>, name: &str, selected: bool) -> Re
 }
 
 /// Everything about one clip.
+/// "Trim & fade" in the edit panel: where the clip starts and ends, and its fades. Folded
+/// away until used. `length`: the whole file, in seconds.
+fn trim_section(ui: &mut Ui, id: SoundId, trim: &Trim, length: f32, actions: &mut Vec<Action>) {
+    let p = palette(ui);
+    ui.add_space(space::XS);
+    let header = if trim.is_none() {
+        "Trim & fade".to_string()
+    } else {
+        let kept = length - trim.start - trim.end;
+        format!("Trim & fade  \u{b7}  plays {kept:.1} of {length:.1} s")
+    };
+    let r = egui::CollapsingHeader::new(RichText::new(header).small().strong().color(p.text_muted))
+        .id_salt(("trim", id))
+        .default_open(!trim.is_none())
+        .show(ui, |ui| {
+            let mut t = *trim;
+            let mut changed = false;
+            let mut row = |ui: &mut Ui, value: &mut f32, max: f32, label: &str, tip: &str| {
+                let r = widgets::Slider::new(value, 0.0..=max.max(0.01))
+                    .label(label)
+                    .unit(" s")
+                    .decimals(2)
+                    .default_value(0.0)
+                    .label_width(64.0)
+                    .tip(tip)
+                    .show(ui);
+                #[cfg(test)]
+                tests::remember(ui, ("trim", label.to_string()), r.rect);
+                changed |= r.changed();
+            };
+            row(
+                ui,
+                &mut t.start,
+                length,
+                "Start",
+                "Skip this much at the start",
+            );
+            row(ui, &mut t.end, length, "End", "Cut this much off the end");
+            row(
+                ui,
+                &mut t.fade_in,
+                MAX_FADE_S,
+                "Fade in",
+                "Rise from silence over this time",
+            );
+            row(
+                ui,
+                &mut t.fade_out,
+                MAX_FADE_S,
+                "Fade out",
+                "Fall to silence over this time",
+            );
+            if changed {
+                actions.push(Action::Trim(id, t));
+            }
+            if !trim.is_none() && ui.small_button("Use the whole clip").clicked() {
+                actions.push(Action::Trim(id, Trim::default()));
+            }
+        });
+    r.header_response.on_hover_text(
+        "Cut silence or noise off the ends and soften them. The file is not changed.",
+    );
+}
+
 fn edit_panel(ui: &mut Ui, v: &View, state: &mut State, s: &Sound, actions: &mut Vec<Action>) {
     let p = palette(ui);
     let (id, e) = (s.id, &s.entry);
@@ -1800,6 +1867,9 @@ fn edit_panel(ui: &mut Ui, v: &View, state: &mut State, s: &Sound, actions: &mut
             "\"Even out loudness\" (in the \u{22ef} menu above the clips) plays every clip at \
              about the same level",
         );
+    }
+    if let Some(length) = s.raw_length_s() {
+        trim_section(ui, id, &e.trim, length, actions);
     }
 
     field(ui, "Hotkey");

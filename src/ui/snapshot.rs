@@ -854,6 +854,24 @@ mod tests {
                 },
             );
         }
+        if wanted("extra-trim") {
+            app_shot(&dir, "extra-trim", (1280, 800), dark, 1.0, |app, ctx| {
+                use crate::soundboard::shape::Trim;
+                app.cfg.page = Page::Soundboard;
+                let (id, name) = {
+                    let b = app.sounds.lock();
+                    (b.sounds[6].id, b.sounds[6].entry.name.clone())
+                };
+                let trim = Trim {
+                    start: 1.2,
+                    end: 4.0,
+                    fade_in: 0.0,
+                    fade_out: 1.5,
+                };
+                app.apply_sound_action(ctx, crate::ui::soundboard::Action::Trim(id, trim));
+                app.board_page.open(id, &name, false);
+            });
+        }
         if wanted("extra-preview") {
             app_shot(&dir, "extra-preview", (1280, 720), dark, 1.0, |app, _| {
                 app.cfg.page = Page::Soundboard;

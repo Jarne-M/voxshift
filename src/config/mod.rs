@@ -334,6 +334,12 @@ mod tests {
             color: Some(3),
             plays: 12,
             play_mode: crate::soundboard::playmode::PlayMode::LoopWhileHeld,
+            trim: crate::soundboard::shape::Trim {
+                start: 0.25,
+                end: 0.0,
+                fade_in: 0.0,
+                fade_out: 1.5,
+            },
         });
         cfg.soundboard.recent = vec![7];
         cfg.soundboard.tab = crate::soundboard::organize::BoardTab::Folder(folder);

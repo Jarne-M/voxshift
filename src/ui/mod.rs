@@ -1495,6 +1495,10 @@ impl VoxApp {
                 self.cfg.soundboard.master_volume = v.clamp(0.0, 1.0);
                 apply_to_shared(&self.cfg, &self.shared);
             }
+            A::Trim(id, trim) => {
+                self.sounds.lock().set_trim(id, trim);
+                self.sounds_changed();
+            }
             A::Normalize(on) => {
                 self.cfg.soundboard.normalize = on;
                 self.sounds.lock().set_normalize(on);

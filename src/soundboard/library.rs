@@ -5,6 +5,7 @@ use super::hotkeys::Hotkey;
 use super::loudness::{self, Level};
 use super::mixer::{SoundCmd, SoundData, SoundId};
 use super::playmode::{Cmd, PlayMode, Triggers};
+use super::shape::{self, Trim};
 use super::{decode, names, organize};
 use crate::audio::device_manager::EnginePort;
 use crate::audio::engine::EngineCmd;
@@ -33,6 +34,8 @@ pub struct SoundEntry {
     pub plays: u32,
     /// Normal, hold, toggle or loop while held (see `soundboard::playmode`).
     pub play_mode: PlayMode,
+    /// Trim and fades (see `soundboard::shape`); the file is never changed.
+    pub trim: Trim,
 }
 
 impl Default for SoundEntry {
@@ -48,6 +51,7 @@ impl Default for SoundEntry {
             color: None,
             plays: 0,
             play_mode: PlayMode::Normal,
+            trim: Trim::default(),
         }
     }
 }
@@ -105,9 +109,26 @@ pub struct Sound {
     pub state: LoadState,
     /// How loud it is, measured when it loaded (`None` until then, or when silent).
     pub level: Option<Level>,
+    /// The decoded file before trim and fades (the same buffer when there are none).
+    pub raw: Option<Arc<SoundData>>,
 }
 
 impl Sound {
+    /// The whole file's length in seconds (before trimming), once loaded.
+    pub fn raw_length_s(&self) -> Option<f32> {
+        let raw = self.raw.as_ref()?;
+        Some(raw.len_frames() as f32 / raw.sample_rate.max(1) as f32)
+    }
+
+    /// Applies the entry's trim and fades to the decoded file and measures the result.
+    fn shape(&mut self) {
+        if let Some(raw) = &self.raw {
+            let data = shape::apply(raw, &self.entry.trim);
+            self.level = loudness::measure(&data.frames, data.sample_rate);
+            self.state = LoadState::Ready(data);
+        }
+    }
+
     /// The volume it plays at: its own, times the loudness correction when that is on.
     pub fn play_volume(&self, normalize: bool) -> f32 {
         let gain = match (normalize, self.level) {
@@ -164,6 +185,7 @@ impl Board {
             entry,
             state: LoadState::Loading,
             level: None,
+            raw: None,
         });
         id
     }
@@ -388,6 +410,20 @@ impl Board {
         }
     }
 
+    /// Sets a clip's trim and fades (fitted to its length) and applies them; the next play
+    /// uses them. Returns what was stored.
+    pub fn set_trim(&mut self, id: SoundId, trim: Trim) -> Option<Trim> {
+        let s = self.get_mut(id)?;
+        let trim = match s.raw_length_s() {
+            Some(length) => trim.fitted(length),
+            None => trim,
+        };
+        s.entry.trim = trim;
+        s.shape();
+        self.revision += 1;
+        Some(trim)
+    }
+
     /// Switches "Even out loudness"; clips that are playing change level right away.
     pub fn set_normalize(&mut self, on: bool) {
         if self.normalize == on {
@@ -493,19 +529,21 @@ impl Soundboard {
                 // Ends when the board (and with it the job sender) is dropped.
                 while let Ok(job) = rx.recv() {
                     let result = decode::load(&job.path, job.rate);
-                    let level = result
-                        .as_ref()
-                        .ok()
-                        .and_then(|d| loudness::measure(&d.frames, d.sample_rate));
                     let mut board = b.lock().unwrap_or_else(|e| e.into_inner());
                     // A later rate change may have queued a newer job; this result is
                     // still better than nothing and gets replaced when that one lands.
                     if let Some(s) = board.get_mut(job.id) {
-                        s.level = level;
-                        s.state = match result {
-                            Ok(data) => LoadState::Ready(Arc::new(data)),
-                            Err(e) => LoadState::Failed(e),
-                        };
+                        match result {
+                            Ok(data) => {
+                                s.raw = Some(Arc::new(data));
+                                s.shape(); // (fast next to decoding: one copy, one pass)
+                            }
+                            Err(e) => {
+                                s.raw = None;
+                                s.level = None;
+                                s.state = LoadState::Failed(e);
+                            }
+                        }
                     }
                 }
             })
@@ -608,6 +646,51 @@ mod tests {
         }
         assert!(peak > 0.3, "sound audible in the output: {peak}");
         assert!(shared.is_playing(id));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn trim_and_fades_apply_at_once_survive_a_reload_and_never_touch_the_file() {
+        let dir = temp_dir("trim");
+        let path = dir.join("two-seconds.wav");
+        write_wav(&path, 48_000, 1, &[8000; 96_000]);
+        let bytes = std::fs::read(&path).unwrap();
+        let sb = Soundboard::new(
+            Arc::new(EnginePort::default()),
+            vec![SoundEntry::from_path(path.clone())],
+        );
+        wait_loaded(&sb, 1);
+        let id = sb.lock().sounds[0].id;
+        let frames = |sb: &Soundboard| match &sb.lock().sounds[0].state {
+            LoadState::Ready(d) => d.len_frames(),
+            _ => 0,
+        };
+        assert_eq!(frames(&sb), 96_000);
+        let stored = sb.lock().set_trim(
+            id,
+            Trim {
+                start: 0.5,
+                end: 0.25,
+                fade_in: 0.1,
+                fade_out: 9.0, // more than is left: fitted
+            },
+        );
+        let stored = stored.unwrap();
+        assert!((stored.fade_out - 1.15).abs() < 1e-4, "{stored:?}");
+        assert_eq!(frames(&sb), 60_000, "1.25 s left");
+        assert_eq!(sb.lock().sounds[0].raw_length_s(), Some(2.0));
+        assert!(sb.lock().sounds[0].level.is_some(), "measured again");
+        // A reload (e.g. at another output rate) keeps it.
+        sb.lock().set_output_rate(24_000);
+        let start = std::time::Instant::now();
+        while frames(&sb) != 30_000 {
+            assert!(start.elapsed().as_secs() < 10, "{}", frames(&sb));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Back to the whole clip; the file was never written.
+        sb.lock().set_trim(id, Trim::default());
+        assert_eq!(frames(&sb), 48_000);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
         std::fs::remove_dir_all(dir).ok();
     }
 

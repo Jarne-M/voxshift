@@ -8,3 +8,4 @@ pub mod mixer;
 pub mod names;
 pub mod organize;
 pub mod playmode;
+pub mod shape;
