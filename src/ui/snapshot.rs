@@ -761,6 +761,11 @@ mod tests {
                 KeyTarget::Sound(ids[2]),
                 Some(Hotkey::new(0x62, true, false, false, false, "")),
             );
+            // Stop all on Ctrl + 8 and, as its second key, on 8 alone.
+            app.cfg.voice_keys.stop_sounds = Hotkey::pair(
+                Some(Hotkey::new(0x38, true, false, false, false, "")),
+                Some(Hotkey::new(0x38, false, false, false, false, "")),
+            );
         });
         app_shot(
             &dir,

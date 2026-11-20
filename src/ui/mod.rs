@@ -67,6 +67,8 @@ pub struct VoxApp {
     hotkeys: Option<HotkeyService>,
     /// The hotkey waiting for a key combination (a sound, the voice toggle, ...).
     capturing: Option<KeyTarget>,
+    /// Which of its two keys is waiting (only the Hotkeys page sets a second key).
+    capturing_slot: keymap::Slot,
     /// A captured key that is already taken: the Keep / Change dialog.
     key_conflict: Option<KeyConflict>,
     /// The soundboard search box (not saved).
@@ -157,8 +159,9 @@ const CAPTURE_GRACE_S: f64 = 0.75;
 /// A captured key that another action already has, waiting for Keep or Change.
 struct KeyConflict {
     key: hotkeys::Hotkey,
-    /// The action being assigned, and how it is called.
+    /// The action being assigned (and which of its keys), and how it is called.
     target: KeyTarget,
+    slot: keymap::Slot,
     target_name: String,
     owner: keymap::Owner,
     focus_pending: bool,
@@ -417,6 +420,7 @@ impl VoxApp {
             sounds,
             hotkeys: None,
             capturing: None,
+            capturing_slot: keymap::Slot::Main,
             key_conflict: None,
             search: String::new(),
             hotkey_filter: String::new(),
@@ -1329,7 +1333,7 @@ impl VoxApp {
             })
             .collect();
         let view = hotkeys_page::View {
-            capturing: self.capturing,
+            capturing: self.capturing.map(|t| (t, self.capturing_slot)),
             hotkeys_available: self.hotkeys.as_ref().is_some_and(|h| h.available()),
             preset_names: self.preset_names(),
             clips,
@@ -1337,9 +1341,10 @@ impl VoxApp {
         let actions = hotkeys_page::page(ui, &mut self.cfg, &view, &mut self.hotkey_filter);
         for action in actions {
             match action {
-                hotkeys_page::Action::Capture(t) => self.begin_capture(t),
+                hotkeys_page::Action::Capture(t, slot) => self.begin_capture_slot(t, slot),
                 hotkeys_page::Action::CancelCapture => self.cancel_capture(),
                 hotkeys_page::Action::Clear(t) => self.clear_hotkey(t),
+                hotkeys_page::Action::ClearSecond(t) => self.clear_second_hotkey(t),
                 hotkeys_page::Action::AddPresetKey => {
                     let row = hotkeys_page::new_preset_key(
                         &self.cfg.voice_keys.presets,
@@ -1454,17 +1459,35 @@ impl VoxApp {
                         .sounds
                         .iter()
                         .map(|s| (s.id, s.entry.name.as_str(), s.entry.hotkey.as_ref()));
-                    // (Clip ids start at 1, so 0 is "none of them".)
-                    let taken =
-                        keymap::owner(&key, KeyTarget::Sound(0), &self.cfg.voice_keys, sounds);
-                    if let Some(owner) = taken {
-                        key_lost = Some((key.pretty(), owner.name));
-                        removed.entry.hotkey = None;
+                    // Each of its keys (main and second) comes back only if still free.
+                    let mut kept = Vec::new();
+                    for k in key.keys() {
+                        // (Clip ids start at 1, so 0 is "none of them".)
+                        let taken = keymap::owner(
+                            k,
+                            KeyTarget::Sound(0),
+                            &self.cfg.voice_keys,
+                            sounds.clone(),
+                        );
+                        match taken {
+                            Some(owner) if key_lost.is_none() => {
+                                key_lost = Some((k.pretty(), owner.name));
+                            }
+                            Some(_) => {}
+                            None => kept.push(k.single()),
+                        }
                     }
+                    let mut kept = kept.into_iter();
+                    removed.entry.hotkey = hotkeys::Hotkey::pair(kept.next(), kept.next());
                 }
+                let keeps_a_key = removed.entry.hotkey.is_some();
                 self.sounds.lock().restore(removed);
                 self.sounds_changed();
                 match key_lost {
+                    Some((key, owner)) if keeps_a_key => self.toasts.warn(
+                        ctx,
+                        format!("\"{name}\" is back, without {key}: it now belongs to {owner}"),
+                    ),
                     Some((key, owner)) => self.toasts.warn(
                         ctx,
                         format!(
@@ -1815,9 +1838,15 @@ impl VoxApp {
 
     /// Waits for the next key combination for `target` (pressed anywhere).
     fn begin_capture(&mut self, target: KeyTarget) {
+        self.begin_capture_slot(target, keymap::Slot::Main);
+    }
+
+    /// Waits for the next key combination for one of `target`'s two keys.
+    fn begin_capture_slot(&mut self, target: KeyTarget, slot: keymap::Slot) {
         if let Some(h) = &self.hotkeys {
             h.begin_capture();
             self.capturing = Some(target);
+            self.capturing_slot = slot;
             self.capture_watch = Some(CaptureWatch {
                 presses_at_start: h.presses_seen(),
                 window_key_at: None,
@@ -1835,8 +1864,16 @@ impl VoxApp {
         self.capture_watch = None;
     }
 
+    /// Removes both of `target`'s keys.
     fn clear_hotkey(&mut self, target: KeyTarget) {
-        self.set_hotkey(target, None);
+        self.with_keymap(|voice, sounds| keymap::clear(voice, sounds, target));
+    }
+
+    /// Removes only `target`'s second key.
+    fn clear_second_hotkey(&mut self, target: KeyTarget) {
+        self.with_keymap(|voice, sounds| {
+            keymap::assign_slot(voice, sounds, target, keymap::Slot::Second, None)
+        });
     }
 
     /// Runs `f` on the whole keymap: the voice hotkeys and every clip's key.
@@ -1861,8 +1898,33 @@ impl VoxApp {
         r
     }
 
+    /// Sets (or removes) `target`'s main key; its second key stays.
+    #[cfg(test)]
     fn set_hotkey(&mut self, target: KeyTarget, key: Option<hotkeys::Hotkey>) {
-        self.with_keymap(|voice, sounds| keymap::assign(voice, sounds, target, key));
+        self.set_hotkey_slot(target, keymap::Slot::Main, key);
+    }
+
+    fn set_hotkey_slot(
+        &mut self,
+        target: KeyTarget,
+        slot: keymap::Slot,
+        key: Option<hotkeys::Hotkey>,
+    ) {
+        self.with_keymap(|voice, sounds| keymap::assign_slot(voice, sounds, target, slot, key));
+    }
+
+    /// The key `target` has in `slot` now, if any.
+    fn hotkey_in_slot(&self, target: KeyTarget, slot: keymap::Slot) -> Option<hotkeys::Hotkey> {
+        let board = self.sounds.lock();
+        let sounds = board
+            .sounds
+            .iter()
+            .map(|s| (s.id, s.entry.name.as_str(), s.entry.hotkey.as_ref()));
+        let current = keymap::current(target, &self.cfg.voice_keys, sounds)?;
+        match slot {
+            keymap::Slot::Main => Some(current.single()),
+            keymap::Slot::Second => current.second.map(|s| *s),
+        }
     }
 
     /// What assigning `key` to `target` would do (see [`keymap::check`]), and how `target` is
@@ -1897,16 +1959,29 @@ impl VoxApp {
         };
         self.capturing = None;
         self.capture_watch = None;
+        let slot = std::mem::take(&mut self.capturing_slot);
         let Captured::Key(key) = result else {
             hotkeys::diag::log("window: got 'cancelled' (Esc)");
             return;
         };
         hotkeys::diag::log(format!("window: got key {} -> checking", key.pretty()));
-        self.key_captured(ctx, target, key);
+        self.key_captured_slot(ctx, target, slot, key);
     }
 
     /// A key was pressed for `target`: assign it, refuse it, or ask (see [`keymap`]).
+    #[cfg(test)]
     fn key_captured(&mut self, ctx: &egui::Context, target: KeyTarget, key: hotkeys::Hotkey) {
+        self.key_captured_slot(ctx, target, keymap::Slot::Main, key);
+    }
+
+    /// A key was pressed for one of `target`'s two keys.
+    fn key_captured_slot(
+        &mut self,
+        ctx: &egui::Context,
+        target: KeyTarget,
+        slot: keymap::Slot,
+        key: hotkeys::Hotkey,
+    ) {
         let label = key.pretty();
         match self.hotkey_check(&key, target) {
             (keymap::Check::Reserved(why), _) => {
@@ -1916,11 +1991,26 @@ impl VoxApp {
                 );
             }
             (keymap::Check::AlreadyYours, _) => {
-                self.set_hotkey(target, Some(key)); // keeps it (with the fresh label)
+                if self
+                    .hotkey_in_slot(target, slot)
+                    .is_some_and(|k| k.same_keys(&key))
+                {
+                    self.set_hotkey_slot(target, slot, Some(key)); // keeps it (fresh label)
+                } else {
+                    // Its other key: nothing to change.
+                    self.toasts.push(
+                        ctx,
+                        format!("{label} is already set for this, as its other key"),
+                    );
+                }
             }
             (keymap::Check::Assign, _) => {
-                self.set_hotkey(target, Some(key));
-                self.toasts.success(ctx, format!("Hotkey {label} assigned"));
+                self.set_hotkey_slot(target, slot, Some(key));
+                let what = match slot {
+                    keymap::Slot::Main => "Hotkey",
+                    keymap::Slot::Second => "Second key",
+                };
+                self.toasts.success(ctx, format!("{what} {label} assigned"));
             }
             (keymap::Check::Conflict(owner), name) => {
                 // Ask. Until answered, no hotkey triggers anything (Tab, Enter and Esc in the
@@ -1931,6 +2021,7 @@ impl VoxApp {
                 self.key_conflict = Some(KeyConflict {
                     key,
                     target,
+                    slot,
                     target_name: name,
                     owner,
                     focus_pending: true,
@@ -1949,12 +2040,18 @@ impl VoxApp {
         }
         let label = c.key.pretty();
         if change {
-            let (key, target, owner) = (c.key, c.target, c.owner.target);
-            self.with_keymap(|voice, sounds| keymap::change(voice, sounds, key, target, owner));
+            let (key, target, slot, owner) = (c.key, c.target, c.slot, c.owner.target);
+            self.with_keymap(|voice, sounds| {
+                keymap::change(voice, sounds, key, target, slot, owner)
+            });
+            let owner_left = match self.hotkey_in_slot(owner, keymap::Slot::Main) {
+                Some(k) => format!("keeps {}", k.pretty()),
+                None => "is not set any more".to_string(),
+            };
             self.toasts.success(
                 ctx,
                 format!(
-                    "{label} now goes to {}. {} is not set any more.",
+                    "{label} now goes to {}. {} {owner_left}.",
                     c.target_name,
                     capitalize(&c.owner.name)
                 ),
@@ -2282,7 +2379,7 @@ impl VoxApp {
             self.clip_until = now + CLIP_HOLD_S;
         }
         let (preset, modified) = self.preset_state();
-        let key = |k: &Option<hotkeys::Hotkey>| k.as_ref().map(hotkeys::Hotkey::pretty);
+        let key = |k: &Option<hotkeys::Hotkey>| k.as_ref().map(hotkeys::Hotkey::pretty_all);
         let view = header::View {
             voice_on: self.shared.voice_on.load(Relaxed),
             safe: self.feedback.safe_mode(),
@@ -3494,6 +3591,59 @@ pub(crate) mod tests {
         frame(&ctx, &mut app, (920.0, 600.0), 0.0, vec![]);
         app.clear_hotkey(KeyTarget::MonitorToggle);
         assert!(app.cfg.voice_keys.monitor_toggle.is_none());
+    }
+
+    #[test]
+    fn a_second_key_is_assigned_checked_and_drawn() {
+        use keymap::Slot;
+        let mut app = test_app();
+        let ctx = egui::Context::default();
+        let ctrl8 = hotkeys::Hotkey::new(0x38, true, false, false, false, "Ctrl+8");
+        let eight = hotkeys::Hotkey::new(0x38, false, false, false, false, "8");
+        app.key_captured(&ctx, KeyTarget::StopSounds, ctrl8.clone());
+        app.key_captured_slot(&ctx, KeyTarget::StopSounds, Slot::Second, eight.clone());
+        let stop = app.cfg.voice_keys.stop_sounds.clone().unwrap();
+        assert_eq!(stop.pretty_all(), "Ctrl + 8 or 8");
+        // Pressing the main key again for the second slot changes nothing.
+        app.key_captured_slot(&ctx, KeyTarget::StopSounds, Slot::Second, ctrl8.clone());
+        assert_eq!(app.cfg.voice_keys.stop_sounds.as_ref(), Some(&stop));
+        // The second key is taken for everything else: Change moves only that key.
+        app.key_captured(&ctx, KeyTarget::Mute, eight.clone());
+        let c = app.key_conflict.as_ref().expect("asks");
+        assert_eq!(c.owner.target, KeyTarget::StopSounds);
+        app.resolve_key_conflict(&ctx, true);
+        assert_eq!(app.cfg.voice_keys.mute.as_ref().unwrap().pretty_all(), "8");
+        assert_eq!(
+            app.cfg
+                .voice_keys
+                .stop_sounds
+                .as_ref()
+                .unwrap()
+                .pretty_all(),
+            "Ctrl + 8"
+        );
+        // A second key for a clip, as the conflict target, lands in its second slot.
+        app.add_sounds(&ctx, vec!["C:/nope/airhorn.wav".into()]);
+        let id = app.sounds.lock().sounds[0].id;
+        let f9 = hotkeys::Hotkey::new(0x78, false, false, false, false, "F9");
+        app.key_captured(&ctx, KeyTarget::Sound(id), f9);
+        app.key_captured_slot(&ctx, KeyTarget::Sound(id), Slot::Second, eight.clone());
+        app.resolve_key_conflict(&ctx, true);
+        let clip_key = app.sounds.lock().sounds[0].entry.hotkey.clone().unwrap();
+        assert_eq!(clip_key.pretty_all(), "F9 or 8");
+        assert!(app.cfg.voice_keys.mute.is_none(), "mute had only 8");
+        // The Hotkeys page draws both keys, and while a second key waits.
+        app.cfg.page = Page::Hotkeys;
+        frame(&ctx, &mut app, (920.0, 600.0), 0.0, vec![]);
+        app.capturing = Some(KeyTarget::StopSounds);
+        app.capturing_slot = Slot::Second;
+        frame(&ctx, &mut app, (920.0, 600.0), 0.0, vec![]);
+        // Removing only the second key, then both.
+        app.clear_second_hotkey(KeyTarget::Sound(id));
+        let clip_key = app.sounds.lock().sounds[0].entry.hotkey.clone().unwrap();
+        assert_eq!(clip_key.pretty_all(), "F9");
+        app.clear_hotkey(KeyTarget::StopSounds);
+        assert!(app.cfg.voice_keys.stop_sounds.is_none());
     }
 
     /// The real key listener: F24 (a key no keyboard has) as the "hear myself" key.

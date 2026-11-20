@@ -1,2 +1,34 @@
+# Build output
 /target
 /dist
+*.pdb
+
+# Portable Rust toolchain (normally next to the project, but never commit it)
+/.toolchain
+
+# Personal notes and AI prompts
+*_PROMPT.md
+/.claude/
+CLAUDE.local.md
+
+# Local VoxShift data (settings, shared packs, screenshot test output)
+config.json
+config.broken.json
+*.voxpack
+/shots/
+
+# Secrets
+.env
+*.pfx
+*.p12
+
+# Editors
+/.vscode/
+/.idea/
+*.swp
+*~
+
+# Windows
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/

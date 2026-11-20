@@ -1,10 +1,22 @@
 //! Windows shell integration: tray icon, single instance, start with Windows.
+//!
+//! On other systems `other.rs` stands in for the Win32 parts with versions that do nothing,
+//! so the app (and above all its tests) also builds there.
 
+#[cfg(windows)]
 pub mod autostart;
 pub mod icon;
+#[cfg(windows)]
 pub mod instance;
+#[cfg(windows)]
 pub mod overlay;
+#[cfg(windows)]
 pub mod tray;
+
+#[cfg(not(windows))]
+mod other;
+#[cfg(not(windows))]
+pub use other::{autostart, instance, tray};
 
 /// Overall state, shown by the tray icon colour. Ordered from fine to worst.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -61,6 +73,7 @@ pub const WINDOW_CLASS: &str = "VoxShift.TrayWindow";
 
 /// The area all monitors together cover (x, y, width, height), in the pixels this process
 /// sees. Used to check a remembered window place before opening the window there.
+#[cfg(windows)]
 pub fn virtual_screen() -> Option<[f32; 4]> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
@@ -75,6 +88,12 @@ pub fn virtual_screen() -> Option<[f32; 4]> {
         m(SM_CYVIRTUALSCREEN),
     ];
     (screen[2] > 0.0 && screen[3] > 0.0).then_some(screen)
+}
+
+/// Not known here, so a remembered window place is not checked.
+#[cfg(not(windows))]
+pub fn virtual_screen() -> Option<[f32; 4]> {
+    None
 }
 
 /// Most quick picks the tray menu shows (a longer menu stops being quick).

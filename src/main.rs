@@ -2,6 +2,9 @@
 //! voice comes out of a virtual audio cable (VB-CABLE) that other apps use as their mic.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Off Windows the shell stand-ins (shell/other.rs) leave the tray and Raw Input paths unused;
+// the Windows build still reports dead code as usual.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 mod audio;
 mod config;

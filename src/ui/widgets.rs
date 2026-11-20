@@ -749,6 +749,8 @@ pub enum KeySlot<'a> {
     Set(&'a [String]),
     /// Nothing assigned.
     Empty,
+    /// Nothing assigned, with its own prompt instead of "Set key" (e.g. "+ Second key").
+    Prompt(&'a str),
     /// Waiting for the user to press the key to assign.
     Capturing,
 }
@@ -772,6 +774,7 @@ pub fn hotkey_button(ui: &mut Ui, slot: KeySlot) -> Response {
     let (content, capturing) = match slot {
         KeySlot::Set(parts) => (Content::Caps(Keycaps::new(ui, parts)), false),
         KeySlot::Empty => (Content::Text(text("Set key", p.text_muted)), false),
+        KeySlot::Prompt(s) => (Content::Text(text(s, p.text_muted)), false),
         KeySlot::Capturing => (
             Content::Text(text("Press a key\u{2026}  Esc cancels", p.accent)),
             true,

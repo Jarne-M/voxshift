@@ -59,11 +59,16 @@ pub struct Hotkey {
     /// Windows' own (translated) key name here; for showing a hotkey use [`Hotkey::pretty`],
     /// which only falls back to this for keys it cannot name itself.
     pub label: String,
+    /// A second combination that does the same, e.g. "8" next to "Ctrl + 8" (so the action
+    /// still works while Ctrl is held for something else in a game). Only set on an assigned
+    /// key, never on a pressed one, and never nested further.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub second: Option<Box<Hotkey>>,
 }
 
 impl PartialEq for Hotkey {
     fn eq(&self, other: &Self) -> bool {
-        self.same_keys(other)
+        self.same_keys(other) && self.second == other.second
     }
 }
 
@@ -76,12 +81,58 @@ impl Hotkey {
             alt,
             win,
             label: key_name.to_string(),
+            second: None,
         }
     }
 
+    /// The same combination as `o` (only the main keys: neither's second key counts).
     pub fn same_keys(&self, o: &Hotkey) -> bool {
         (self.vk, self.ctrl, self.shift, self.alt, self.win)
             == (o.vk, o.ctrl, o.shift, o.alt, o.win)
+    }
+
+    /// This assigned key and its second key, if it has one.
+    pub fn keys(&self) -> impl Iterator<Item = &Hotkey> + Clone {
+        std::iter::once(self).chain(self.second.as_deref())
+    }
+
+    /// Whether the combination `pressed` triggers this assigned key (its main or second key).
+    pub fn matches(&self, pressed: &Hotkey) -> bool {
+        self.keys().any(|k| k.same_keys(pressed))
+    }
+
+    /// The main key alone, without a second key.
+    pub fn single(&self) -> Hotkey {
+        Hotkey {
+            second: None,
+            ..self.clone()
+        }
+    }
+
+    /// Builds an assigned key from a main and a second key (either may be missing). A second
+    /// key without a main one becomes the main key; a second key equal to the main one is
+    /// dropped.
+    pub fn pair(first: Option<Hotkey>, second: Option<Hotkey>) -> Option<Hotkey> {
+        let (first, second) = match (first, second) {
+            (None, s) => (s, None),
+            (f, s) => (f, s),
+        };
+        first.map(|f| {
+            let mut f = f.single();
+            f.second = second
+                .map(|s| s.single())
+                .filter(|s| !s.same_keys(&f))
+                .map(Box::new);
+            f
+        })
+    }
+
+    /// How the key and its second key are shown in text: "Ctrl + 8 or 8".
+    pub fn pretty_all(&self) -> String {
+        self.keys()
+            .map(Hotkey::pretty)
+            .collect::<Vec<_>>()
+            .join(" or ")
     }
 
     /// The combination as its keys, modifiers first: `["Ctrl", "Shift", "F8"]`. The key is
@@ -242,12 +293,12 @@ impl HotkeyService {
         let listener = win::Listener::start(raw_tx);
         #[cfg(windows)]
         let available = listener.is_some();
-        diag::log(format!("listener started: {available}"));
         #[cfg(not(windows))]
         let available = {
             drop(raw_tx);
             false
         };
+        diag::log(format!("listener started: {available}"));
         let paused = Arc::new(AtomicBool::new(false));
         let hold = paused.clone();
         let cap = capture.clone();

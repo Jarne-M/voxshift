@@ -1,12 +1,14 @@
 //! The Hotkeys page: every hotkey in one place, the soundboard's clips included, grouped
 //! (Safety, Voice changer, Presets, Melody Voice, Monitor & soundboard, Clips) and with a
 //! filter box. Keys are shown as keycaps; assigning one goes through the same capture and
-//! Keep / Change check as everywhere else.
+//! Keep / Change check as everywhere else. Every action can have a second key that does the
+//! same (e.g. "8" next to "Ctrl + 8"), set here.
 
 use super::icons;
 use super::theme::{font, palette, space};
 use super::widgets::{self, KeySlot, card, section_title};
 use crate::config::Config;
+use crate::keymap::Slot;
 use crate::soundboard::hotkeys::Hotkey;
 use crate::soundboard::mixer::SoundId;
 use crate::soundboard::organize;
@@ -14,9 +16,12 @@ use crate::voice_keys::{KeyTarget, PresetHotkey, VoiceKeyMode};
 use egui::{Align, Id, Key, Layout, RichText, Ui, vec2};
 
 pub enum Action {
-    Capture(KeyTarget),
+    Capture(KeyTarget, Slot),
     CancelCapture,
+    /// Both keys.
     Clear(KeyTarget),
+    /// Only the second key.
+    ClearSecond(KeyTarget),
     AddPresetKey,
     RemovePresetKey(usize),
 }
@@ -29,7 +34,8 @@ pub struct Clip {
 }
 
 pub struct View {
-    pub capturing: Option<KeyTarget>,
+    /// The key waiting to be pressed: whose, and which of its two.
+    pub capturing: Option<(KeyTarget, Slot)>,
     pub hotkeys_available: bool,
     pub preset_names: Vec<String>,
     pub clips: Vec<Clip>,
@@ -155,21 +161,22 @@ pub fn groups<'a>(cfg: &'a Config, v: &'a View) -> Vec<(&'static str, &'static s
 
 /// Whether a row is shown for this filter: its name, its group or its key.
 pub fn row_matches(group: &str, row: &Row, filter: &str) -> bool {
-    let key = row.key.map(Hotkey::pretty).unwrap_or_default();
+    let key = row.key.map(Hotkey::pretty_all).unwrap_or_default();
     organize::matches(&row.label, filter)
         || organize::matches(group, filter)
         || (!key.is_empty() && organize::matches(&key, filter))
 }
 
-/// The keycap button of a row and its Clear button.
+/// The keycap button of one of a row's two keys (`key` is that one key alone).
 fn key_cell(
     ui: &mut Ui,
     target: KeyTarget,
+    which: Slot,
     key: Option<&Hotkey>,
     v: &View,
     actions: &mut Vec<Action>,
 ) {
-    if v.capturing == Some(target) {
+    if v.capturing == Some((target, which)) {
         if widgets::hotkey_button(ui, KeySlot::Capturing)
             .on_hover_text("Press the key or combination (Ctrl/Alt/Shift + key). Click to cancel.")
             .clicked()
@@ -179,14 +186,23 @@ fn key_cell(
         return;
     }
     let parts = key.map(Hotkey::parts);
-    let (slot, hover) = match &parts {
-        Some(p) => (
+    let (slot, hover) = match (&parts, which) {
+        (Some(p), Slot::Main) => (
             KeySlot::Set(p),
             "Click, then press another key or combination",
         ),
-        None => (
+        (Some(p), Slot::Second) => (
+            KeySlot::Set(p),
+            "The second key: does the same. Click, then press another key or combination",
+        ),
+        (None, Slot::Main) => (
             KeySlot::Empty,
             "No hotkey. Click, then press the key or combination to use",
+        ),
+        (None, Slot::Second) => (
+            KeySlot::Prompt("+ Second key"),
+            "Another key that does the same, e.g. 8 next to Ctrl + 8 (so it still works \
+             while you hold Ctrl in a game). Click, then press it",
         ),
     };
     let r = ui
@@ -195,14 +211,22 @@ fn key_cell(
         })
         .inner;
     #[cfg(test)]
-    widgets::remember(ui.ctx(), "hotkey", format!("{target:?}"), r.rect);
+    {
+        let name = match which {
+            Slot::Main => format!("{target:?}"),
+            Slot::Second => format!("{target:?} second"),
+        };
+        widgets::remember(ui.ctx(), "hotkey", name, r.rect);
+    }
     if r.clicked() {
-        actions.push(Action::Capture(target));
+        actions.push(Action::Capture(target, which));
     }
 }
 
 const LABEL_W: f32 = 230.0;
 const ROW_H: f32 = 32.0;
+/// The main key's column (wide enough for "Ctrl + Shift + F8"; longer ones push on).
+const MAIN_KEY_W: f32 = 150.0;
 
 /// One row: the action's name (or, for a preset key, which preset), its key, and Clear.
 fn row_ui(
@@ -250,16 +274,41 @@ fn row_ui(
                 }
             }
         }
-        key_cell(ui, r.target, r.key, v, actions);
+        let main = r.key.map(Hotkey::single);
+        // In a column of its own, so the second keys line up too.
+        ui.allocate_ui_with_layout(
+            vec2(MAIN_KEY_W, ROW_H),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                ui.set_min_size(vec2(MAIN_KEY_W, ROW_H));
+                key_cell(ui, r.target, Slot::Main, main.as_ref(), v, actions);
+            },
+        );
+        // The second key: offered once there is a main key (or while it waits for one).
+        let second = r.key.and_then(|k| k.second.as_deref());
+        let capturing_second = v.capturing == Some((r.target, Slot::Second));
+        if r.key.is_some() || capturing_second {
+            ui.label(RichText::new("or").color(p.text_muted));
+            key_cell(ui, r.target, Slot::Second, second, v, actions);
+            if second.is_some()
+                && !capturing_second
+                && widgets::icon_button(ui, icons::CLOSE, "Remove the second key").clicked()
+            {
+                actions.push(Action::ClearSecond(r.target));
+            }
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if let KeyTarget::Preset(i) = r.target
                 && widgets::icon_button(ui, icons::DELETE, "Remove this preset key").clicked()
             {
                 actions.push(Action::RemovePresetKey(i));
             }
-            if r.key.is_some()
-                && widgets::icon_button(ui, icons::CLOSE, "Clear this hotkey").clicked()
-            {
+            let tip = if second.is_some() {
+                "Clear both keys"
+            } else {
+                "Clear this hotkey"
+            };
+            if r.key.is_some() && widgets::icon_button(ui, icons::CLOSE, tip).clicked() {
                 actions.push(Action::Clear(r.target));
             }
         });
@@ -528,5 +577,20 @@ mod tests {
             "the group's two clips, Stop all clips and Hear clips myself"
         );
         assert!(find("zzz").is_empty());
+        // A second key is found too.
+        cfg.voice_keys.mute = Hotkey::pair(
+            Some(Hotkey::new(0x4D, true, false, false, false, "")),
+            Some(Hotkey::new(0x7A, false, false, false, false, "")),
+        );
+        let gs = groups(&cfg, &v);
+        let found: Vec<KeyTarget> = gs
+            .iter()
+            .flat_map(|(_, g, rows)| {
+                rows.iter()
+                    .filter(move |r| row_matches(g, r, "f11"))
+                    .map(|r| r.target)
+            })
+            .collect();
+        assert_eq!(found, [KeyTarget::Mute]);
     }
 }

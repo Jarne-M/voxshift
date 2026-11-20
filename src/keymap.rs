@@ -104,7 +104,7 @@ pub fn owner<'a>(
 ) -> Option<Owner> {
     bindings(voice, sounds)
         .into_iter()
-        .find(|(t, _, h)| *t != target && h.is_some_and(|h| h.same_keys(key)))
+        .find(|(t, _, h)| *t != target && h.is_some_and(|h| h.matches(key)))
         .map(|(target, name, _)| Owner { target, name })
 }
 
@@ -120,7 +120,19 @@ pub fn name_of<'a>(
         .map_or_else(|| "that action".to_string(), |(_, name, _)| name)
 }
 
-/// What assigning `key` to `target` would do.
+/// The key `target` has now (with its second key), if any.
+pub fn current<'a>(
+    target: KeyTarget,
+    voice: &'a VoiceHotkeys,
+    sounds: impl IntoIterator<Item = (SoundId, &'a str, Option<&'a Hotkey>)>,
+) -> Option<Hotkey> {
+    bindings(voice, sounds)
+        .into_iter()
+        .find(|(t, _, _)| *t == target)
+        .and_then(|(_, _, h)| h.cloned())
+}
+
+/// What assigning `key` to `target` (as its main or its second key) would do.
 pub fn check<'a>(
     key: &Hotkey,
     target: KeyTarget,
@@ -130,11 +142,7 @@ pub fn check<'a>(
     if let Some(why) = reserved(key) {
         return Check::Reserved(why);
     }
-    let current = bindings(voice, sounds.clone())
-        .into_iter()
-        .find(|(t, _, _)| *t == target)
-        .and_then(|(_, _, h)| h.cloned());
-    if current.is_some_and(|c| c.same_keys(key)) {
+    if current(target, voice, sounds.clone()).is_some_and(|c| c.matches(key)) {
         return Check::AlreadyYours;
     }
     match owner(key, target, voice, sounds) {
@@ -143,18 +151,24 @@ pub fn check<'a>(
     }
 }
 
-/// Sets (or clears) one action's key. False if there is no such action.
-pub fn assign(
-    voice: &mut VoiceHotkeys,
-    sounds: &mut [SoundKey],
+/// Which of an action's two keys.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Slot {
+    /// The key every action has (the one shown first).
+    #[default]
+    Main,
+    /// An extra key that does the same, e.g. "8" next to "Ctrl + 8".
+    Second,
+}
+
+/// Where an action's key is stored.
+fn slot_of<'s>(
+    voice: &'s mut VoiceHotkeys,
+    sounds: &'s mut [SoundKey],
     target: KeyTarget,
-    key: Option<Hotkey>,
-) -> bool {
-    let slot = match target {
-        KeyTarget::Sound(id) => match sounds.iter_mut().find(|s| s.id == id) {
-            Some(s) => &mut *s.hotkey,
-            None => return false,
-        },
+) -> Option<&'s mut Option<Hotkey>> {
+    Some(match target {
+        KeyTarget::Sound(id) => &mut *sounds.iter_mut().find(|s| s.id == id)?.hotkey,
         KeyTarget::Toggle => &mut voice.toggle,
         KeyTarget::Mute => &mut voice.mute,
         KeyTarget::MelodyToggle => &mut voice.melody_toggle,
@@ -164,33 +178,83 @@ pub fn assign(
         KeyTarget::MonitorSoundsToggle => &mut voice.monitor_sounds_toggle,
         KeyTarget::StopSounds => &mut voice.stop_sounds,
         KeyTarget::Panic => &mut voice.panic,
-        KeyTarget::Preset(i) => match voice.presets.get_mut(i) {
-            Some(p) => &mut p.hotkey,
-            None => return false,
-        },
+        KeyTarget::Preset(i) => &mut voice.presets.get_mut(i)?.hotkey,
+    })
+}
+
+/// Sets (or, with `None`, removes) one action's main key; its second key stays. Without a
+/// main key the second key becomes the main one. False if there is no such action.
+#[cfg(test)]
+pub fn assign(
+    voice: &mut VoiceHotkeys,
+    sounds: &mut [SoundKey],
+    target: KeyTarget,
+    key: Option<Hotkey>,
+) -> bool {
+    assign_slot(voice, sounds, target, Slot::Main, key)
+}
+
+/// Sets (or removes) one of an action's two keys, leaving the other. A second key for an
+/// action without a main key becomes its main key. False if there is no such action.
+pub fn assign_slot(
+    voice: &mut VoiceHotkeys,
+    sounds: &mut [SoundKey],
+    target: KeyTarget,
+    which: Slot,
+    key: Option<Hotkey>,
+) -> bool {
+    let Some(slot) = slot_of(voice, sounds, target) else {
+        return false;
     };
-    *slot = key;
+    let main = slot.as_ref().map(Hotkey::single);
+    let second = slot.as_ref().and_then(|h| h.second.as_deref()).cloned();
+    *slot = match which {
+        Slot::Main => Hotkey::pair(key, second),
+        Slot::Second => Hotkey::pair(main, key),
+    };
     true
 }
 
-/// "Change" in the conflict dialog: `key` moves from `owner` to `target`; `owner` is left
-/// without a key.
+/// Removes both of an action's keys. False if there is no such action.
+pub fn clear(voice: &mut VoiceHotkeys, sounds: &mut [SoundKey], target: KeyTarget) -> bool {
+    slot_of(voice, sounds, target).map(|s| *s = None).is_some()
+}
+
+/// Takes the combination `key` away from `target` (whichever of its keys it is); its other
+/// key stays.
+fn remove_key(voice: &mut VoiceHotkeys, sounds: &mut [SoundKey], target: KeyTarget, key: &Hotkey) {
+    let Some(slot) = slot_of(voice, sounds, target) else {
+        return;
+    };
+    let Some(h) = slot.take() else { return };
+    let mut keys: Vec<Hotkey> = h.keys().map(Hotkey::single).collect();
+    // The last one: a (hand-edited) pair of two equal keys keeps one of them.
+    if let Some(i) = keys.iter().rposition(|k| k.same_keys(key)) {
+        keys.remove(i);
+    }
+    let mut keys = keys.into_iter();
+    *slot = Hotkey::pair(keys.next(), keys.next());
+}
+
+/// "Change" in the conflict dialog: `key` moves from `owner` to `target` (as its `which`
+/// key); `owner` loses that key (its other key, if any, stays).
 pub fn change(
     voice: &mut VoiceHotkeys,
     sounds: &mut [SoundKey],
     key: Hotkey,
     target: KeyTarget,
+    which: Slot,
     owner: KeyTarget,
 ) {
-    assign(voice, sounds, owner, None);
-    assign(voice, sounds, target, Some(key));
+    remove_key(voice, sounds, owner, &key);
+    assign_slot(voice, sounds, target, which, Some(key));
 }
 
 /// Makes every key unique again (a hand-edited or old config): the first action in keymap
 /// order keeps it, the others are cleared. Returns what was cleared, e.g.
 /// "F8 (the sound \"airhorn\")".
 pub fn dedupe(voice: &mut VoiceHotkeys, sounds: &mut [SoundKey]) -> Vec<String> {
-    let losers: Vec<(KeyTarget, String)> = {
+    let losers: Vec<(KeyTarget, Hotkey, String)> = {
         let list = bindings(
             voice,
             sounds.iter().map(|s| (s.id, s.name, s.hotkey.as_ref())),
@@ -199,18 +263,20 @@ pub fn dedupe(voice: &mut VoiceHotkeys, sounds: &mut [SoundKey]) -> Vec<String> 
         let mut losers = Vec::new();
         for (target, name, h) in &list {
             let Some(h) = h else { continue };
-            if seen.iter().any(|s| s.same_keys(h)) {
-                losers.push((*target, format!("{} ({name})", h.pretty())));
-            } else {
-                seen.push(h);
+            for k in h.keys() {
+                if seen.iter().any(|s| s.same_keys(k)) {
+                    losers.push((*target, k.single(), format!("{} ({name})", k.pretty())));
+                } else {
+                    seen.push(k);
+                }
             }
         }
         losers
     };
-    for (target, _) in &losers {
-        assign(voice, sounds, *target, None);
+    for (target, key, _) in &losers {
+        remove_key(voice, sounds, *target, key);
     }
-    losers.into_iter().map(|(_, what)| what).collect()
+    losers.into_iter().map(|(_, _, what)| what).collect()
 }
 
 #[cfg(test)]
@@ -362,6 +428,7 @@ mod tests {
             &mut b.slots(),
             num1.clone(),
             KeyTarget::Toggle,
+            Slot::Main,
             o.target,
         );
         assert_eq!(v.toggle.as_ref().unwrap().label, "Num 1");
@@ -375,7 +442,14 @@ mod tests {
         let Check::Conflict(o) = check(&f12, KeyTarget::Sound(3), &v, b.read()) else {
             panic!()
         };
-        change(&mut v, &mut b.slots(), f12, KeyTarget::Sound(3), o.target);
+        change(
+            &mut v,
+            &mut b.slots(),
+            f12,
+            KeyTarget::Sound(3),
+            Slot::Main,
+            o.target,
+        );
         assert!(v.stop_sounds.is_none());
         assert_eq!(b.keys[2].as_ref().unwrap().label, "F12");
         // A preset key moves too.
@@ -388,9 +462,112 @@ mod tests {
             &mut b.slots(),
             num2,
             KeyTarget::MelodyNext,
+            Slot::Main,
             o.target,
         );
         assert!(v.presets[0].hotkey.is_none() && v.melody_next.is_some());
+    }
+
+    #[test]
+    fn a_second_key_does_the_same_and_counts_in_the_keymap() {
+        let (mut v, mut b) = (voice(), Board::new());
+        // Stop all has F12; "8" becomes its second key (Ctrl + 8 is the user's case).
+        let eight = hk(0x38, false, "8");
+        assert_eq!(
+            check(&eight, KeyTarget::StopSounds, &v, b.read()),
+            Check::Assign
+        );
+        assert!(assign_slot(
+            &mut v,
+            &mut b.slots(),
+            KeyTarget::StopSounds,
+            Slot::Second,
+            Some(eight.clone())
+        ));
+        let stop = v.stop_sounds.clone().unwrap();
+        assert_eq!(stop.label, "F12", "the main key stays");
+        assert!(stop.matches(&eight) && stop.matches(&hk(0x7B, false, "F12")));
+        assert!(!stop.matches(&hk(0x38, true, "Ctrl+8")));
+        assert_eq!(stop.pretty_all(), "F12 or 8");
+        // Either key is "already yours" for stop all, and taken for anything else.
+        assert_eq!(
+            check(&eight, KeyTarget::StopSounds, &v, b.read()),
+            Check::AlreadyYours
+        );
+        let Check::Conflict(o) = check(&eight, KeyTarget::Sound(2), &v, b.read()) else {
+            panic!()
+        };
+        assert_eq!(o.target, KeyTarget::StopSounds);
+        // Changing the main key keeps the second one.
+        assign(
+            &mut v,
+            &mut b.slots(),
+            KeyTarget::StopSounds,
+            Some(hk(0x38, true, "Ctrl+8")),
+        );
+        assert_eq!(
+            v.stop_sounds.as_ref().unwrap().pretty_all(),
+            "Ctrl + 8 or 8"
+        );
+        // The clip "bruh" takes "8": stop all keeps Ctrl + 8.
+        change(
+            &mut v,
+            &mut b.slots(),
+            eight.clone(),
+            KeyTarget::Sound(2),
+            Slot::Main,
+            KeyTarget::StopSounds,
+        );
+        assert_eq!(v.stop_sounds.as_ref().unwrap().pretty_all(), "Ctrl + 8");
+        assert_eq!(b.keys[1].as_ref().unwrap().label, "8");
+        // Removing the main key of a pair leaves the second as the main key.
+        assign_slot(
+            &mut v,
+            &mut b.slots(),
+            KeyTarget::StopSounds,
+            Slot::Second,
+            Some(hk(0x7B, false, "F12")),
+        );
+        assign(&mut v, &mut b.slots(), KeyTarget::StopSounds, None);
+        assert_eq!(v.stop_sounds.as_ref().unwrap().pretty_all(), "F12");
+        // A second key without a main one becomes the main key; clear removes both.
+        assign_slot(&mut v, &mut b.slots(), KeyTarget::Mute, Slot::Main, None);
+        assign_slot(
+            &mut v,
+            &mut b.slots(),
+            KeyTarget::Mute,
+            Slot::Second,
+            Some(hk(0x4D, true, "Ctrl+M")),
+        );
+        assert_eq!(v.mute.as_ref().unwrap().pretty_all(), "Ctrl + M");
+        assign_slot(
+            &mut v,
+            &mut b.slots(),
+            KeyTarget::Mute,
+            Slot::Second,
+            Some(hk(0x4E, true, "Ctrl+N")),
+        );
+        assert!(clear(&mut v, &mut b.slots(), KeyTarget::Mute));
+        assert!(v.mute.is_none());
+        assert!(!clear(&mut v, &mut b.slots(), KeyTarget::Sound(99)));
+    }
+
+    #[test]
+    fn duplicate_second_keys_in_a_loaded_config_are_cleared_too() {
+        let mut v = voice();
+        let mut b = Board::new();
+        // The toggle's second key is the clip airhorn's key, and wow's second key is F8.
+        v.toggle = Hotkey::pair(v.toggle.clone(), Some(hk(0x7A, false, "F11")));
+        b.keys[0] = Hotkey::pair(b.keys[0].clone(), Some(hk(0x7A, false, "F11")));
+        b.keys[2] = Hotkey::pair(b.keys[2].clone(), Some(hk(0x77, false, "F8")));
+        let cleared = dedupe(&mut v, &mut b.slots());
+        assert_eq!(
+            cleared,
+            ["F11 (the sound \"airhorn\")", "F8 (the sound \"wow\")"]
+        );
+        assert_eq!(v.toggle.as_ref().unwrap().pretty_all(), "F8 or F11");
+        assert_eq!(b.keys[0].as_ref().unwrap().pretty_all(), "Num 1");
+        assert_eq!(b.keys[2].as_ref().unwrap().pretty_all(), "F9");
     }
 
     #[test]

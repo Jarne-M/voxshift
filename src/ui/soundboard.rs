@@ -341,7 +341,7 @@ fn action_key_menu(
         Some(k) => format!(
             "{}  Hotkey for {what}: {}\u{2026}",
             icons::KEYBOARD,
-            k.pretty()
+            k.pretty_all()
         ),
         None => format!("{}  Set a hotkey for {what}\u{2026}", icons::KEYBOARD),
     };
@@ -1472,7 +1472,7 @@ fn clip_menu(ui: &mut Ui, v: &View, state: &mut State, s: &Sound, actions: &mut 
         }
     });
     let key_label = match &e.hotkey {
-        Some(k) => format!("{}  Hotkey: {}\u{2026}", icons::KEYBOARD, k.pretty()),
+        Some(k) => format!("{}  Hotkey: {}\u{2026}", icons::KEYBOARD, k.pretty_all()),
         None => format!("{}  Set a hotkey\u{2026}", icons::KEYBOARD),
     };
     if ui
@@ -1622,7 +1622,7 @@ fn now_playing(ui: &mut Ui, v: &View, actions: &mut Vec<Action>) {
                 ui.label(RichText::new("Now playing").strong().color(p.text_muted));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let tip = match v.stop_key {
-                        Some(k) => format!("Stop every clip ({})", k.pretty()),
+                        Some(k) => format!("Stop every clip ({})", k.pretty_all()),
                         None => "Stop every clip".to_string(),
                     };
                     let stop = ui

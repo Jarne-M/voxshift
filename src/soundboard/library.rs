@@ -464,7 +464,7 @@ impl Board {
         let ids: Vec<SoundId> = self
             .sounds
             .iter()
-            .filter(|s| s.entry.hotkey.as_ref().is_some_and(|h| h.same_keys(key)))
+            .filter(|s| s.entry.hotkey.as_ref().is_some_and(|h| h.matches(key)))
             .map(|s| s.id)
             .collect();
         ids.iter().filter(|&&id| self.press(id, key.vk)).count()
@@ -475,7 +475,7 @@ impl Board {
     pub fn hotkey_owner(&self, key: &Hotkey) -> Option<SoundId> {
         self.sounds
             .iter()
-            .find(|s| s.entry.hotkey.as_ref().is_some_and(|h| h.same_keys(key)))
+            .find(|s| s.entry.hotkey.as_ref().is_some_and(|h| h.matches(key)))
             .map(|s| s.id)
     }
 
@@ -1012,6 +1012,11 @@ mod tests {
         assert_eq!(b.hotkey_owner(&key), Some(id));
         let other = Hotkey::new(0x70, false, false, false, false, "F1");
         assert_eq!(b.hotkey_owner(&other), None, "modifiers must match");
+        // A second key finds the clip too.
+        let second = Hotkey::new(0x38, false, false, false, false, "8");
+        b.sounds[0].entry.hotkey = Hotkey::pair(Some(key.clone()), Some(second.clone()));
+        assert_eq!(b.hotkey_owner(&second), Some(id));
+        assert_eq!(b.hotkey_owner(&key), Some(id));
         b.remove(id);
         assert_eq!(b.hotkey_owner(&key), None);
     }

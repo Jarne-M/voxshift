@@ -307,7 +307,7 @@ impl VoiceKeys {
 
 impl KeyHandler for VoiceKeys {
     fn pressed(&self, key: &Hotkey) -> bool {
-        let is = |h: &Option<Hotkey>| h.as_ref().is_some_and(|h| h.same_keys(key));
+        let is = |h: &Option<Hotkey>| h.as_ref().is_some_and(|h| h.matches(key));
         // Panic comes first, before anything else is looked at.
         if is(&self.lock().panic) {
             self.feedback.toggle_safe();
@@ -635,6 +635,31 @@ mod tests {
         assert_eq!(r.shared.take_cue(), None);
         // Ctrl+H is a different combination.
         assert!(!r.keys.pressed(&hk(0x48, true, "Ctrl+H")));
+    }
+
+    #[test]
+    fn a_second_key_triggers_the_same_action() {
+        // Stop all on Ctrl + 8 and on 8 alone (8 while walking with Ctrl held is Ctrl + 8;
+        // 8 without Ctrl is plain 8: both stop).
+        let r = rig(VoiceHotkeys {
+            stop_sounds: Hotkey::pair(Some(hk(0x38, true, "Ctrl+8")), Some(hk(0x38, false, "8"))),
+            toggle: Hotkey::pair(Some(hk(0x77, false, "F8")), Some(hk(0x78, false, "F9"))),
+            ..Default::default()
+        });
+        assert!(r.keys.pressed(&hk(0x38, true, "Ctrl+8")));
+        assert!(r.keys.pressed(&hk(0x38, false, "8")));
+        assert_eq!(r.shared.stop_sounds.load(Relaxed), 2);
+        // Shift + 8 is neither.
+        assert!(
+            !r.keys
+                .pressed(&Hotkey::new(0x38, false, true, false, false, ""))
+        );
+        assert_eq!(r.shared.stop_sounds.load(Relaxed), 2);
+        // The voice changer toggle answers to its second key too.
+        assert!(r.keys.pressed(&hk(0x78, false, "F9")));
+        assert!(!r.shared.voice_on.load(Relaxed));
+        assert!(r.keys.pressed(&hk(0x77, false, "F8")));
+        assert!(r.shared.voice_on.load(Relaxed));
     }
 
     #[test]
